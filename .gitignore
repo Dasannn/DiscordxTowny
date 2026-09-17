@@ -1,0 +1,70 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+.netrc
+id_rsa
+id_ecdsa
+id_ed25519
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.Trash-*
+.fuse_hidden*
+.directory
+
+# Editors
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/shelf/
+*.iml
+
+# AI agent local state
+.claude/settings.local.json
+CLAUDE.local.md
+AGENTS.local.md
+.codex/auth.json
+.codex/sessions/
+.aider*
+!.aider.conf.yml
+!.aiderignore
+!.aider.model.settings.yml
+!.aider.model.metadata.json
+.cursor/rules/personal.mdc
+.specstory/
+.windsurf/
+
+# Daintree
+.daintree/*.local.json
