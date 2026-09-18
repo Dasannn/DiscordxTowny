@@ -1,0 +1,14 @@
+# Revisión: feat/config-towny
+
+Revisado: 6 archivos (config/ y towny/), 914 líneas
+Build: verde, 79 tests
+
+## Hallazgos
+
+| # | Severidad | Archivo:línea | Problema | Corrección propuesta |
+| 1 | bloqueante | src/main/java/com/discordtowny/towny/LiveTownyFacade.java:88 | Enclavamiento permanente de fallo en `isAvailable()`. Si cualquier lectura previa lanza una excepción en tiempo de ejecución, `falloLectura` se fija a `true`. Al invocar `isAvailable()`, se delega en `leer(..., recuperar = false)`, por lo que nunca se restablece `falloLectura = false`. Si el plugin consulta `isAvailable()` antes de llamar a Towny (modo degradado), el sistema permanecerá bloqueado creyendo indefinidamente que Towny está caído, sin recuperarse tras fallos transitorios. | En `isAvailable()`, pasar `recuperar = true` si la comprobación actual (`actual.getDataSource() != null`) tiene éxito, o no condicionar la disponibilidad global a los fallos de consultas a entidades específicas. |
+| 2 | bloqueante | src/main/java/com/discordtowny/towny/LiveTownyFacade.java:128 | Posible `NullPointerException` en `town.getMayor().getUUID()`. En Towny, una town puede carecer de alcalde (`town.hasMayor()` es falso y `town.getMayor()` devuelve `null`, por ejemplo en towns administrativas/NPC o tras la baja de un alcalde). Si esto ocurre, `townSnapshot()` lanza NPE, lo que en `allTowns()` hace fallar todo el listado devolviendo `List.of()`, activa `falloLectura = true` e inhabilita Towny para todo el plugin. | Comprobar `town.hasMayor()` y `town.getMayor() != null` antes de obtener el UUID, y manejar la ausencia de alcalde asignando un centinela acordado o gestionándolo de acuerdo al contrato del modelo. |
+| 3 | importante | src/main/java/com/discordtowny/config/YamlConfigLoader.java:222 | Rechazo indebido del valor `0` para desactivar la reconciliación periódica en `sync.interval-minutes`. La documentación en `config.yml` (línea 75) especifica: `# Cada cuantos minutos se reconcilia todo. 0 lo desactiva.` Sin embargo, el cargador valida el campo con `minutos(...)` -> `positivo(...)` -> `entero(clave, 1, Integer.MAX_VALUE)`, rechazando `0` con `ConfigException` e impidiendo deshabilitar la sincronización periódica. | Permitir el valor `0` en la validación mediante `entero("sync.interval-minutes", 0, Integer.MAX_VALUE)` y mapear `0` a `Duration.ZERO`. |
+| 4 | menor | src/main/java/com/discordtowny/config/YamlConfigLoader.java:168 | Validación permisiva del marcador `{mayor}` en `roles.town-role-name`. Según `config.yml` (línea 49), el rol de town solo admite el marcador `{town}`. La función de validación `nombre()` admite indistintamente `{town}` y `{mayor}` para todas las plantillas. | Diferenciar los marcadores válidos por tipo de plantilla, restringiendo `roles.town-role-name` exclusivamente a `{town}`. |
+
+Veredicto: requiere correcciones
