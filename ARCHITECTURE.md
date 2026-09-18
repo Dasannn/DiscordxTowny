@@ -28,6 +28,7 @@ Un solo módulo Gradle. Paquetes por responsabilidad, no por capa técnica:
 ```
 com.discordtowny
 ├── DiscordTownyPlugin.java      arranque, apagado, cableado
+├── model/                       tipos inmutables que cruzan fronteras
 ├── config/                      carga de config.yml y textos
 ├── storage/                     acceso a datos, migraciones, DAOs
 ├── link/                        vinculación de cuentas y códigos
@@ -43,6 +44,11 @@ com.discordtowny
 salida; ambos dependen de `link`, `space` y `sync`. Nunca al revés. `towny` es
 la única puerta a la API de Towny, y `storage` la única a la base de datos.
 Ninguna clase de `space` o `sync` importa JDA ni Bukkit.
+
+`model` no depende de nada, y todos los demás pueden depender de él. Existe
+precisamente por eso: si los tipos inmutables vivieran en `link` o `space`,
+`storage` dependería de ellos y ellos de `storage`, cerrando un ciclo de
+paquetes. Cada paquete lleva su regla escrita en su `package-info`.
 
 Esa regla es lo que permite que varios agentes trabajen a la vez sin pisarse: un
 agente construye `discord/`, otro `storage/`, otro `sync/`, contra interfaces
