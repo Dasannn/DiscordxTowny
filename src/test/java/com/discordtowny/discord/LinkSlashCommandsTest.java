@@ -164,13 +164,13 @@ class LinkSlashCommandsTest {
 
         when(linkService.findByDiscordId("123456789012345678"))
                 .thenReturn(CompletableFuture.completedFuture(Optional.of(link)));
-        when(linkService.unlink(uuid)).thenReturn(CompletableFuture.completedFuture(true));
+        when(linkService.unlink(uuid, "123456789012345678")).thenReturn(CompletableFuture.completedFuture(true));
         when(messages.plain(eq("linking.unlink-success"), any())).thenReturn("Vinculo eliminado");
 
         commands.onSlashCommandInteraction(event);
 
         verify(event).deferReply(true);
-        verify(linkService).unlink(uuid);
+        verify(linkService).unlink(uuid, "123456789012345678");
         verify(hook).editOriginal("Vinculo eliminado");
     }
 
@@ -185,5 +185,103 @@ class LinkSlashCommandsTest {
         commands.onSlashCommandInteraction(event);
 
         verify(hook).editOriginal("No tienes cuenta vinculada");
+    }
+
+    @Test
+    void handleLinkRespuestaSiempreEfimeraInclusoSiConfiguracionDiceFalso() {
+        // Configuracion con ephemeral = false para link
+        PluginConfig nonEphemeralConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of(
+                        new PluginConfig.DiscordCommand("link", true, false),
+                        new PluginConfig.DiscordCommand("unlink", true, false)
+                ))
+        );
+        LinkSlashCommands nonEphemeralCommands = new LinkSlashCommands(linkService, nonEphemeralConfig, messages);
+
+        when(event.getName()).thenReturn("link");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("ABC234");
+        when(event.getOption("codigo")).thenReturn(opt);
+
+        when(linkService.redeem("ABC234", "123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+        when(messages.plain(eq("linking.link-success"), any())).thenReturn("Cuenta vinculada con exito");
+
+        nonEphemeralCommands.onSlashCommandInteraction(event);
+
+        // A pesar de que ephemeral=false en config, deferReply DEBE ser true
+        verify(event).deferReply(true);
+    }
+
+    @Test
+    void comandoDesactivadoSeRechazaSinInvocarServicio() {
+        PluginConfig disabledConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of(
+                        new PluginConfig.DiscordCommand("link", false, true),
+                        new PluginConfig.DiscordCommand("unlink", true, true)
+                ))
+        );
+        LinkSlashCommands disabledCommands = new LinkSlashCommands(linkService, disabledConfig, messages);
+
+        when(event.getName()).thenReturn("link");
+        ReplyCallbackAction directReply = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(directReply);
+        when(directReply.setEphemeral(true)).thenReturn(directReply);
+        when(messages.plain(eq("general.no-permission"), any())).thenReturn("No tienes permiso");
+
+        disabledCommands.onSlashCommandInteraction(event);
+
+        verify(event).reply("No tienes permiso");
+        verify(directReply).setEphemeral(true);
+        verify(linkService, never()).redeem(any(), any());
+    }
+
+    @Test
+    void cooldownPorUsuarioRechazaPeticionRepetidaSinInvocarServicio() {
+        when(event.getName()).thenReturn("link");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("ABC234");
+        when(event.getOption("codigo")).thenReturn(opt);
+
+        when(linkService.redeem("ABC234", "123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+        when(messages.plain(eq("linking.link-success"), any())).thenReturn("Cuenta vinculada");
+        when(messages.plain(eq("space.cooldown"), any())).thenReturn("Espera cooldown");
+
+        ReplyCallbackAction cooldownReply = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(cooldownReply);
+        when(cooldownReply.setEphemeral(true)).thenReturn(cooldownReply);
+
+        // Primer intento dentro del cooldown: pasa y se procesa
+        commands.onSlashCommandInteraction(event);
+        verify(linkService, times(1)).redeem("ABC234", "123456789012345678");
+
+        // Segundo intento inmediato del mismo usuario: se bloquea por cooldown sin invocar el servicio
+        commands.onSlashCommandInteraction(event);
+        verify(linkService, times(1)).redeem(any(), any());
+        verify(event).reply("Espera cooldown");
+    }
+
+    @Test
+    void getCommandDataFiltraComandosDesactivadosSegunConfiguracion() {
+        PluginConfig disabledConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of(
+                        new PluginConfig.DiscordCommand("link", false, true),
+                        new PluginConfig.DiscordCommand("unlink", true, true)
+                ))
+        );
+
+        List<SlashCommandData> filtered = LinkSlashCommands.getCommandData(disabledConfig);
+        assertEquals(1, filtered.size());
+        assertEquals("unlink", filtered.getFirst().getName());
     }
 }

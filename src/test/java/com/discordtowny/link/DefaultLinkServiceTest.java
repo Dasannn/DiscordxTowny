@@ -3,9 +3,12 @@ package com.discordtowny.link;
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.discord.DiscordGateway;
 import com.discordtowny.discord.GuildOperation;
+import com.discordtowny.discord.OperationOutcome;
 import com.discordtowny.model.AccountLink;
 import com.discordtowny.model.AuditEvent;
 import com.discordtowny.model.LinkCode;
+import com.discordtowny.model.SpaceState;
+import com.discordtowny.model.TownSpace;
 import com.discordtowny.storage.HikariStorage;
 import com.discordtowny.storage.LinkRepository;
 import com.discordtowny.storage.SpaceRepository;
@@ -23,12 +26,17 @@ import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -41,6 +49,7 @@ class DefaultLinkServiceTest {
 
     private Path dbFile;
     private HikariStorage storage;
+    private PluginConfig.Database dbConfig;
     private LinkRepository linkRepository;
     private SpaceRepository spaceRepository;
     private MutableClock clock;
@@ -54,7 +63,7 @@ class DefaultLinkServiceTest {
     void setUp() throws IOException {
         dbFile = Files.createTempFile("discordtowny-linktest-", ".db");
 
-        PluginConfig.Database dbConfig = new PluginConfig.Database(
+        dbConfig = new PluginConfig.Database(
                 PluginConfig.Database.Type.SQLITE,
                 "localhost",
                 3306,
@@ -100,7 +109,8 @@ class DefaultLinkServiceTest {
         syncService = mock(SyncService.class);
 
         when(syncService.syncPlayer(any())).thenReturn(CompletableFuture.completedFuture(null));
-        when(discordGateway.submit(any())).thenReturn(CompletableFuture.completedFuture(null));
+        when(discordGateway.submit(any())).thenReturn(CompletableFuture.completedFuture(OperationOutcome.success()));
+        when(discordGateway.mayorRoleId()).thenReturn(Optional.empty());
 
         service = new DefaultLinkService(
                 linkRepository,
@@ -124,7 +134,7 @@ class DefaultLinkServiceTest {
         }
     }
 
-    // --- 1. Ciclo completo ---
+    // --- 1. Ciclo completo con reapertura y verificacion de auditoria sin secretos ---
 
     @Test
     void cicloCompletoGenerarCanjearYPersistir() {
@@ -154,9 +164,28 @@ class DefaultLinkServiceTest {
 
         // Se disparo la sincronizacion de roles
         verify(syncService).syncPlayer(uuid);
-        // Se registro evento de auditoria
-        verify(discordGateway).log(argThat(event ->
-                event.action().equals("link") && event.actor().equals(discordId) && event.success()));
+
+        // Se registro evento de auditoria sin exponer el codigo en ningun campo (hallazgo 7)
+        ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(discordGateway).log(captor.capture());
+        AuditEvent event = captor.getValue();
+        assertEquals("link", event.action());
+        assertEquals(discordId, event.actor());
+        assertTrue(event.success());
+        assertFalse(event.target().contains(code), "El target de auditoria no debe contener el codigo");
+        event.detail().ifPresent(d -> assertFalse(d.contains(code), "El detalle no debe contener el codigo"));
+
+        // Verificar persistencia tras reinicio/reapertura de almacenamiento (hallazgo 12)
+        storage.close();
+        HikariStorage reopened = new HikariStorage(dbConfig, Logger.getLogger("ReopenTest"));
+        reopened.initialize();
+        try {
+            Optional<AccountLink> reopenedLink = reopened.links().findByUuid(uuid);
+            assertTrue(reopenedLink.isPresent(), "El vinculo debe persistir en disco tras reapertura");
+            assertEquals(discordId, reopenedLink.get().discordId());
+        } finally {
+            reopened.close();
+        }
     }
 
     // --- 2. Codigo caducado, inexistente y ya usado ---
@@ -176,12 +205,21 @@ class DefaultLinkServiceTest {
         assertTrue(linkRepository.findCode(code).isEmpty());
         // El vinculo no debe haberse creado
         assertTrue(service.findByUuid(uuid).join().isEmpty());
+
+        // Auditoria no expone el codigo
+        ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(discordGateway).log(captor.capture());
+        assertFalse(captor.getValue().target().contains(code));
     }
 
     @Test
     void codigoInexistenteEsRechazado() {
         LinkService.LinkResult result = service.redeem("NOEXISTE", "discord_user_1").join();
         assertEquals(LinkService.LinkResult.CODE_INVALID, result);
+
+        ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(discordGateway).log(captor.capture());
+        assertFalse(captor.getValue().target().contains("NOEXISTE"));
     }
 
     @Test
@@ -214,11 +252,9 @@ class DefaultLinkServiceTest {
     @Test
     void jugadorYaVinculadoRechazaCanje() {
         UUID uuid = UUID.randomUUID();
-        // Guardamos directamente un codigo
         LinkCode code = new LinkCode("TEST01", uuid, clock.instant().plusSeconds(600), 0);
         linkRepository.saveCode(code);
 
-        // Pero el jugador ya tiene un vinculo existente con otra cuenta de Discord
         AccountLink existingLink = new AccountLink(uuid, "discord_otra", clock.instant(), "Jugador");
         linkRepository.save(existingLink);
 
@@ -241,7 +277,7 @@ class DefaultLinkServiceTest {
         assertEquals(LinkService.LinkResult.DISCORD_ALREADY_LINKED, result);
     }
 
-    // --- 4. Limite de intentos y bloqueo ---
+    // --- 4. Limite de intentos y presupuesto temporal ---
 
     @Test
     void limiteDeIntentosBloqueaDeVerdad() {
@@ -272,20 +308,60 @@ class DefaultLinkServiceTest {
     }
 
     @Test
-    void exitoLimpiaContadorDeFallos() {
-        String discordId = "discord_user";
+    void exitoYDesvinculacionNoReinicianPresupuestoDeFallosEnVentana() {
+        // Correccion de hallazgo 4 y hallazgo 12: comprobar observablemente
+        // que un canje con exito y desvinculacion posterior NO borran el contador
+        String discordId = "discord_atacante_astuto";
 
-        // Falla 2 veces (menos del limite de 3)
+        // maxAttempts = 3: falla 2 veces (queda 1 intento en la ventana)
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL001", discordId).join());
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL002", discordId).join());
 
-        // Canjea un codigo valido con exito
-        UUID uuid = UUID.randomUUID();
-        String code = service.generateCode(uuid).join().orElseThrow();
-        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
+        // Canjea un codigo valido propio con exito
+        UUID uuidPropio = UUID.randomUUID();
+        String codeValido = service.generateCode(uuidPropio).join().orElseThrow();
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(codeValido, discordId).join());
 
-        // El contador queda reiniciado para este usuario
-        assertTrue(service.findByDiscordId(discordId).join().isPresent());
+        // Desvincula la cuenta
+        assertTrue(service.unlink(uuidPropio).join());
+
+        // El atacante prueba un nuevo codigo falso dentro de la ventana de 15 minutos:
+        // Debe ser su 3er fallo acumulado y activar el bloqueo de inmediato
+        assertEquals(LinkService.LinkResult.TOO_MANY_ATTEMPTS, service.redeem("MAL003", discordId).join());
+    }
+
+    @Test
+    void rafagaConcurrenteDeIntentosFallidosRespetaElPresupuesto() throws Exception {
+        // Hallazgo 4: serializacion de admision y resolucion ante rafagas concurrentes
+        String discordId = "discord_burst_attacker";
+        int totalPeticiones = 10;
+        CyclicBarrier barrier = new CyclicBarrier(totalPeticiones);
+        CountDownLatch latch = new CountDownLatch(totalPeticiones);
+        List<LinkService.LinkResult> results = Collections.synchronizedList(new ArrayList<>());
+
+        for (int i = 0; i < totalPeticiones; i++) {
+            final String badCode = "BURST" + i;
+            new Thread(() -> {
+                try {
+                    barrier.await();
+                    LinkService.LinkResult res = service.redeem(badCode, discordId).join();
+                    results.add(res);
+                } catch (Exception ignored) {
+                } finally {
+                    latch.countDown();
+                }
+            }).start();
+        }
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
+
+        long invalidCount = results.stream().filter(r -> r == LinkService.LinkResult.CODE_INVALID).count();
+        long lockedCount = results.stream().filter(r -> r == LinkService.LinkResult.TOO_MANY_ATTEMPTS).count();
+
+        assertEquals(totalPeticiones, invalidCount + lockedCount);
+        // Como maxAttempts = 3, exactamente 2 fallos son invalidos y a partir del 3ro se bloquea
+        assertTrue(invalidCount <= 3, "No pueden pasar mas intentos fallidos que el limite: " + invalidCount);
+        assertTrue(lockedCount >= (totalPeticiones - 3), "Al menos 7 peticiones deben recibir bloqueo: " + lockedCount);
     }
 
     // --- 5. Generar codigo nuevo invalida el anterior ---
@@ -314,17 +390,28 @@ class DefaultLinkServiceTest {
         for (int i = 0; i < 500; i++) {
             String code = service.generateCode(uuid).join().orElseThrow();
             assertFalse(CodeGenerator.containsAmbiguousCharacters(code));
-            // Borrar codigo para poder generar el siguiente sin que el UUID este ocupado
             linkRepository.deleteCode(code);
         }
     }
 
-    // --- 7. Desvinculacion y retirada de roles ---
+    // --- 7. Desvinculacion y retirada de roles (hallazgos 2, 3, 12) ---
 
     @Test
-    void unlinkEliminaVinculoYRetiraRoles() {
+    void unlinkEliminaVinculoYRetiraRolesIncluyendoRolDeAlcalde() {
         UUID uuid = UUID.randomUUID();
-        String discordId = "discord_linked";
+        String discordId = "discord_linked_mayor";
+
+        // Registrar un espacio de town con rol
+        TownSpace townSpace = new TownSpace(
+                UUID.randomUUID(), "Madrid",
+                Optional.of("cat-1"), Optional.of("text-1"), Optional.of("voice-1"),
+                Optional.of("role-town-madrid"), SpaceState.ACTIVE, clock.instant(),
+                Optional.empty(), Optional.empty()
+        );
+        spaceRepository.save(townSpace);
+
+        // Gateway expone el rol de alcalde configurado
+        when(discordGateway.mayorRoleId()).thenReturn(Optional.of("role-mayor-global"));
 
         String code = service.generateCode(uuid).join().orElseThrow();
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
@@ -337,15 +424,90 @@ class DefaultLinkServiceTest {
         assertTrue(service.findByUuid(uuid).join().isEmpty());
         assertTrue(service.findByDiscordId(discordId).join().isEmpty());
 
-        // Se envio la orden a DiscordGateway para retirar roles
+        // Se envio la orden a DiscordGateway para retirar roles exactos (town + alcalde)
         ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
         verify(discordGateway, atLeastOnce()).submit(captor.capture());
 
-        boolean roleRevocationFound = captor.getAllValues().stream()
+        GuildOperation.ApplyMemberRoles applyOp = captor.getAllValues().stream()
                 .filter(op -> op instanceof GuildOperation.ApplyMemberRoles)
                 .map(op -> (GuildOperation.ApplyMemberRoles) op)
-                .anyMatch(op -> op.discordId().equals(discordId));
-        assertTrue(roleRevocationFound, "Debe solicitar revocar roles de Discord al desvincular");
+                .filter(op -> op.discordId().equals(discordId))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Debe enviarse orden ApplyMemberRoles para " + discordId));
+
+        assertTrue(applyOp.revokeRoleIds().contains("role-town-madrid"),
+                "Debe solicitar revocar el rol de la town");
+        assertTrue(applyOp.revokeRoleIds().contains("role-mayor-global"),
+                "Debe solicitar revocar el rol global de alcalde");
+    }
+
+    @Test
+    void unlinkNoConfirmaExitoSiFallaDiscordYPreservaElVinculo() {
+        // Hallazgo 2: con bot caido o gateway fallido, no borrar el vinculo ni confirmar exito
+        UUID uuid = UUID.randomUUID();
+        String discordId = "discord_gateway_down";
+
+        String code = service.generateCode(uuid).join().orElseThrow();
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
+
+        // Simular que Discord devuelve un fallo transitorio
+        when(discordGateway.submit(any())).thenReturn(
+                CompletableFuture.completedFuture(OperationOutcome.transientFailure("Discord no esta disponible")));
+
+        CompletionException ex = assertThrows(CompletionException.class, () -> service.unlink(uuid).join());
+        assertInstanceOf(IllegalStateException.class, ex.getCause());
+
+        // El vinculo NO debe haberse eliminado
+        assertTrue(service.findByUuid(uuid).join().isPresent(),
+                "El vinculo debe permanecer si Discord no pudo retirar los roles");
+        assertTrue(service.findByDiscordId(discordId).join().isPresent());
+    }
+
+    @Test
+    void unlinkPropagaFalloDeSpaceRepositorySinBorrarVinculo() {
+        // Hallazgo 2: si falla spaceRepository.findAll(), no tragar la excepcion
+        SpaceRepository failingSpaceRepo = mock(SpaceRepository.class);
+        when(failingSpaceRepo.findAll()).thenThrow(new StorageException("Error de BD en spaces"));
+
+        DefaultLinkService failingService = new DefaultLinkService(
+                linkRepository, config, discordGateway, townyFacade, failingSpaceRepo, syncService, clock, ForkJoinPool.commonPool()
+        );
+
+        UUID uuid = UUID.randomUUID();
+        String discordId = "discord_space_err";
+
+        String code = failingService.generateCode(uuid).join().orElseThrow();
+        assertEquals(LinkService.LinkResult.SUCCESS, failingService.redeem(code, discordId).join());
+
+        CompletionException ex = assertThrows(CompletionException.class, () -> failingService.unlink(uuid).join());
+        assertInstanceOf(StorageException.class, ex.getCause());
+
+        // El vinculo NO debe haberse eliminado
+        assertTrue(failingService.findByUuid(uuid).join().isPresent());
+    }
+
+    @Test
+    void unlinkCondicionalNoBorraSiElVinculoFueRecreado() {
+        // Hallazgo 9: evitar que una peticion antigua borre un vinculo recreado
+        UUID uuid = UUID.randomUUID();
+        String discordIdAntiguo = "discord_antiguo";
+        String discordIdNuevo = "discord_nuevo";
+
+        String code = service.generateCode(uuid).join().orElseThrow();
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordIdAntiguo).join());
+
+        // Simular que entre la autorizacion y el borrado, el vinculo se recreo para otra cuenta
+        linkRepository.deleteByUuid(uuid);
+        linkRepository.save(new AccountLink(uuid, discordIdNuevo, clock.instant(), "Jugador"));
+
+        // Intentar desvincular condicionando a la cuenta antigua
+        boolean unlinked = service.unlink(uuid, discordIdAntiguo).join();
+        assertFalse(unlinked, "No debe borrar si la cuenta Discord no coincide con la esperada");
+
+        // El vinculo de discordIdNuevo permanece intacto
+        Optional<AccountLink> actual = service.findByUuid(uuid).join();
+        assertTrue(actual.isPresent());
+        assertEquals(discordIdNuevo, actual.get().discordId());
     }
 
     @Test
@@ -364,7 +526,6 @@ class DefaultLinkServiceTest {
         clock.advance(Duration.ofMinutes(15));
         String code2 = service.generateCode(u2).join().orElseThrow();
 
-        // code1 esta caducado, code2 esta vigente
         int purged = service.purgeExpiredCodes().join();
         assertEquals(1, purged);
 
@@ -372,7 +533,7 @@ class DefaultLinkServiceTest {
         assertTrue(linkRepository.findCode(code2).isPresent());
     }
 
-    // --- 9. Captura de nombre y manejo de fallos de persistencia ---
+    // --- 9. Captura de nombre, sincronizacion y concurrencia real ---
 
     @Test
     void nombreCapturadoEnGeneracionSePersisteAlCanjear() {
@@ -386,17 +547,27 @@ class DefaultLinkServiceTest {
     }
 
     @Test
+    void falloDeSyncServiceEsObservableEnElFuturoDeRedeem() {
+        // Hallazgo 5: hacer observable cualquier fallo de sincronizacion
+        when(syncService.syncPlayer(any())).thenReturn(
+                CompletableFuture.failedFuture(new RuntimeException("Fallo en sincronizacion")));
+
+        UUID uuid = UUID.randomUUID();
+        String code = service.generateCode(uuid).join().orElseThrow();
+
+        CompletionException ex = assertThrows(CompletionException.class, () ->
+                service.redeem(code, "discord_sync_err").join());
+        assertInstanceOf(RuntimeException.class, ex.getCause());
+        assertEquals("Fallo en sincronizacion", ex.getCause().getMessage());
+    }
+
+    @Test
     void falloGenericoDeBaseDeDatosNoSeReportaComoVinculoDuplicado() {
         LinkRepository mockRepo = mock(LinkRepository.class);
-        UUID uuid = UUID.randomUUID();
         String code = "ABC234";
-        LinkCode linkCode = new LinkCode(code, uuid, clock.instant().plusSeconds(600), 0);
 
-        when(mockRepo.findCode(code)).thenReturn(Optional.of(linkCode));
-        when(mockRepo.findByDiscordId("discord_test")).thenReturn(Optional.empty());
-        when(mockRepo.findByUuid(uuid)).thenReturn(Optional.empty());
-        doThrow(new StorageException("Error al guardar vinculo", new SQLException("disk I/O error")))
-                .when(mockRepo).save(any());
+        when(mockRepo.consumeCodeAndLink(eq(code), eq("discord_test"), anyString(), any()))
+                .thenThrow(new StorageException("Error al canjear", new SQLException("disk I/O error")));
 
         DefaultLinkService failService = new DefaultLinkService(
                 mockRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
@@ -409,32 +580,39 @@ class DefaultLinkServiceTest {
 
         assertInstanceOf(StorageException.class, ex.getCause());
         assertFalse(ex.getCause().getMessage().contains("Ya existe"));
-        verify(mockRepo, never()).deleteCode(code);
     }
 
     @Test
-    void choqueDeUnicidadPorConcurrenciaSeDetectaCorrectamente() {
-        LinkRepository mockRepo = mock(LinkRepository.class);
+    void canjeConcurrenteDelMismoCodigoSoloUnoTieneExito() throws Exception {
+        // Hallazgo 1 y 12: concurrencia real con barrera y multiples hilos
         UUID uuid = UUID.randomUUID();
-        String code = "ABC234";
-        String discordId = "discord_concurrent";
-        LinkCode linkCode = new LinkCode(code, uuid, clock.instant().plusSeconds(600), 0);
+        String code = service.generateCode(uuid).join().orElseThrow();
 
-        when(mockRepo.findCode(code)).thenReturn(Optional.of(linkCode));
-        when(mockRepo.findByDiscordId(discordId)).thenReturn(
-                Optional.empty(),
-                Optional.of(new AccountLink(UUID.randomUUID(), discordId, Instant.now(), "Otro"))
-        );
-        when(mockRepo.findByUuid(uuid)).thenReturn(Optional.empty());
-        doThrow(new StorageException("Ya existe un vinculo para este UUID o Discord ID: " + uuid))
-                .when(mockRepo).save(any());
+        int threads = 2;
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        CountDownLatch latch = new CountDownLatch(threads);
+        List<LinkService.LinkResult> results = Collections.synchronizedList(new ArrayList<>());
 
-        DefaultLinkService concurrentService = new DefaultLinkService(
-                mockRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
-        );
+        for (int i = 0; i < threads; i++) {
+            final String discordUser = "discord_concurrent_" + i;
+            new Thread(() -> {
+                try {
+                    barrier.await();
+                    LinkService.LinkResult res = service.redeem(code, discordUser).join();
+                    results.add(res);
+                } catch (Exception ignored) {
+                } finally {
+                    latch.countDown();
+                }
+            }).start();
+        }
 
-        LinkService.LinkResult result = concurrentService.redeem(code, discordId).join();
-        assertEquals(LinkService.LinkResult.DISCORD_ALREADY_LINKED, result);
-        verify(mockRepo).deleteCode(code);
+        assertTrue(latch.await(5, TimeUnit.SECONDS));
+
+        long successCount = results.stream().filter(r -> r == LinkService.LinkResult.SUCCESS).count();
+        long failedCount = results.stream().filter(r -> r == LinkService.LinkResult.CODE_INVALID).count();
+
+        assertEquals(1, successCount, "Exactamente uno de los canjes debe tener exito");
+        assertEquals(1, failedCount, "El otro canje concurrente debe ser rechazado");
     }
 }

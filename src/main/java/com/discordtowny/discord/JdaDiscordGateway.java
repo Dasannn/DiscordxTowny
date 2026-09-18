@@ -195,6 +195,15 @@ public final class JdaDiscordGateway implements DiscordGateway {
         return CompletableFuture.supplyAsync(this::verifyPermissions);
     }
 
+    @Override
+    public Optional<String> mayorRoleId() {
+        if (!isAvailable() || guild == null) {
+            return Optional.empty();
+        }
+        List<net.dv8tion.jda.api.entities.Role> roles = guild.getRolesByName(config.roles().mayorRoleName(), true);
+        return roles.isEmpty() ? Optional.empty() : Optional.of(roles.get(0).getId());
+    }
+
     /** Devuelve el guild conectado, si lo hay. Para uso interno del paquete. */
     Optional<Guild> guild() {
         return Optional.ofNullable(guild);

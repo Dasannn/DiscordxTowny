@@ -9,6 +9,17 @@ import java.util.Objects;
  * <p>Genera codigos de 6 caracteres alfanumericos sin caracteres ambiguos
  * (se excluyen 0, O, 1, I, l, L). Usa {@link SecureRandom}, nunca {@link java.util.Random},
  * para evitar que los codigos sean predecibles.
+ *
+ * <p>Analisis de entropia y riesgo residual de fuerza bruta distribuida (hallazgo 13):
+ * El alfabeto consta de 31 simbolos. Un codigo de 6 simbolos produce 31^6 = 887.503.681
+ * combinaciones posibles (aproximadamente 29,73 bits de entropia). Con el limite por
+ * usuario de 5 intentos por ventana (AttemptTracker), la probabilidad de acertar un
+ * codigo especifico es de solo 5 / 887.503.681 ≈ 5,63 x 10^-9. Sin embargo, en un
+ * ataque distribuido mediante mil cuentas de Discord simultaneas, el presupuesto conjunto
+ * alcanza 5.000 intentos (probabilidad ≈ 5,63 x 10^-6 contra un codigo particular,
+ * multiplicada linealmente si existen M codigos vivos concurrentes). Este riesgo residual
+ * queda documentado para que el arquitecto evalue si en el futuro se requiere una
+ * defensa agregada global por ventana.
  */
 public final class CodeGenerator {
 

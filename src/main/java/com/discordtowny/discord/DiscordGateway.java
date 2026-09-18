@@ -60,4 +60,11 @@ public interface DiscordGateway {
     default CompletableFuture<java.util.Optional<String>> verifyPermissionsAsync() {
         return CompletableFuture.supplyAsync(this::verifyPermissions);
     }
+
+    /**
+     * Devuelve el ID del rol de alcalde gestionado si existe en el guild.
+     */
+    default java.util.Optional<String> mayorRoleId() {
+        return java.util.Optional.empty();
+    }
 }

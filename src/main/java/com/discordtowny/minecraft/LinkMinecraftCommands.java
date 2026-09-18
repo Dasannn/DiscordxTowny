@@ -39,9 +39,23 @@ public final class LinkMinecraftCommands {
             PluginConfig config,
             Messages messages,
             TownyFacade townyFacade) {
+        return createCommandNode(linkService, config, messages, townyFacade, defaultScheduler());
+    }
+
+    /**
+     * Construye el arbol de comandos de Brigadier permitiendo especificar el scheduler
+     * para retornar al hilo principal antes de interactuar con jugadores.
+     */
+    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
+            LinkService linkService,
+            PluginConfig config,
+            Messages messages,
+            TownyFacade townyFacade,
+            java.util.function.Consumer<Runnable> syncScheduler) {
         Objects.requireNonNull(linkService, "linkService");
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(messages, "messages");
+        java.util.function.Consumer<Runnable> scheduler = syncScheduler != null ? syncScheduler : defaultScheduler();
 
         return Commands.literal("dt")
                 .then(Commands.literal("link")
@@ -57,17 +71,19 @@ public final class LinkMinecraftCommands {
 
                             // Operacion asincrona fuera del hilo principal pasando el nombre capturado
                             linkService.generateCode(player.getUniqueId(), player.getName()).thenAccept(optCode -> {
-                                if (optCode.isEmpty()) {
-                                    player.sendMessage(messages.get("linking.already-linked"));
-                                } else {
-                                    long minutes = config.linking().codeExpiry().toMinutes();
-                                    player.sendMessage(messages.get("linking.code-generated", Map.of(
-                                            "code", optCode.get(),
-                                            "minutes", String.valueOf(minutes)
-                                    )));
-                                }
+                                scheduler.accept(() -> {
+                                    if (optCode.isEmpty()) {
+                                        player.sendMessage(messages.get("linking.already-linked"));
+                                    } else {
+                                        long minutes = config.linking().codeExpiry().toMinutes();
+                                        player.sendMessage(messages.get("linking.code-generated", Map.of(
+                                                "code", optCode.get(),
+                                                "minutes", String.valueOf(minutes)
+                                        )));
+                                    }
+                                });
                             }).exceptionally(ex -> {
-                                player.sendMessage(messages.get("general.database-unavailable"));
+                                scheduler.accept(() -> player.sendMessage(messages.get("general.database-unavailable")));
                                 return null;
                             });
 
@@ -87,13 +103,15 @@ public final class LinkMinecraftCommands {
 
                             // Operacion asincrona
                             linkService.unlink(player.getUniqueId()).thenAccept(unlinked -> {
-                                if (unlinked) {
-                                    player.sendMessage(messages.get("linking.unlink-success"));
-                                } else {
-                                    player.sendMessage(messages.get("linking.not-linked"));
-                                }
+                                scheduler.accept(() -> {
+                                    if (unlinked) {
+                                        player.sendMessage(messages.get("linking.unlink-success"));
+                                    } else {
+                                        player.sendMessage(messages.get("linking.not-linked"));
+                                    }
+                                });
                             }).exceptionally(ex -> {
-                                player.sendMessage(messages.get("general.database-unavailable"));
+                                scheduler.accept(() -> player.sendMessage(messages.get("general.database-unavailable")));
                                 return null;
                             });
 
@@ -126,15 +144,17 @@ public final class LinkMinecraftCommands {
                                             sender.sendMessage(messages.get("general.working"));
 
                                             linkService.unlink(targetUuid).thenAccept(unlinked -> {
-                                                if (unlinked) {
-                                                    sender.sendMessage(messages.get("admin.unlinked", Map.of(
-                                                            "player", targetName
-                                                    )));
-                                                } else {
-                                                    sender.sendMessage(messages.get("linking.not-linked"));
-                                                }
+                                                scheduler.accept(() -> {
+                                                    if (unlinked) {
+                                                        sender.sendMessage(messages.get("admin.unlinked", Map.of(
+                                                                "player", targetName
+                                                        )));
+                                                    } else {
+                                                        sender.sendMessage(messages.get("linking.not-linked"));
+                                                    }
+                                                });
                                             }).exceptionally(ex -> {
-                                                sender.sendMessage(messages.get("general.database-unavailable"));
+                                                scheduler.accept(() -> sender.sendMessage(messages.get("general.database-unavailable")));
                                                 return null;
                                             });
 
@@ -155,12 +175,30 @@ public final class LinkMinecraftCommands {
             PluginConfig config,
             Messages messages,
             TownyFacade townyFacade) {
+        java.util.function.Consumer<Runnable> scheduler = task -> Bukkit.getScheduler().runTask(plugin, task);
         plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             Commands registrar = event.registrar();
             LiteralCommandNode<CommandSourceStack> node = createCommandNode(
-                    linkService, config, messages, townyFacade);
+                    linkService, config, messages, townyFacade, scheduler);
             registrar.register(node, "Comandos de vinculacion de DiscordTowny", List.of("discordtowny"));
         });
+    }
+
+    private static java.util.function.Consumer<Runnable> defaultScheduler() {
+        return task -> {
+            try {
+                if (Bukkit.getServer() != null) {
+                    Plugin plugin = Bukkit.getPluginManager().getPlugin("DiscordTowny");
+                    if (plugin != null && plugin.isEnabled()) {
+                        Bukkit.getScheduler().runTask(plugin, task);
+                        return;
+                    }
+                }
+            } catch (Throwable ignored) {
+                // Entornos de prueba sin Bukkit en ejecucion
+            }
+            task.run();
+        };
     }
 
     private static UUID resolveTargetUuid(String targetName, TownyFacade townyFacade) {

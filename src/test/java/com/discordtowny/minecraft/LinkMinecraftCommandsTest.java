@@ -13,9 +13,12 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
 
 /**
  * Pruebas unitarias de la definicion de comandos Brigadier en {@link LinkMinecraftCommands}.
@@ -74,5 +77,72 @@ class LinkMinecraftCommandsTest {
 
         CommandNode<CommandSourceStack> jugadorArg = adminUnlink.getChild("jugador");
         assertNotNull(jugadorArg, "Debe existir el argumento <jugador>");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void respuestasAsincronasSeProgramanEnElSchedulerDelHiloPrincipal() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean scheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.function.Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        org.bukkit.entity.Player player = mock(org.bukkit.entity.Player.class);
+        when(source.getSender()).thenReturn(player);
+        when(player.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(player.getName()).thenReturn("Steve");
+
+        CompletableFuture<Optional<String>> asyncFuture = new CompletableFuture<>();
+        when(linkService.generateCode(any(), any())).thenReturn(asyncFuture);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("link").getCommand().run(ctx);
+
+        assertFalse(scheduled.get(), "No debe haberse invocado el scheduler antes de completar el futuro");
+
+        // Completar el futuro desde otro hilo del pool
+        CompletableFuture.runAsync(() -> asyncFuture.complete(Optional.of("ABC234"))).join();
+
+        assertTrue(scheduled.get(), "La respuesta debe programarse en el scheduler al completar");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void erroresAsincronosSeProgramanEnElSchedulerDelHiloPrincipal() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean scheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.function.Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        org.bukkit.entity.Player player = mock(org.bukkit.entity.Player.class);
+        when(source.getSender()).thenReturn(player);
+        when(player.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CompletableFuture<Boolean> asyncFuture = new CompletableFuture<>();
+        when(linkService.unlink(any())).thenReturn(asyncFuture);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("unlink").getCommand().run(ctx);
+
+        assertFalse(scheduled.get(), "No debe haberse invocado el scheduler antes del error");
+
+        // Completar excepcionalmente desde otro hilo
+        CompletableFuture.runAsync(() -> asyncFuture.completeExceptionally(new RuntimeException("Error simulado"))).join();
+
+        assertTrue(scheduled.get(), "El manejador de error debe programarse en el scheduler");
     }
 }
