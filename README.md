@@ -2,8 +2,6 @@
 DiscordTowny conecta Towny Advanced con Discord desde un servidor Paper.
 Cada town necesita canales privados: crearlos y mantener sus permisos a mano no escala. El alcalde pide su espacio y el bot mantiene los accesos según Towny.
 
-**En desarrollo.** Este documento describe el funcionamiento previsto en la especificación. No acredita que las funciones estén implementadas ni que exista una versión instalable.
-
 ## Requisitos
 
 - Paper para Minecraft **26.2**.
@@ -17,9 +15,9 @@ Cada instalación conecta un servidor de Minecraft con un solo servidor de Disco
 ## Crear e invitar al bot
 
 1. Abre el [portal de aplicaciones de Discord](https://discord.com/developers/applications). Pulsa **New Application**, escribe `DiscordTowny` y crea la aplicación.
-2. En **Bot**, genera el token con **Reset Token** y guárdalo. Lo usarás en `discord.token`. No lo compartas.
+2. En la pestaña **Bot**, genera el token con **Reset Token** y guárdalo (lo usarás en `discord.token`; no lo compartas). En esa misma pestaña, baja a la sección **Privileged Gateway Intents** y activa la casilla **Server Members Intent**. Si no se activa, Discord rechaza la conexión y el bot no funciona.
 3. En **Installation**, habilita **Guild Install**. Selecciona **Discord Provided Link** como enlace de instalación.
-4. En los ajustes de **Guild Install**, selecciona `bot` y `applications.commands`. Marca **Gestionar canales**, **Gestionar roles**, **Ver canales** y **Enviar mensajes**.
+4. En los ajustes de **Guild Install**, selecciona `bot` y `applications.commands`. Marca **Gestionar canales**, **Gestionar roles**, **Ver canales**, **Enviar mensajes** y **Conectar**.
 5. Abre el enlace de instalación, elige **Añadir al servidor**, selecciona tu servidor y autoriza al bot. Necesitas permiso para gestionar ese servidor.
 6. En Discord, abre **Ajustes del servidor → Roles**. **Coloca el rol del bot por encima de todos los roles que gestionará: los de las towns y `Alcalde`.** Si queda por debajo, no podrá asignarlos. El plugin avisa en consola al arrancar y no opera con esa jerarquía incorrecta.
 
@@ -27,14 +25,12 @@ Los pasos del portal se pueden consultar en la [guía oficial de Discord](https:
 
 ## Instalación
 
-Cuando esté disponible una versión publicada:
-
 1. Prepara Paper y Java con las versiones indicadas. Instala Towny Advanced y comprueba que funciona.
-2. Obtén el archivo JAR de DiscordTowny de la publicación oficial. La documentación del proyecto todavía no indica su dirección de descarga.
+2. Descarga el archivo JAR de DiscordTowny desde las publicaciones oficiales (releases).
 3. Detén Minecraft y coloca el JAR en la carpeta `plugins` del servidor.
-4. Prepara `plugins/DiscordTowny/config.yml` copiando el [archivo de configuración incluido](src/main/resources/config.yml). Crea la carpeta si hace falta.
-5. Completa el token, el ID del servidor de Discord y la base de datos como se explica abajo.
-6. Arranca el servidor y revisa la consola. Corrige cualquier aviso sobre conexión o permisos del bot.
+4. Arranca el servidor una vez para que Paper genere automáticamente la carpeta `plugins/DiscordTowny/` y el archivo `config.yml` por defecto.
+5. Abre `plugins/DiscordTowny/config.yml` y completa el token, el ID del servidor de Discord y la base de datos como se explica abajo.
+6. Reinicia el servidor y revisa la consola. Corrige cualquier aviso sobre conexión o permisos del bot.
 7. Entra al juego y ejecuta `/dt help`. Sigue la [guía de uso](docs/guia-de-uso.md) para vincularte y crear el primer espacio.
 
 ## Configuración mínima
@@ -111,13 +107,11 @@ Escribe `/` y selecciona el comando del bot. En los ejemplos, introduce el valor
 
 Las consultas leen los datos actuales de Towny. Los seis comandos de información se pueden desactivar en `commands`. Sus respuestas son públicas por defecto, salvo `/mytown` y `/help`, que solo ve quien los ejecuta. Cada uno tiene su opción `ephemeral`. La confirmación de vinculación también es privada.
 
-La spec permite `/residents` sin argumento, pero no define qué town consulta en ese caso. Indica el nombre, como en el ejemplo.
-
 ## Límites de Discord
 
 Discord admite **500 canales y 250 roles por servidor**. Con dos canales y un rol por town, el techo orientativo ronda las **240 towns**, antes de descontar otros canales, categorías, roles y espacios archivados. No es una capacidad garantizada. El límite propio del plugin empieza en 200.
 
-Además, Discord limita cada categoría a **50 canales**. La especificación solo define una categoría activa y no explica cómo repartir espacios cuando se llena. Con texto y voz por town, esa categoría llega a 25 towns. No planifiques 240 espacios activos con la estructura actual sin resolver ese límite. Consulta los [límites oficiales de Discord](https://support.discord.com/hc/en-us/articles/33694251638295-Discord-Account-Caps-Server-Caps-and-More).
+Además, Discord limita cada categoría a **50 canales**. Cuando una categoría se llena, el bot crea automáticamente categorías adicionales numeradas (`Comunidades 2`, `Comunidades 3`...) conforme hacen falta para alojar los nuevos espacios. Esto es completamente transparente: el límite real pasa a ser el del propio servidor de Discord (500 canales). Consulta los [límites oficiales de Discord](https://support.discord.com/hc/en-us/articles/33694251638295-Discord-Account-Caps-Server-Caps-and-More).
 
 ## Licencia
 

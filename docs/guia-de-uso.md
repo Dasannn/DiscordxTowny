@@ -1,7 +1,5 @@
 # Guía de uso de DiscordTowny
 
-**En desarrollo.** Esta guía describe el funcionamiento previsto. Las funciones todavía deben implementarse y comprobarse en un servidor.
-
 Imagina que juegas como `AnaCraft` y perteneces a `Robledal`. El dueño del servidor ya ha configurado el bot siguiendo el [README](../README.md).
 
 ## 1. Vincula tu cuenta
@@ -23,7 +21,7 @@ Puedes revisar tu cuenta y el estado del espacio con `/dt status`.
 
 Si eres la alcaldesa de `Robledal`, ejecuta `/dt create` en Minecraft. Solo puede hacerlo quien figure como alcalde en Towny y tenga su cuenta vinculada.
 
-Con la configuración inicial, aparecen un canal de texto y otro de voz con el nombre de la town, dentro de `Comunidades`. El bot crea esa categoría cuando se necesita por primera vez. El dueño del servidor puede configurar solo texto, solo voz o ambos.
+Con la configuración inicial, aparecen un canal de texto y otro de voz con el nombre de la town, dentro de `Comunidades`. El bot crea esa categoría cuando se necesita por primera vez y añade categorías numeradas (`Comunidades 2`, `Comunidades 3`...) conforme se llena el límite de 50 canales por categoría. El dueño del servidor puede configurar solo texto, solo voz o ambos.
 
 El bot crea un rol para `Robledal` y lo asigna a sus residentes vinculados. Tú también recibes el rol distintivo `Alcalde`, compartido por todos los alcaldes. Quien se vincule después recibe su rol en ese momento.
 
@@ -65,13 +63,17 @@ Si el alcalde necesita forzar la revisión de su town, puede usar `/dt sync`.
 
 Si `Robledal` cambia de nombre, se renombran sus canales y su rol. Un cambio de nombre no archiva el espacio.
 
-Si la town cae en ruinas o desaparece, su espacio se archiva. Los canales se trasladan a `Archivo` por defecto, el canal de texto queda en solo lectura y el rol de la town se elimina. **Los canales no se borran automáticamente.** Se conserva el historial.
+Si la town cae en ruinas o desaparece, su espacio se archiva. El alcalde también puede archivar el espacio con `/dt delete`, con confirmación.
 
-El alcalde también puede archivar el espacio con `/dt delete`, con confirmación. Aunque el comando se llame «delete», el ciclo de vida descrito para el plugin indica que archiva.
+Al archivarse:
+- Los canales se trasladan a `Archivo` por defecto y quedan en solo lectura.
+- Quedan visibles **solo para administradores**.
+- El rol de la town se elimina (los roles son limitados en Discord), por lo que los ex-residentes dejan de ver los canales.
+- **Los canales no se borran automáticamente.** El historial de mensajes se conserva íntegro.
 
-La especificación no aclara quién conserva acceso de lectura después de eliminar el rol. Conservar los mensajes no permite asegurar que los antiguos residentes puedan seguir leyéndolos.
+Si la town revive o se recrea con el mismo nombre mientras el espacio sigue archivado, el espacio se restaura con su historial y los residentes recuperan el acceso a sus canales.
 
-Si la town revive o se recrea con el mismo nombre mientras el espacio sigue archivado, ese espacio se restaura con sus mensajes. Un administrador puede borrar definitivamente los espacios archivados con `/dt admin purge`, con confirmación. La restauración con historial solo se contempla mientras el espacio siga archivado, no después de purgarlo.
+Un administrador puede borrar definitivamente los espacios archivados con `/dt admin purge`, con confirmación. La restauración con historial solo es posible mientras el espacio siga archivado, no después de purgarlo.
 
 ## 6. Consulta información desde Discord
 
@@ -88,9 +90,9 @@ Escribe `/`, elige el comando del bot y completa el campo con el valor del ejemp
 | `/townlist` o `/townlist 2` | Listado ordenado de towns; el segundo ejemplo pide la página 2. |
 | `/help` | Los comandos disponibles, con una explicación de cada uno. |
 
-Las consultas con nombre y los listados no exigen vincularse. Para `/residents`, indica siempre la town: todavía no está definido qué consulta sin nombre.
+Las consultas con nombre y los listados no exigen vincularse. En `/residents Robledal`, indica la town como en el ejemplo para consultar su lista de residentes.
 
-Los datos se consultan en Towny al responder. Si buscas una town inexistente, recibes un error claro. No se especifica el criterio de ordenación de `/townlist` ni qué estados enumera `/residents`.
+Los datos se consultan en Towny al responder. Si buscas una town inexistente, recibes un error claro.
 
 Por defecto, las respuestas de información son públicas, salvo `/mytown` y `/help`, que solo ves tú. El administrador puede cambiarlo o desactivar comandos. La espera entre comandos es de 5 segundos por usuario por defecto.
 
