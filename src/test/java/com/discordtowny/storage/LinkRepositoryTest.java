@@ -210,4 +210,20 @@ class LinkRepositoryTest extends StorageTestBase {
         assertTrue(expirado.isExpired(Instant.now()));
         assertFalse(vigente.isExpired(Instant.now()));
     }
+
+    // --- clasificacion de errores de restriccion ---
+
+    @Test
+    void violacionDeNotNullNoSeReportaComoVinculoDuplicado() {
+        // SQLite lanza el codigo 19 (SQLITE_CONSTRAINT) para CUALQUIER
+        // restriccion, tambien NOT NULL. Si se trata todo el codigo 19 como
+        // choque de unicidad, un nombre nulo se reporta como "ya existe un
+        // vinculo", que es falso y manda el diagnostico en direccion contraria.
+        AccountLink sinNombre = new AccountLink(UUID.randomUUID(), "discord_sin_nombre", Instant.now(), null);
+
+        StorageException e = assertThrows(StorageException.class, () -> links.save(sinNombre));
+
+        assertFalse(e.getMessage().contains("Ya existe"),
+                "Un nombre nulo no es un vinculo duplicado: " + e.getMessage());
+    }
 }

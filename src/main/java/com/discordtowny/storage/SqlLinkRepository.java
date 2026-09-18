@@ -241,24 +241,29 @@ final class SqlLinkRepository implements LinkRepository {
     // --- utilidades ---
 
     /**
-     * Detecta violacion de unicidad de SQLite y MySQL/MariaDB, donde SQLite
-     * lanza SQLException con codigo 19 o mensaje "UNIQUE constraint failed"
-     * en lugar de SQLIntegrityConstraintViolationException.
+     * Detecta violacion de unicidad en SQLite y MySQL/MariaDB.
+     *
+     * <p>Se comprueba por mensaje y no por el codigo de error 19 de SQLite:
+     * ese codigo es SQLITE_CONSTRAINT y cubre TODAS las restricciones, tambien
+     * NOT NULL y las claves ajenas. Tratarlo como choque de unicidad convierte
+     * cualquier fallo de restriccion en un "ya existe un vinculo" falso, y
+     * manda a quien diagnostica en la direccion contraria.
      */
     private static boolean isUniqueViolation(SQLException e) {
-        if (e instanceof SQLIntegrityConstraintViolationException) {
-            return true;
-        }
-        String sqlState = e.getSQLState();
-        if (sqlState != null && sqlState.startsWith("23")) {
-            return true;
-        }
         String msg = e.getMessage();
         if (msg != null && (msg.contains("UNIQUE constraint failed")
                 || msg.contains("PRIMARY KEY must be unique")
                 || msg.contains("Duplicate entry"))) {
             return true;
         }
-        return e.getErrorCode() == 19 || e.getErrorCode() == 1062;
+        // MySQL/MariaDB: 1062 es exclusivamente entrada duplicada.
+        if (e.getErrorCode() == 1062) {
+            return true;
+        }
+        // SQLState 23000 es generico de violacion de integridad; solo vale si
+        // el motor no es SQLite, que no lo distingue.
+        String sqlState = e.getSQLState();
+        return e instanceof SQLIntegrityConstraintViolationException
+                && sqlState != null && sqlState.startsWith("23");
     }
 }
