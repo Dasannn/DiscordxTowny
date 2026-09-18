@@ -25,6 +25,17 @@ public interface Storage extends AutoCloseable {
 
     LinkRepository links();
 
+    /**
+     * Ajustes internos del plugin, como pares clave-valor.
+     *
+     * <p>Para lo poco que el plugin necesita recordar y no encaja en ninguna
+     * tabla: por ejemplo el ID del rol global de alcalde, que debe sobrevivir a
+     * un renombrado en Discord y a un reinicio del servidor.
+     *
+     * <p>No es para configuracion del administrador, que vive en config.yml.
+     */
+    SettingsRepository settings();
+
     SpaceRepository spaces();
 
     AuditRepository audit();
