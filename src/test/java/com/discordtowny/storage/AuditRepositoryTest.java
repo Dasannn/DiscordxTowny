@@ -126,6 +126,18 @@ class AuditRepositoryTest extends StorageTestBase {
     }
 
     @Test
+    void recentRecuperaDetalleCuandoSuccessEsFalso() {
+        AuditEvent ev = new AuditEvent(Instant.now(), AuditEvent.Severity.ERROR,
+                "bot", "FALLO", "town_err", false, Optional.of("Causa del fallo"));
+        audit.record(ev);
+        List<AuditEvent> result = audit.recent("town_err", 1);
+        assertEquals(1, result.size());
+        assertFalse(result.get(0).success());
+        assertTrue(result.get(0).detail().isPresent());
+        assertEquals("Causa del fallo", result.get(0).detail().get());
+    }
+
+    @Test
     void recentConservaTodasLasSeveridades() {
         audit.record(evento("town_f", AuditEvent.Severity.INFO, true));
         audit.record(evento("town_f", AuditEvent.Severity.WARNING, true));

@@ -36,6 +36,9 @@ public final class HikariStorage implements Storage {
 
     @Override
     public void initialize() throws StorageException {
+        if (dataSource != null && !dataSource.isClosed()) {
+            throw new IllegalStateException("Storage ya inicializado: cierra el pool actual antes de reinicializar.");
+        }
         dataSource = buildDataSource();
         boolean isSqlite = dbConfig.type() == PluginConfig.Database.Type.SQLITE;
         try (Connection conn = dataSource.getConnection()) {
@@ -89,7 +92,7 @@ public final class HikariStorage implements Storage {
 
     // --- construccion del pool ---
 
-    private HikariDataSource buildDataSource() throws StorageException {
+    HikariConfig buildConfig() throws StorageException {
         HikariConfig config = new HikariConfig();
 
         switch (dbConfig.type()) {
@@ -99,10 +102,13 @@ public final class HikariStorage implements Storage {
             default -> throw new StorageException("Tipo de base de datos no reconocido: " + dbConfig.type());
         }
 
-        config.setMaximumPoolSize(dbConfig.poolMaximumSize());
-        config.setMinimumIdle(dbConfig.poolMinimumIdle());
         config.setConnectionTimeout(dbConfig.connectionTimeout().toMillis());
         config.setPoolName("DiscordTowny-Pool");
+        return config;
+    }
+
+    private HikariDataSource buildDataSource() throws StorageException {
+        HikariConfig config = buildConfig();
 
         try {
             return new HikariDataSource(config);
@@ -147,6 +153,8 @@ public final class HikariStorage implements Storage {
         config.setJdbcUrl(url);
         config.setUsername(dbConfig.user());
         config.setPassword(dbConfig.password());
+        config.setMaximumPoolSize(dbConfig.poolMaximumSize());
+        config.setMinimumIdle(dbConfig.poolMinimumIdle());
         config.addDataSourceProperty("cachePrepStmts", "true");
         config.addDataSourceProperty("prepStmtCacheSize", "250");
         config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
@@ -168,6 +176,10 @@ public final class HikariStorage implements Storage {
             return name;
         }
         return "discordtowny.db";
+    }
+
+    HikariDataSource dataSource() {
+        return dataSource;
     }
 
     private void assertInitialized() {

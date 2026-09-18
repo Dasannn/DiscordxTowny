@@ -98,14 +98,20 @@ final class SqlAuditRepository implements AuditRepository {
     // --- mapeo ---
 
     private AuditEvent mapEvent(ResultSet rs) throws SQLException {
+        long at = rs.getLong("at");
+        AuditEvent.Severity severity = AuditEvent.Severity.valueOf(rs.getString("severity"));
+        String actor = rs.getString("actor");
+        String action = rs.getString("action");
+        String target = rs.getString("target");
+        boolean success = rs.getInt("success") != 0;
         String detail = rs.getString("detail");
         return new AuditEvent(
-                Instant.ofEpochMilli(rs.getLong("at")),
-                AuditEvent.Severity.valueOf(rs.getString("severity")),
-                rs.getString("actor"),
-                rs.getString("action"),
-                rs.getString("target"),
-                rs.getInt("success") != 0,
-                rs.wasNull() || detail == null ? Optional.empty() : Optional.of(detail));
+                Instant.ofEpochMilli(at),
+                severity,
+                actor,
+                action,
+                target,
+                success,
+                detail == null ? Optional.empty() : Optional.of(detail));
     }
 }
