@@ -1,6 +1,7 @@
 package com.discordtowny.storage;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -18,10 +19,16 @@ final class MigrationRunner {
 
     private final String prefix;
     private final Logger logger;
+    private final boolean isSqlite;
 
     MigrationRunner(String prefix, Logger logger) {
+        this(prefix, logger, true);
+    }
+
+    MigrationRunner(String prefix, Logger logger, boolean isSqlite) {
         this.prefix = prefix;
         this.logger = logger;
+        this.isSqlite = isSqlite;
     }
 
     /**
@@ -32,9 +39,23 @@ final class MigrationRunner {
      */
     void run(Connection conn) throws StorageException {
         try {
+            boolean sqlite = this.isSqlite;
+            try {
+                String prod = conn.getMetaData().getDatabaseProductName();
+                if (prod != null) {
+                    String lower = prod.toLowerCase();
+                    if (lower.contains("sqlite")) {
+                        sqlite = true;
+                    } else if (lower.contains("mysql") || lower.contains("mariadb")) {
+                        sqlite = false;
+                    }
+                }
+            } catch (SQLException ignored) {
+            }
+
             ensureVersionTable(conn);
             int current = currentVersion(conn);
-            applyPending(conn, current);
+            applyPending(conn, current, sqlite);
         } catch (SQLException e) {
             throw new StorageException("Error al ejecutar migraciones de esquema", e);
         }
@@ -47,15 +68,15 @@ final class MigrationRunner {
             st.execute(
                     "CREATE TABLE IF NOT EXISTS " + prefix + "schema_version ("
                     + "version INTEGER NOT NULL,"
-                    + "applied_at INTEGER NOT NULL"
+                    + "applied_at BIGINT NOT NULL"
                     + ")");
         }
     }
 
     private int currentVersion(Connection conn) throws SQLException {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT MAX(version) FROM " + prefix + "schema_version")) {
+        String sql = "SELECT MAX(version) FROM " + prefix + "schema_version";
+        try (PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
             if (rs.next()) {
                 int v = rs.getInt(1);
                 return rs.wasNull() ? 0 : v;
@@ -66,8 +87,8 @@ final class MigrationRunner {
 
     // --- migraciones ---
 
-    private void applyPending(Connection conn, int current) throws SQLException {
-        Migration[] migrations = migrations();
+    private void applyPending(Connection conn, int current, boolean sqlite) throws SQLException {
+        Migration[] migrations = migrations(sqlite);
         for (Migration m : migrations) {
             if (m.version() > current) {
                 logger.info("Aplicando migracion v" + m.version() + "...");
@@ -97,28 +118,28 @@ final class MigrationRunner {
 
     // --- definicion de migraciones ---
 
-    private Migration[] migrations() {
+    Migration[] migrations(boolean sqlite) {
         return new Migration[]{
             migration1Links(),
             migration2LinkCodes(),
             migration3Spaces(),
-            migration4AuditLog()
+            migration4AuditLog(sqlite)
         };
     }
 
     /**
      * v1: tabla links.
-     * - uuid como clave primaria (texto: representacion estandar de UUID).
+     * - uuid como clave primaria.
      * - discord_id unico: un Discord ID a un UUID y viceversa.
      * - La unicidad se garantiza en el esquema, no solo comprobando antes.
      */
     private Migration migration1Links() {
         return new Migration(1, new String[]{
             "CREATE TABLE IF NOT EXISTS " + prefix + "links ("
-            + "uuid TEXT NOT NULL PRIMARY KEY,"
-            + "discord_id TEXT NOT NULL UNIQUE,"
-            + "linked_at INTEGER NOT NULL,"
-            + "last_known_name TEXT NOT NULL"
+            + "uuid VARCHAR(36) NOT NULL PRIMARY KEY,"
+            + "discord_id VARCHAR(32) NOT NULL UNIQUE,"
+            + "linked_at BIGINT NOT NULL,"
+            + "last_known_name VARCHAR(255) NOT NULL"
             + ")"
         });
     }
@@ -132,9 +153,9 @@ final class MigrationRunner {
     private Migration migration2LinkCodes() {
         return new Migration(2, new String[]{
             "CREATE TABLE IF NOT EXISTS " + prefix + "link_codes ("
-            + "code TEXT NOT NULL PRIMARY KEY,"
-            + "uuid TEXT NOT NULL UNIQUE,"
-            + "expires_at INTEGER NOT NULL,"
+            + "code VARCHAR(64) NOT NULL PRIMARY KEY,"
+            + "uuid VARCHAR(36) NOT NULL UNIQUE,"
+            + "expires_at BIGINT NOT NULL,"
             + "attempts INTEGER NOT NULL DEFAULT 0"
             + ")"
         });
@@ -149,44 +170,60 @@ final class MigrationRunner {
     private Migration migration3Spaces() {
         return new Migration(3, new String[]{
             "CREATE TABLE IF NOT EXISTS " + prefix + "spaces ("
-            + "town_uuid TEXT NOT NULL PRIMARY KEY,"
-            + "town_name TEXT NOT NULL,"
-            + "category_id TEXT,"
-            + "text_channel_id TEXT,"
-            + "voice_channel_id TEXT,"
-            + "role_id TEXT,"
-            + "state TEXT NOT NULL,"
-            + "created_at INTEGER NOT NULL,"
-            + "archived_at INTEGER,"
-            + "last_activity_at INTEGER"
+            + "town_uuid VARCHAR(36) NOT NULL PRIMARY KEY,"
+            + "town_name VARCHAR(255) NOT NULL,"
+            + "category_id VARCHAR(32),"
+            + "text_channel_id VARCHAR(32),"
+            + "voice_channel_id VARCHAR(32),"
+            + "role_id VARCHAR(32),"
+            + "state VARCHAR(32) NOT NULL,"
+            + "created_at BIGINT NOT NULL,"
+            + "archived_at BIGINT,"
+            + "last_activity_at BIGINT"
             + ")"
         });
     }
 
     /**
      * v4: tabla audit_log.
-     * - id autoincremental.
+     * - id autoincremental segun el motor (AUTOINCREMENT en SQLite, AUTO_INCREMENT en MySQL/MariaDB).
      * - target indexado para acelerar la consulta recent(target, limit).
      */
-    private Migration migration4AuditLog() {
-        return new Migration(4, new String[]{
-            "CREATE TABLE IF NOT EXISTS " + prefix + "audit_log ("
-            + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            + "at INTEGER NOT NULL,"
-            + "severity TEXT NOT NULL,"
-            + "actor TEXT NOT NULL,"
-            + "action TEXT NOT NULL,"
-            + "target TEXT NOT NULL,"
-            + "success INTEGER NOT NULL,"
-            + "detail TEXT"
-            + ")",
-            "CREATE INDEX IF NOT EXISTS idx_" + prefix + "audit_target"
-            + " ON " + prefix + "audit_log (target, at DESC)"
-        });
+    private Migration migration4AuditLog(boolean sqlite) {
+        if (sqlite) {
+            return new Migration(4, new String[]{
+                "CREATE TABLE IF NOT EXISTS " + prefix + "audit_log ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "at BIGINT NOT NULL,"
+                + "severity VARCHAR(16) NOT NULL,"
+                + "actor VARCHAR(64) NOT NULL,"
+                + "action VARCHAR(64) NOT NULL,"
+                + "target VARCHAR(255) NOT NULL,"
+                + "success INTEGER NOT NULL,"
+                + "detail TEXT"
+                + ")",
+                "CREATE INDEX IF NOT EXISTS idx_" + prefix + "audit_target"
+                + " ON " + prefix + "audit_log (target, at DESC)"
+            });
+        } else {
+            return new Migration(4, new String[]{
+                "CREATE TABLE IF NOT EXISTS " + prefix + "audit_log ("
+                + "id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+                + "at BIGINT NOT NULL,"
+                + "severity VARCHAR(16) NOT NULL,"
+                + "actor VARCHAR(64) NOT NULL,"
+                + "action VARCHAR(64) NOT NULL,"
+                + "target VARCHAR(255) NOT NULL,"
+                + "success INT NOT NULL,"
+                + "detail TEXT,"
+                + "INDEX idx_" + prefix + "audit_target (target, at DESC)"
+                + ")"
+            });
+        }
     }
 
     // --- tipo auxiliar ---
 
     /** Una migracion numerada: version + sentencias SQL a ejecutar en orden. */
-    private record Migration(int version, String[] statements) {}
+    record Migration(int version, String[] statements) {}
 }

@@ -86,8 +86,8 @@ final class SqlSpaceRepository implements SpaceRepository {
     public List<TownSpace> findAll() {
         String sql = "SELECT * FROM " + tSpaces;
         try (Connection conn = ds.getConnection();
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(sql)) {
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
             return collectAll(rs);
         } catch (SQLException e) {
             throw new StorageException("Error al listar todos los espacios", e);
@@ -104,9 +104,8 @@ final class SqlSpaceRepository implements SpaceRepository {
      */
     @Override
     public void save(TownSpace space) {
-        // INSERT OR REPLACE funciona en SQLite. En MySQL/MariaDB REPLACE INTO
-        // es equivalente. Se usa la sintaxis comun a ambos.
-        String sql = "INSERT OR REPLACE INTO " + tSpaces
+        // Usa la sintaxis adecuada al motor: INSERT OR REPLACE en SQLite, REPLACE en MySQL/MariaDB.
+        String sql = upsertPrefix + " INTO " + tSpaces
                 + " (town_uuid, town_name, category_id, text_channel_id, voice_channel_id,"
                 + "  role_id, state, created_at, archived_at, last_activity_at)"
                 + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";

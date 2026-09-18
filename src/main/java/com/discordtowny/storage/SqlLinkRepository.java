@@ -212,8 +212,8 @@ final class SqlLinkRepository implements LinkRepository {
     public int count() {
         String sql = "SELECT COUNT(*) FROM " + tLinks;
         try (Connection conn = ds.getConnection();
-             Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(sql)) {
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
             return rs.next() ? rs.getInt(1) : 0;
         } catch (SQLException e) {
             throw new StorageException("Error al contar vinculos", e);
@@ -241,12 +241,24 @@ final class SqlLinkRepository implements LinkRepository {
     // --- utilidades ---
 
     /**
-     * Detecta violacion de unicidad de SQLite, que lanza SQLException
-     * con el mensaje "UNIQUE constraint failed" en lugar de
-     * SQLIntegrityConstraintViolationException.
+     * Detecta violacion de unicidad de SQLite y MySQL/MariaDB, donde SQLite
+     * lanza SQLException con codigo 19 o mensaje "UNIQUE constraint failed"
+     * en lugar de SQLIntegrityConstraintViolationException.
      */
     private static boolean isUniqueViolation(SQLException e) {
+        if (e instanceof SQLIntegrityConstraintViolationException) {
+            return true;
+        }
+        String sqlState = e.getSQLState();
+        if (sqlState != null && sqlState.startsWith("23")) {
+            return true;
+        }
         String msg = e.getMessage();
-        return msg != null && msg.contains("UNIQUE constraint failed");
+        if (msg != null && (msg.contains("UNIQUE constraint failed")
+                || msg.contains("PRIMARY KEY must be unique")
+                || msg.contains("Duplicate entry"))) {
+            return true;
+        }
+        return e.getErrorCode() == 19 || e.getErrorCode() == 1062;
     }
 }

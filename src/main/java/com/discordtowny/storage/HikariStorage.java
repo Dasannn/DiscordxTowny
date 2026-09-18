@@ -37,15 +37,16 @@ public final class HikariStorage implements Storage {
     @Override
     public void initialize() throws StorageException {
         dataSource = buildDataSource();
+        boolean isSqlite = dbConfig.type() == PluginConfig.Database.Type.SQLITE;
         try (Connection conn = dataSource.getConnection()) {
-            new MigrationRunner(dbConfig.tablePrefix(), logger).run(conn);
+            new MigrationRunner(dbConfig.tablePrefix(), logger, isSqlite).run(conn);
         } catch (SQLException e) {
-            // No incluir la cadena de conexion en el mensaje.
-            throw new StorageException("No se pudo obtener conexion inicial de la base de datos", e);
+            // No incluir la cadena de conexion ni excepciones que puedan contenerla en el mensaje.
+            throw new StorageException("No se pudo obtener conexion inicial de la base de datos");
         }
         String prefix = dbConfig.tablePrefix();
         linkRepo  = new SqlLinkRepository(dataSource, prefix);
-        spaceRepo = new SqlSpaceRepository(dataSource, prefix);
+        spaceRepo = new SqlSpaceRepository(dataSource, prefix, isSqlite);
         auditRepo = new SqlAuditRepository(dataSource, prefix);
         logger.info("Almacenamiento inicializado (" + dbConfig.type() + ").");
     }
@@ -163,9 +164,7 @@ public final class HikariStorage implements Storage {
      */
     private String sqliteFilePath() {
         String name = dbConfig.name();
-        // Path absoluto: lo usamos directamente (util para tests con temp files).
-        if (name.startsWith("/") || name.startsWith("\\")
-                || (name.length() >= 2 && name.charAt(1) == ':')) {
+        if (name != null && !name.isBlank()) {
             return name;
         }
         return "discordtowny.db";
