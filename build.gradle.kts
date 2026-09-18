@@ -38,8 +38,17 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+// Java 25 ya no deja que un agente se enganche a la JVM en caliente, y Mockito
+// lo necesita para simular clases finales. Se lo pasamos al arrancar.
+val mockitoAgent: Configuration = configurations.create("mockitoAgent")
+
+dependencies {
+    mockitoAgent("org.mockito:mockito-core:5.20.0") { isTransitive = false }
+}
+
 tasks.test {
     useJUnitPlatform()
+    jvmArgs("-javaagent:${mockitoAgent.asPath}")
 }
 
 tasks.shadowJar {
