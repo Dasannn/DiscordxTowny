@@ -68,3 +68,13 @@ AGENTS.local.md
 
 # Daintree
 .daintree/*.local.json
+
+# Gradle y Java
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+*.class
+
+# Servidor de pruebas
+run/
+server/
