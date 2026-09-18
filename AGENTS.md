@@ -49,10 +49,11 @@ esa etapa ya pasó.
 - Si el entorno te impide compilar o hacer commit, **dilo claramente y sigue
   con el resto del trabajo**. No supongas que algo funciona sin comprobarlo, y
   no te detengas por ello si puedes avanzar en lo demás.
-- **Ejecuta `./gradlew` en primer plano y espera su resultado.** Un build limpio
-  tarda entre uno y tres minutos. Si lo lanzas en segundo plano y te quedas
-  consultando si terminó, agotarás tu turno sin llegar a ver el resultado: ha
-  pasado ya varias veces. Lánzalo una vez, espera, y lee la salida.
+- **No ejecutes `./gradlew` salvo que tu encargo lo pida.** Un build limpio
+  tarda entre uno y tres minutos, y varios agentes han gastado el turno entero
+  esperándolo sin llegar a escribir una línea. El arquitecto compila y verifica
+  cada rama por su cuenta antes de integrarla. Dedica tu turno a leer el código
+  y a editarlo.
 
 ## Estado por tarea
 
