@@ -84,11 +84,7 @@ final class SqlLinkRepository implements LinkRepository {
             ps.setLong(3, link.linkedAt().toEpochMilli());
             ps.setString(4, link.lastKnownName());
             ps.executeUpdate();
-        } catch (SQLIntegrityConstraintViolationException e) {
-            throw new StorageException(
-                "Ya existe un vinculo para este UUID o Discord ID: " + link.uuid(), e);
         } catch (SQLException e) {
-            // SQLite lanza SQLException con SQLiteErrorCode; no SQLIntegrityConstraintViolationException.
             if (isUniqueViolation(e)) {
                 throw new StorageException(
                     "Ya existe un vinculo para este UUID o Discord ID: " + link.uuid(), e);
@@ -208,6 +204,97 @@ final class SqlLinkRepository implements LinkRepository {
         }
     }
 
+    /**
+     * Consume el codigo y crea el vinculo en una sola transaccion.
+     *
+     * <p>El codigo se reclama borrandolo: el borrado es atomico, asi que de dos
+     * canjes simultaneos solo uno afecta a una fila y el otro se va con
+     * CODE_NOT_FOUND. Si la insercion falla, el rollback devuelve el codigo a
+     * su sitio: un choque de unicidad no debe quemar el codigo del jugador.
+     */
+    @Override
+    public ConsumeOutcome consumeCodeAndLink(String code, String discordId, String lastKnownName,
+                                             Instant now) {
+        String sel = "SELECT uuid, expires_at FROM " + tCodes + " WHERE code = ?";
+        String del = "DELETE FROM " + tCodes + " WHERE code = ?";
+        String ins = "INSERT INTO " + tLinks
+                + " (uuid, discord_id, linked_at, last_known_name) VALUES (?, ?, ?, ?)";
+
+        try (Connection conn = ds.getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                UUID uuid;
+                long expiresAt;
+                try (PreparedStatement ps = conn.prepareStatement(sel)) {
+                    ps.setString(1, code);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) {
+                            conn.rollback();
+                            return ConsumeOutcome.of(ConsumeResult.CODE_NOT_FOUND);
+                        }
+                        uuid = UUID.fromString(rs.getString("uuid"));
+                        expiresAt = rs.getLong("expires_at");
+                    }
+                }
+
+                // Reclamar el codigo borrandolo. Cero filas significa que otro
+                // canje simultaneo llego antes.
+                try (PreparedStatement ps = conn.prepareStatement(del)) {
+                    ps.setString(1, code);
+                    if (ps.executeUpdate() == 0) {
+                        conn.rollback();
+                        return ConsumeOutcome.of(ConsumeResult.CODE_NOT_FOUND);
+                    }
+                }
+
+                if (now.toEpochMilli() > expiresAt) {
+                    // Caducado: se confirma el borrado, ya no sirve para nada.
+                    conn.commit();
+                    return ConsumeOutcome.of(ConsumeResult.CODE_EXPIRED);
+                }
+
+                AccountLink link = new AccountLink(uuid, discordId, now, lastKnownName);
+                try (PreparedStatement ps = conn.prepareStatement(ins)) {
+                    ps.setString(1, uuid.toString());
+                    ps.setString(2, discordId);
+                    ps.setLong(3, now.toEpochMilli());
+                    ps.setString(4, lastKnownName);
+                    ps.executeUpdate();
+                } catch (SQLException e) {
+                    if (!isUniqueViolation(e)) {
+                        throw e;
+                    }
+                    // El codigo vuelve a estar disponible al deshacer.
+                    conn.rollback();
+                    return ConsumeOutcome.of(existingLink(conn, uuid)
+                            ? ConsumeResult.PLAYER_ALREADY_LINKED
+                            : ConsumeResult.DISCORD_ALREADY_LINKED);
+                }
+
+                conn.commit();
+                return new ConsumeOutcome(ConsumeResult.OK, Optional.of(link));
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            throw new StorageException("Error al canjear el codigo de vinculacion", e);
+        }
+    }
+
+    /** Sobre la misma conexion, para no salir de la transaccion en curso. */
+    private boolean existingLink(Connection conn, UUID uuid) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM " + tLinks + " WHERE uuid = ?")) {
+            ps.setString(1, uuid.toString());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
     @Override
     public int count() {
         String sql = "SELECT COUNT(*) FROM " + tLinks;
@@ -256,14 +343,10 @@ final class SqlLinkRepository implements LinkRepository {
                 || msg.contains("Duplicate entry"))) {
             return true;
         }
-        // MySQL/MariaDB: 1062 es exclusivamente entrada duplicada.
-        if (e.getErrorCode() == 1062) {
-            return true;
-        }
-        // SQLState 23000 es generico de violacion de integridad; solo vale si
-        // el motor no es SQLite, que no lo distingue.
-        String sqlState = e.getSQLState();
-        return e instanceof SQLIntegrityConstraintViolationException
-                && sqlState != null && sqlState.startsWith("23");
+        // MySQL/MariaDB: 1062 es exclusivamente entrada duplicada. No vale
+        // SQLIntegrityConstraintViolationException a secas ni el SQLState
+        // 23000: ambos cubren tambien NOT NULL y claves ajenas, y darlos por
+        // duplicado devuelve un diagnostico falso.
+        return e.getErrorCode() == 1062;
     }
 }
