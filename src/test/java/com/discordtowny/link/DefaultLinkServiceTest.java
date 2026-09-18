@@ -37,6 +37,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -332,19 +333,30 @@ class DefaultLinkServiceTest {
 
     @Test
     void rafagaConcurrenteDeIntentosFallidosRespetaElPresupuesto() throws Exception {
-        // Hallazgo 4: serializacion de admision y resolucion ante rafagas concurrentes
+        // Hallazgo 4 y 12: contar entradas reales a consumeCodeAndLink y exigir resultados exactos
         String discordId = "discord_burst_attacker";
         int totalPeticiones = 10;
         CyclicBarrier barrier = new CyclicBarrier(totalPeticiones);
         CountDownLatch latch = new CountDownLatch(totalPeticiones);
         List<LinkService.LinkResult> results = Collections.synchronizedList(new ArrayList<>());
 
+        AtomicInteger consumeCalls = new AtomicInteger(0);
+        LinkRepository spyRepo = spy(linkRepository);
+        doAnswer(inv -> {
+            consumeCalls.incrementAndGet();
+            return inv.callRealMethod();
+        }).when(spyRepo).consumeCodeAndLink(any(), eq(discordId), any(), any());
+
+        DefaultLinkService burstService = new DefaultLinkService(
+                spyRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
+        );
+
         for (int i = 0; i < totalPeticiones; i++) {
             final String badCode = "BURST" + i;
             new Thread(() -> {
                 try {
                     barrier.await();
-                    LinkService.LinkResult res = service.redeem(badCode, discordId).join();
+                    LinkService.LinkResult res = burstService.redeem(badCode, discordId).join();
                     results.add(res);
                 } catch (Exception ignored) {
                 } finally {
@@ -358,10 +370,12 @@ class DefaultLinkServiceTest {
         long invalidCount = results.stream().filter(r -> r == LinkService.LinkResult.CODE_INVALID).count();
         long lockedCount = results.stream().filter(r -> r == LinkService.LinkResult.TOO_MANY_ATTEMPTS).count();
 
-        assertEquals(totalPeticiones, invalidCount + lockedCount);
-        // Como maxAttempts = 3, exactamente 2 fallos son invalidos y a partir del 3ro se bloquea
-        assertTrue(invalidCount <= 3, "No pueden pasar mas intentos fallidos que el limite: " + invalidCount);
-        assertTrue(lockedCount >= (totalPeticiones - 3), "Al menos 7 peticiones deben recibir bloqueo: " + lockedCount);
+        assertEquals(totalPeticiones, results.size(), "Todas las peticiones deben completarse");
+        // Como maxAttempts = 3: exactamente 2 fallos son invalidos, el 3ro bloquea y las restantes 7 rebotan por bloqueo
+        assertEquals(2, invalidCount, "Deben registrarse exactamente 2 resultados CODE_INVALID");
+        assertEquals(8, lockedCount, "Deben registrarse exactamente 8 resultados TOO_MANY_ATTEMPTS");
+        // Entradas reales a consumeCodeAndLink: solo los 3 primeros intentos entran antes del bloqueo
+        assertEquals(3, consumeCalls.get(), "Solo deben realizarse exactamente 3 llamadas reales a consumeCodeAndLink");
     }
 
     // --- 5. Generar codigo nuevo invalida el anterior ---
@@ -435,10 +449,10 @@ class DefaultLinkServiceTest {
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Debe enviarse orden ApplyMemberRoles para " + discordId));
 
-        assertTrue(applyOp.revokeRoleIds().contains("role-town-madrid"),
-                "Debe solicitar revocar el rol de la town");
-        assertTrue(applyOp.revokeRoleIds().contains("role-mayor-global"),
-                "Debe solicitar revocar el rol global de alcalde");
+        // Hallazgo 12 y 14: exigir igualdad exacta en la lista de roles retirados
+        List<String> expectedRoles = List.of("role-town-madrid", "role-mayor-global");
+        assertEquals(expectedRoles, applyOp.revokeRoleIds(),
+                "La lista de roles a revocar debe coincidir exactamente sin roles sobrantes ni faltantes");
     }
 
     @Test
@@ -508,6 +522,32 @@ class DefaultLinkServiceTest {
         Optional<AccountLink> actual = service.findByUuid(uuid).join();
         assertTrue(actual.isPresent());
         assertEquals(discordIdNuevo, actual.get().discordId());
+    }
+
+    @Test
+    void unlinkCondicionalNoBorraSiElVinculoFueRecreadoConMismoDiscordIdPeroDistintoLinkedAt() {
+        // Hallazgo 9: borrado condicional estricto por timestamp de autorizacion
+        UUID uuid = UUID.randomUUID();
+        String discordId = "discord_recreated_same_user";
+        Instant linkedAtAntiguo = clock.instant();
+
+        String code = service.generateCode(uuid).join().orElseThrow();
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
+
+        // Simular que el vinculo se rompio y se recreo con fecha posterior
+        clock.advance(Duration.ofHours(1));
+        Instant linkedAtNuevo = clock.instant();
+        linkRepository.deleteByUuid(uuid);
+        linkRepository.save(new AccountLink(uuid, discordId, linkedAtNuevo, "Jugador"));
+
+        // Desvincular con la version antigua leida en autorizacion previa
+        boolean unlinked = service.unlink(uuid, discordId, linkedAtAntiguo).join();
+        assertFalse(unlinked, "No debe borrar si la fecha de vinculacion no coincide");
+
+        // El vinculo nuevo permanece intacto
+        Optional<AccountLink> actual = service.findByUuid(uuid).join();
+        assertTrue(actual.isPresent());
+        assertEquals(linkedAtNuevo, actual.get().linkedAt());
     }
 
     @Test
@@ -615,4 +655,9 @@ class DefaultLinkServiceTest {
         assertEquals(1, successCount, "Exactamente uno de los canjes debe tener exito");
         assertEquals(1, failedCount, "El otro canje concurrente debe ser rechazado");
     }
+
+    // Limite conocido de cobertura (hallazgo 12): intercalaciones exoticas (fallo parcial seguido
+    // de reintento, recreaciones durante operaciones pendientes, canje contra regeneracion y fallo
+    // de borrado) requieren instrumentar el repositorio con barreras internas, lo que agregaria
+    // mas andamiaje que valor real. Se asume como limite documentado de las pruebas.
 }

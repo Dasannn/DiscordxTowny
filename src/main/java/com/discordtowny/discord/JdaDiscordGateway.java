@@ -182,8 +182,17 @@ public final class JdaDiscordGateway implements DiscordGateway {
                 .toList());
 
         guild().ifPresent(g -> {
+            Optional<String> persisted = MayorRoleRegistry.getMayorRoleId();
+            if (persisted.isPresent()) {
+                net.dv8tion.jda.api.entities.Role r = g.getRoleById(persisted.get());
+                if (r != null) {
+                    managedRoleIds.add(r.getId());
+                    return;
+                }
+            }
             for (net.dv8tion.jda.api.entities.Role r : g.getRolesByName(config.roles().mayorRoleName(), true)) {
                 managedRoleIds.add(r.getId());
+                MayorRoleRegistry.saveMayorRoleId(r.getId());
             }
         });
 
@@ -198,10 +207,30 @@ public final class JdaDiscordGateway implements DiscordGateway {
     @Override
     public Optional<String> mayorRoleId() {
         if (!isAvailable() || guild == null) {
+            throw new IllegalStateException("Discord no esta disponible");
+        }
+
+        // 1. Identidad estable persistida
+        Optional<String> persistedId = MayorRoleRegistry.getMayorRoleId();
+        if (persistedId.isPresent()) {
+            net.dv8tion.jda.api.entities.Role role = guild.getRoleById(persistedId.get());
+            if (role != null) {
+                return Optional.of(role.getId());
+            }
+            // Comprobado que el rol con ID persistido ya no existe en el guild
             return Optional.empty();
         }
+
+        // 2. Si no hay ID persistido aun, buscar por nombre inicial en el guild y persistir
         List<net.dv8tion.jda.api.entities.Role> roles = guild.getRolesByName(config.roles().mayorRoleName(), true);
-        return roles.isEmpty() ? Optional.empty() : Optional.of(roles.get(0).getId());
+        if (!roles.isEmpty()) {
+            String id = roles.getFirst().getId();
+            MayorRoleRegistry.saveMayorRoleId(id);
+            return Optional.of(id);
+        }
+
+        // 3. Comprobado que no existe en el guild
+        return Optional.empty();
     }
 
     /** Devuelve el guild conectado, si lo hay. Para uso interno del paquete. */

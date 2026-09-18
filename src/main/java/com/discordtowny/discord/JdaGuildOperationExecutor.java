@@ -415,10 +415,18 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         if (role == null) {
             return false;
         }
-        if (role.getName().equalsIgnoreCase(config.roles().mayorRoleName())) {
+        if (managedRoleIds.contains(role.getId())) {
             return true;
         }
-        return managedRoleIds.contains(role.getId());
+        Optional<String> mayorId = MayorRoleRegistry.getMayorRoleId();
+        if (mayorId.isPresent()) {
+            return role.getId().equals(mayorId.get());
+        }
+        if (role.getName().equalsIgnoreCase(config.roles().mayorRoleName())) {
+            MayorRoleRegistry.saveMayorRoleId(role.getId());
+            return true;
+        }
+        return false;
     }
 
     // -- Utilidades --
@@ -463,13 +471,28 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
 
     /** Asegura que el rol de alcalde existe; si no, lo crea. */
     private Role ensureMayorRole() {
+        Optional<String> persistedId = MayorRoleRegistry.getMayorRoleId();
+        if (persistedId.isPresent()) {
+            Role role = guild.getRoleById(persistedId.get());
+            if (role != null) {
+                return role;
+            }
+        }
+
         String mayorRoleName = config.roles().mayorRoleName();
         List<Role> existing = guild.getRolesByName(mayorRoleName, true);
+        Role role;
         if (!existing.isEmpty()) {
-            return existing.getFirst();
+            role = existing.getFirst();
+        } else {
+            var action = guild.createRole();
+            role = action != null ? action.setName(mayorRoleName).complete() : null;
         }
-        var action = guild.createRole();
-        return action != null ? action.setName(mayorRoleName).complete() : null;
+
+        if (role != null) {
+            MayorRoleRegistry.saveMayorRoleId(role.getId());
+        }
+        return role;
     }
 
     /** Asegura que el rol existe; si no, lo crea. Idempotente. */

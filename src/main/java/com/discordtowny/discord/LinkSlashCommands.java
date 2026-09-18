@@ -162,8 +162,8 @@ public final class LinkSlashCommands extends ListenerAdapter {
                     return CompletableFuture.completedFuture(false);
                 }
                 AccountLink link = optLink.get();
-                // Desvinculacion condicional a la cuenta Discord esperada
-                return linkService.unlink(link.uuid(), discordId);
+                // Desvinculacion condicional propagando la version leida desde la autorizacion
+                return linkService.unlink(link.uuid(), discordId, link.linkedAt());
             }).thenAccept(unlinked -> {
                 String reply = unlinked
                         ? messages.plain("linking.unlink-success", Map.of())

@@ -29,6 +29,8 @@ import java.util.UUID;
  */
 public final class LinkMinecraftCommands {
 
+    private static final java.util.logging.Logger LOGGER = java.util.logging.Logger.getLogger("DiscordTowny");
+
     private LinkMinecraftCommands() {}
 
     /**
@@ -194,10 +196,11 @@ public final class LinkMinecraftCommands {
                         return;
                     }
                 }
-            } catch (Throwable ignored) {
-                // Entornos de prueba sin Bukkit en ejecucion
+                LOGGER.warning("[LinkCommands] No se pudo programar respuesta: plugin DiscordTowny no disponible o deshabilitado");
+            } catch (Throwable t) {
+                LOGGER.log(java.util.logging.Level.SEVERE,
+                        "[LinkCommands] Error al programar respuesta en el scheduler principal", t);
             }
-            task.run();
         };
     }
 
@@ -212,8 +215,9 @@ public final class LinkMinecraftCommands {
                 if (resident.isPresent()) {
                     return resident.get().uuid();
                 }
-            } catch (Exception ignored) {
-                // Si no se esta en hilo principal o Towny falla
+            } catch (Exception e) {
+                LOGGER.warning("[LinkCommands] Error al consultar residente en Towny para '"
+                        + targetName + "': " + e.getMessage());
             }
         }
         try {

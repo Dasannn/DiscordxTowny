@@ -33,6 +33,12 @@ class JdaDiscordGatewayTest {
 
         when(config.discord()).thenReturn(discordConfig);
         when(discordConfig.token()).thenReturn("mi-token-super-secreto-999");
+        MayorRoleRegistry.clear();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        MayorRoleRegistry.clear();
     }
 
     @Test
@@ -79,5 +85,13 @@ class JdaDiscordGatewayTest {
                 "El token no debe aparecer en el mensaje saneado");
         assertTrue(sanitized.contains("[TOKEN_OCULTO]"),
                 "El token debe ser reemplazado por la mascara");
+    }
+
+    @Test
+    @DisplayName("mayorRoleId() lanza excepcion si el gateway no esta conectado")
+    void mayorRoleIdThrowsWhenDisconnected() {
+        var gateway = new JdaDiscordGateway(config, spaces, LOGGER);
+        assertThrows(IllegalStateException.class, gateway::mayorRoleId,
+                "No debe devolver vacio silenciosamente si no pudo resolver el rol por desconexion");
     }
 }

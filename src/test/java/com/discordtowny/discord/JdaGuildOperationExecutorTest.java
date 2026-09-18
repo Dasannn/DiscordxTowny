@@ -72,6 +72,12 @@ class JdaGuildOperationExecutorTest {
         when(rolesConfig.mayorRoleName()).thenReturn("Alcalde");
         when(rolesConfig.townRoleName()).thenReturn("{town}");
         when(discordConfig.token()).thenReturn("token-secreto-12345");
+        MayorRoleRegistry.clear();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        MayorRoleRegistry.clear();
     }
 
     @Test
@@ -182,6 +188,43 @@ class JdaGuildOperationExecutorTest {
         verify(guild).removeRoleFromMember(member, townRole);
         // NO retira el rol no gestionado (VIP)
         verify(guild, never()).removeRoleFromMember(member, vipRole);
+    }
+
+    @Test
+    @DisplayName("ApplyMemberRoles reconoce el rol de alcalde por ID estable aunque haya sido renombrado")
+    @SuppressWarnings("unchecked")
+    void applyMemberRolesRecognizesMayorRoleByStableIdEvenIfRenamed() {
+        String memberId = "111222333";
+        Member member = mock(Member.class);
+        when(guild.getMemberById(memberId)).thenReturn(member);
+
+        String mayorRoleId = "role-mayor-renamed";
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn(mayorRoleId);
+        // Renombrado en Discord: nombre distinto del configurado
+        when(mayorRole.getName()).thenReturn("Burgomaestre");
+        when(guild.getRoleById(mayorRoleId)).thenReturn(mayorRole);
+
+        when(member.getRoles()).thenReturn(List.of(mayorRole));
+        when(spaces.findAll()).thenReturn(List.of());
+
+        // Identidad estable persistida previamente
+        MayorRoleRegistry.saveMayorRoleId(mayorRoleId);
+
+        AuditableRestAction<Void> removeAction = mock(AuditableRestAction.class);
+        when(guild.removeRoleFromMember(any(), any())).thenReturn(removeAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+
+        var op = new GuildOperation.ApplyMemberRoles(
+                memberId,
+                Collections.emptyList(),
+                List.of(mayorRoleId));
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertTrue(outcome.succeeded());
+        verify(guild).removeRoleFromMember(member, mayorRole);
     }
 
     @Test

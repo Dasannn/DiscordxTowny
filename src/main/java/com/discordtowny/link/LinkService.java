@@ -56,9 +56,17 @@ public interface LinkService {
      * @param expectedDiscordId cuenta de Discord esperada, o null si no se condiciona
      * @return cierto si habia un vinculo coincidente que romper
      */
-    default CompletableFuture<Boolean> unlink(UUID uuid, String expectedDiscordId) {
-        return unlink(uuid);
-    }
+    CompletableFuture<Boolean> unlink(UUID uuid, String expectedDiscordId);
+
+    /**
+     * Rompe el vinculo condicionado al Discord ID y fecha de vinculacion esperados y retira los roles.
+     *
+     * @param uuid identificador del jugador
+     * @param expectedDiscordId cuenta de Discord esperada, o null si no se condiciona
+     * @param expectedLinkedAt fecha de vinculacion esperada, o null si no se condiciona
+     * @return cierto si habia un vinculo coincidente que romper
+     */
+    CompletableFuture<Boolean> unlink(UUID uuid, String expectedDiscordId, java.time.Instant expectedLinkedAt);
 
     /** Resultado de canjear un codigo. */
     enum LinkResult {

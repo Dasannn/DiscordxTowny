@@ -164,13 +164,13 @@ class LinkSlashCommandsTest {
 
         when(linkService.findByDiscordId("123456789012345678"))
                 .thenReturn(CompletableFuture.completedFuture(Optional.of(link)));
-        when(linkService.unlink(uuid, "123456789012345678")).thenReturn(CompletableFuture.completedFuture(true));
+        when(linkService.unlink(uuid, "123456789012345678", link.linkedAt())).thenReturn(CompletableFuture.completedFuture(true));
         when(messages.plain(eq("linking.unlink-success"), any())).thenReturn("Vinculo eliminado");
 
         commands.onSlashCommandInteraction(event);
 
         verify(event).deferReply(true);
-        verify(linkService).unlink(uuid, "123456789012345678");
+        verify(linkService).unlink(uuid, "123456789012345678", link.linkedAt());
         verify(hook).editOriginal("Vinculo eliminado");
     }
 
