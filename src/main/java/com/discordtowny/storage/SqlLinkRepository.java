@@ -105,6 +105,23 @@ final class SqlLinkRepository implements LinkRepository {
         }
     }
 
+    @Override
+    public boolean deleteByUuidIfMatches(UUID uuid, String discordId, Instant linkedAt) {
+        // La condicion va dentro del DELETE: comprobar antes y borrar despues
+        // deja un hueco por el que se borraria un vinculo recreado entre medias.
+        String sql = "DELETE FROM " + tLinks
+                + " WHERE uuid = ? AND discord_id = ? AND linked_at = ?";
+        try (Connection conn = ds.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, uuid.toString());
+            ps.setString(2, discordId);
+            ps.setLong(3, linkedAt.toEpochMilli());
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            throw new StorageException("Error al borrar vinculo condicionalmente", e);
+        }
+    }
+
     // --- link_codes ---
 
     /**

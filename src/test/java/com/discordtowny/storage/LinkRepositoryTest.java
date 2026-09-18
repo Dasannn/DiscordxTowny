@@ -279,4 +279,30 @@ class LinkRepositoryTest extends StorageTestBase {
         assertTrue(links.findCode("ABC123").isEmpty());
         assertTrue(links.findByUuid(uuid).isEmpty());
     }
+
+    // --- borrado condicional ---
+
+    @Test
+    void borradoCondicionalBorraSiElVinculoCoincide() {
+        UUID uuid = UUID.randomUUID();
+        Instant cuando = Instant.ofEpochMilli(1_700_000_000_000L);
+        links.save(new AccountLink(uuid, "discord_1", cuando, "Steve"));
+
+        assertTrue(links.deleteByUuidIfMatches(uuid, "discord_1", cuando));
+        assertTrue(links.findByUuid(uuid).isEmpty());
+    }
+
+    @Test
+    void borradoCondicionalNoBorraUnVinculoRecreado() {
+        UUID uuid = UUID.randomUUID();
+        Instant viejo = Instant.ofEpochMilli(1_700_000_000_000L);
+        Instant nuevo = Instant.ofEpochMilli(1_700_000_999_000L);
+
+        // El vinculo que existe ahora es otro: se rompio y se recreo.
+        links.save(new AccountLink(uuid, "discord_2", nuevo, "Steve"));
+
+        assertFalse(links.deleteByUuidIfMatches(uuid, "discord_1", viejo),
+                "No debe borrar un vinculo distinto del autorizado");
+        assertTrue(links.findByUuid(uuid).isPresent(), "El vinculo nuevo sigue intacto");
+    }
 }
