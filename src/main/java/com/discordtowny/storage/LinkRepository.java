@@ -24,6 +24,17 @@ public interface LinkRepository {
     /** @return cierto si habia algo que borrar. */
     boolean deleteByUuid(UUID uuid);
 
+    /**
+     * Borra el vinculo solo si sigue siendo exactamente el que se leyo.
+     *
+     * <p>Comprobar antes y borrar despues no basta: entre ambas cosas el
+     * vinculo puede haberse roto y recreado, y entonces se estaria borrando uno
+     * distinto del autorizado. La condicion viaja dentro del propio DELETE.
+     *
+     * @return cierto si se borro; falso si ya no coincide o no existe
+     */
+    boolean deleteByUuidIfMatches(UUID uuid, String discordId, java.time.Instant linkedAt);
+
     /** Sustituye cualquier codigo vivo del jugador por este. */
     void saveCode(LinkCode code);
 
