@@ -33,7 +33,7 @@ Estado de cada tarea: `pendiente`, `en curso`, `en revisión`, `corrigiendo`,
 ## T0 — Esqueleto del proyecto
 
 - **Rama**: `feat/esqueleto` · **Fase** 0 · **Depende de**: nada
-- **Responsable**: arquitecto · **Estado**: pendiente
+- **Responsable**: arquitecto · **Estado**: integrada
 - **Zona**: raíz del proyecto, `build.gradle.kts`, recursos, CI
 
 **Construye**
@@ -59,7 +59,7 @@ sin errores ni advertencias.
 ## T1 — Contratos
 
 - **Rama**: `feat/contratos` · **Fase** 1 · **Depende de**: T0
-- **Responsable**: arquitecto · **Estado**: pendiente
+- **Responsable**: arquitecto · **Estado**: integrada
 - **Zona**: interfaces en cada paquete, sin implementaciones
 
 **Construye** las firmas que separan las zonas:
@@ -82,7 +82,7 @@ Piénsalo bien una vez.
 ## T2 — Almacenamiento
 
 - **Rama**: `feat/storage` · **Fase** 2 · **Depende de**: T1
-- **Paralela a**: T3, T4 · **Estado**: pendiente
+- **Paralela a**: T3, T4 · **Estado**: integrada
 - **Zona**: `storage/`
 
 **Construye**
@@ -104,7 +104,7 @@ cadena completa de migraciones. Las mismas pruebas pasan contra MariaDB.
 ## T3 — Cliente de Discord y colas
 
 - **Rama**: `feat/discord-core` · **Fase** 2 · **Depende de**: T1
-- **Paralela a**: T2, T4 · **Estado**: pendiente
+- **Paralela a**: T2, T4 · **Estado**: integrada
 - **Zona**: `discord/`, sin los comandos slash
 
 **Construye**
@@ -131,7 +131,7 @@ canal de logs aguanta una ráfaga sin crecer sin límite.
 ## T4 — Configuración y fachada de Towny
 
 - **Rama**: `feat/config-towny` · **Fase** 2 · **Depende de**: T1
-- **Paralela a**: T2, T3 · **Estado**: pendiente
+- **Paralela a**: T2, T3 · **Estado**: integrada
 - **Zona**: `config/`, `towny/`
 
 **Construye**
@@ -155,7 +155,7 @@ La fachada devuelve datos correctos contra un servidor local con Towny.
 ## T5 — Vinculación de cuentas
 
 - **Rama**: `feat/vinculacion` · **Fase** 3 · **Depende de**: T2, T3, T4
-- **Estado**: pendiente · **Zona**: `link/`, más sus comandos en `minecraft/` y
+- **Estado**: en curso · **Zona**: `link/`, más sus comandos en `minecraft/` y
   `discord/`
 
 **Construye**
@@ -301,7 +301,7 @@ nunca se toca.
 ## T11 — Documentación pública
 
 - **Rama**: `docs/publica` · **Fase** 6 · **Depende de**: spec aprobada
-- **Paralela a**: casi todo · **Estado**: pendiente · **Zona**: `README.md`,
+- **Paralela a**: casi todo · **Estado**: integrada · **Zona**: `README.md`,
   `docs/guia-de-uso.md`
 
 **Construye**
