@@ -298,7 +298,7 @@ public final class DefaultLinkService implements LinkService {
      * Purga los codigos caducados de la base de datos.
      */
     public CompletableFuture<Integer> purgeExpiredCodes() {
-        return CompletableFuture.supplyAsync(linkRepository::purgeExpiredCodes, executor);
+        return CompletableFuture.supplyAsync(() -> linkRepository.purgeExpiredCodes(clock.instant()), executor);
     }
 
     private void revokeAllPluginRoles(String discordId) {
