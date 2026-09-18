@@ -163,11 +163,12 @@ public final class YamlConfigLoader implements ConfigLoader {
             return valor;
         }
 
-        private String nombre(String clave, boolean plantilla, boolean canalTexto) {
+        private String nombre(String clave, boolean canalTexto, String... marcadores) {
             String valor = noVacio(clave);
-            String muestra = plantilla ? valor.replace("{town}", "x").replace("{mayor}", "x") : valor;
+            String muestra = valor;
+            for (String marcador : marcadores) muestra = muestra.replace(marcador, "x");
             exigir(!muestra.contains("{") && !muestra.contains("}"), clave,
-                    plantilla ? "solo marcadores {town} y {mayor}" : "un nombre sin marcadores");
+                    marcadores.length > 0 ? "solo marcadores " + String.join(", ", marcadores) : "un nombre sin marcadores");
             exigir(muestra.length() >= 1 && muestra.length() <= 100, clave,
                     "un nombre de 1 a 100 caracteres, contando al menos uno por marcador");
             exigir(muestra.codePoints().noneMatch(Character::isISOControl), clave, "un nombre sin caracteres de control");
@@ -205,21 +206,21 @@ public final class YamlConfigLoader implements ConfigLoader {
             var database = new PluginConfig.Database(tipo, host, puerto, nombre, usuario, password,
                     prefijo, maximo, minimo, segundos("database.pool.connection-timeout-seconds"));
 
-            var structure = new PluginConfig.Structure(nombre("structure.category-name", false, false),
-                    nombre("structure.archive-category-name", false, false), booleano("structure.create-text-channel"),
-                    booleano("structure.create-voice-channel"), nombre("structure.text-channel-name", true, true),
-                    nombre("structure.voice-channel-name", true, false));
+            var structure = new PluginConfig.Structure(nombre("structure.category-name", false),
+                    nombre("structure.archive-category-name", false), booleano("structure.create-text-channel"),
+                    booleano("structure.create-voice-channel"), nombre("structure.text-channel-name", true, "{town}", "{mayor}"),
+                    nombre("structure.voice-channel-name", false, "{town}", "{mayor}"));
             Optional<String> color = opcional("roles.town-role-color");
             exigir(color.isEmpty() || color.get().matches("#?[0-9a-fA-F]{6}"), "roles.town-role-color",
                     "un color hexadecimal de seis digitos o vacio");
-            var roles = new PluginConfig.Roles(nombre("roles.mayor-role-name", false, false),
-                    nombre("roles.town-role-name", true, false), color, booleano("roles.town-role-hoisted"));
+            var roles = new PluginConfig.Roles(nombre("roles.mayor-role-name", false),
+                    nombre("roles.town-role-name", false, "{town}"), color, booleano("roles.town-role-hoisted"));
             var limits = new PluginConfig.Limits(entero("limits.max-towns", 1, 240), positivo("limits.min-residents"),
                     segundos("limits.creation-cooldown-seconds"));
             var lifecycle = new PluginConfig.Lifecycle(opcion("lifecycle.on-town-deleted", PluginConfig.Lifecycle.Action.class),
                     opcion("lifecycle.on-town-ruined", PluginConfig.Lifecycle.Action.class),
                     entero("lifecycle.archive-reminder-days", 0, Integer.MAX_VALUE));
-            var sync = new PluginConfig.Sync(minutos("sync.interval-minutes"), opcion("sync.mode", PluginConfig.Sync.Mode.class),
+            var sync = new PluginConfig.Sync(Duration.ofMinutes(entero("sync.interval-minutes", 0, Integer.MAX_VALUE)), opcion("sync.mode", PluginConfig.Sync.Mode.class),
                     positivo("sync.batch-size"), segundos("sync.batch-pause-seconds"));
             var linking = new PluginConfig.Linking(minutos("linking.code-expiry-minutes"), positivo("linking.max-attempts"),
                     minutos("linking.attempt-lockout-minutes"), booleano("linking.unlink-on-guild-leave"));

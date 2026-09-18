@@ -178,8 +178,6 @@ class LiveTownyFacadeTest {
     void fallosDeApiVisiblesYRecuperacionSinCache() {
         when(api.getTown(townId)).thenThrow(new IllegalStateException("fallo"));
         assertTrue(fachada.town(townId).isEmpty());
-        assertFalse(fachada.isAvailable());
-        assertFalse(fachada.isAvailable());
         assertTrue(fachada.town(townId).isEmpty());
         assertEquals(1, avisos.size());
         when(api.getTowns()).thenThrow(new IllegalStateException("fallo"));
@@ -197,7 +195,51 @@ class LiveTownyFacadeTest {
             when(rota.getMayor()).thenThrow(new IllegalStateException("fallo"));
             when(api.getTowns()).thenReturn(List.of(town, rota));
             assertTrue(fachada.allTowns().isEmpty());
-            assertFalse(fachada.isAvailable());
+            assertEquals(1, avisos.size());
+            assertTrue(fachada.isAvailable());
+        }
+    }
+
+    @Test
+    void disponibilidadSeRecuperaTrasFalloTransitorioDeLectura() {
+        when(api.getTown(townId)).thenThrow(new IllegalStateException("fallo pasajero"));
+        assertTrue(fachada.town(townId).isEmpty());
+        doReturn(town).when(api).getTown(townId);
+
+        assertTrue(fachada.isAvailable());
+        assertTrue(fachada.isAvailable());
+        assertEquals(1, avisos.size());
+        verify(api, times(2)).getDataSource();
+    }
+
+    @Test
+    void disponibilidadReintentaTrasFalloDeLaComprobacion() {
+        when(api.getDataSource()).thenThrow(new IllegalStateException("fallo pasajero"))
+                .thenReturn(null, mock(TownyDataSource.class));
+        assertFalse(fachada.isAvailable());
+        assertFalse(fachada.isAvailable());
+        assertTrue(fachada.isAvailable());
+        assertEquals(1, avisos.size());
+    }
+
+    @Test
+    void townSinAlcaldeNoInvalidaLasDemas() {
+        try (var estado = mockStatic(TownyEconomyHandler.class)) {
+            var valida = fachada.town(townId).orElseThrow();
+            Town sinAlcalde = mock(Town.class);
+            UUID sinAlcaldeId = UUID.randomUUID();
+            when(api.getTown(sinAlcaldeId)).thenReturn(sinAlcalde);
+            when(api.getTown("Administrativa")).thenReturn(sinAlcalde);
+            when(residente.getTownOrNull()).thenReturn(sinAlcalde);
+            when(api.getTowns()).thenReturn(List.of(sinAlcalde, town));
+
+            assertEquals(List.of(valida), fachada.allTowns());
+            assertTrue(fachada.town(sinAlcaldeId).isEmpty());
+            assertTrue(fachada.townByName("Administrativa").isEmpty());
+            assertTrue(fachada.townOf(residenteId).isEmpty());
+            assertTrue(fachada.isAvailable());
+            assertTrue(avisos.isEmpty());
+            assertEquals(2, fachada.townCount());
         }
     }
 

@@ -126,6 +126,8 @@ class YamlConfigLoaderTest {
                 Arguments.of("lifecycle.on-town-ruined", "purge"),
                 Arguments.of("lifecycle.archive-reminder-days", -1),
                 Arguments.of("sync.mode", "otro"),
+                Arguments.of("sync.interval-minutes", -1),
+                Arguments.of("roles.town-role-name", "{mayor}"),
                 Arguments.of("logging.detail", "otro"),
                 Arguments.of("structure.create-text-channel", "true"),
                 Arguments.of("commands.town.enabled", "si"),
@@ -149,7 +151,7 @@ class YamlConfigLoaderTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"database.pool.maximum-size", "database.pool.connection-timeout-seconds",
-            "limits.min-residents", "limits.creation-cooldown-seconds", "sync.interval-minutes", "sync.batch-size",
+            "limits.min-residents", "limits.creation-cooldown-seconds", "sync.batch-size",
             "sync.batch-pause-seconds", "linking.code-expiry-minutes", "linking.max-attempts",
             "linking.attempt-lockout-minutes", "logging.flush-interval-seconds", "logging.queue-size",
             "updates.check-interval-hours", "commands.cooldown-seconds"})
@@ -177,12 +179,20 @@ class YamlConfigLoaderTest {
         yaml.set("database.pool.minimum-idle", 0);
         yaml.set("lifecycle.archive-reminder-days", 0);
         yaml.set("roles.town-role-color", "#abcdef");
-        yaml.set("roles.town-role-name", "{town} de {mayor}");
+        yaml.set("roles.town-role-name", "Ciudad {town}");
         yaml.set("structure.text-channel-name", "ciudad-{town}-{mayor}");
-        yaml.set("structure.voice-channel-name", "Voz de {town}");
+        yaml.set("structure.voice-channel-name", "Voz de {town} de {mayor}");
         guardar();
         assertTrue(loader.validate().isEmpty());
         assertEquals("18446744073709551615", loader.load().discord().logChannelId().orElseThrow());
+    }
+
+    @Test
+    void intervaloCeroDesactivaReconciliacion() throws Exception {
+        yaml.set("sync.interval-minutes", 0);
+        guardar();
+        assertTrue(loader.validate().isEmpty());
+        assertEquals(Duration.ZERO, loader.load().sync().interval());
     }
 
     @Test

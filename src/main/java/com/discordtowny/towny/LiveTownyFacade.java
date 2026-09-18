@@ -9,6 +9,7 @@ import com.palmergames.bukkit.towny.object.Resident;
 import com.palmergames.bukkit.towny.object.Town;
 import java.util.List;
 import java.util.Optional;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -25,7 +26,6 @@ public final class LiveTownyFacade implements TownyFacade {
     private final Consumer<String> aviso;
     private final ToDoubleFunction<Town> saldoTown;
     private final ToDoubleFunction<Resident> saldoResidente;
-    private boolean falloLectura;
     private boolean avisado;
 
     public LiveTownyFacade(Consumer<String> aviso) {
@@ -54,10 +54,6 @@ public final class LiveTownyFacade implements TownyFacade {
     }
 
     private <T> T leer(Function<TownyAPI, T> lectura, T vacio) {
-        return leer(lectura, vacio, true);
-    }
-
-    private <T> T leer(Function<TownyAPI, T> lectura, T vacio, boolean recuperar) {
         // Rechazar antes de consultar incluso la disponibilidad de Towny.
         if (!hiloPrincipal.getAsBoolean()) {
             throw new IllegalStateException("TownyFacade: se requiere el hilo principal del servidor");
@@ -67,13 +63,9 @@ public final class LiveTownyFacade implements TownyFacade {
             TownyAPI actual = (TownyAPI) api.get();
             if (actual == null) return vacio;
             T resultado = lectura.apply(actual);
-            if (recuperar) {
-                falloLectura = false;
-                avisado = false;
-            }
+            avisado = false;
             return resultado;
         } catch (RuntimeException | LinkageError fallo) {
-            falloLectura = true;
             if (!avisado) {
                 avisado = true;
                 aviso.accept("Towny: no se pudo completar la lectura; se devuelve un resultado vacio");
@@ -84,8 +76,7 @@ public final class LiveTownyFacade implements TownyFacade {
 
     @Override
     public boolean isAvailable() {
-        // Un fallo de lectura permanece visible hasta una lectura real satisfactoria.
-        return leer(actual -> !falloLectura && actual.getDataSource() != null, false, false);
+        return leer(actual -> actual.getDataSource() != null, false);
     }
 
     @Override
@@ -116,7 +107,7 @@ public final class LiveTownyFacade implements TownyFacade {
 
     @Override
     public List<TownSnapshot> allTowns() {
-        return leer(actual -> actual.getTowns().stream().map(this::townSnapshot).toList(), List.of());
+        return leer(actual -> actual.getTowns().stream().map(this::townSnapshot).filter(Objects::nonNull).toList(), List.of());
     }
 
     @Override
@@ -125,7 +116,10 @@ public final class LiveTownyFacade implements TownyFacade {
     }
 
     private TownSnapshot townSnapshot(Town town) {
-        return new TownSnapshot(town.getUUID(), town.getName(), town.getMayor().getUUID(),
+        Resident alcalde = town.getMayor();
+        // Sin alcalde no hay snapshot valido; las otras towns siguen disponibles.
+        if (alcalde == null) return null;
+        return new TownSnapshot(town.getUUID(), town.getName(), alcalde.getUUID(),
                 town.getResidents().stream().map(Resident::getUUID).toList(), town.isRuined(),
                 Optional.ofNullable(town.getNationOrNull()).map(nacion -> nacion.getName()),
                 town.getNumTownBlocks(), TownyEconomyHandler.isActive() ? saldoTown.applyAsDouble(town) : 0,
