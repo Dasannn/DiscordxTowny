@@ -120,7 +120,9 @@ fallan a medias no dejan permisos abiertos.
 
 ## 6. Límites conocidos
 
-Un guild de Discord admite un máximo de 500 canales y 250 roles. Con dos canales
+Un guild de Discord admite un máximo de 500 canales, 250 roles y **50 canales
+por categoría**. Este último obliga a repartir los espacios en categorías
+numeradas a medida que se llenan. Con dos canales
 y un rol por town, el techo práctico ronda las 240 towns. Ese límite lo impone
 Discord y no es negociable. Lo que sí es configurable es el límite propio del
 plugin (`max_towns`) y los criterios para calificar, de modo que el

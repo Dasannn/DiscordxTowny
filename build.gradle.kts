@@ -26,6 +26,11 @@ dependencies {
     }
     implementation("com.zaxxer:HikariCP:7.1.0")
 
+    // El servidor los aporta en runtime, pero los tests si los necesitan en el
+    // classpath: sin esto no compila nada que toque Bukkit, Adventure o Towny.
+    testImplementation("io.papermc.paper:paper-api:26.2.build.124-stable")
+    testImplementation("com.palmergames.bukkit.towny:towny:0.103.2.7")
+
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.mockito:mockito-core:5.20.0")

@@ -56,6 +56,10 @@ nadie ejecute nada.
 
 - Existe una categoría contenedora, creada por el bot la primera vez que se
   necesita. Nombre por defecto: `Comunidades`.
+- **Discord limita a 50 canales por categoría.** Cuando la categoría actual se
+  llena, el bot crea la siguiente numerada (`Comunidades 2`, `Comunidades 3`) y
+  coloca ahí los nuevos espacios. Es transparente para el usuario: el techo real
+  pasa a ser el de 500 canales por servidor.
 - Por cada town con espacio activo, dentro de esa categoría:
   - un canal de texto, nombre por plantilla (por defecto `{town}`),
   - un canal de voz, nombre por plantilla (por defecto `{town}`).
@@ -193,9 +197,14 @@ a la que no pertenece, la sincronización se lo quita.
 1. **Creación** — a petición del alcalde, si cumple las condiciones.
 2. **Activo** — se sincroniza por eventos y periódicamente.
 3. **Archivado** — cuando la town desaparece, cae en ruinas o el alcalde ejecuta
-   `/dt delete`. El canal pasa a solo lectura, se mueve a una categoría de
-   archivo configurable y el rol de la town se elimina. Nada se borra
-   automáticamente.
+   `/dt delete`. El canal se mueve a una categoría de archivo configurable, se
+   elimina el rol de la town y el canal queda **visible solo para
+   administradores**, en solo lectura. Nada se borra automáticamente.
+
+   Los ex-residentes dejan de ver el canal: el rol desaparece, y es ese rol el
+   que daba acceso. Se elige así porque los roles son el recurso escaso (250 por
+   servidor) y conservarlos por cada town muerta agotaría el cupo. El historial
+   se conserva íntegro y vuelve a sus residentes si la town revive.
 4. **Borrado** — nunca automático. Un administrador borra los espacios
    archivados con `/dt admin purge`, con confirmación explícita.
 
@@ -322,8 +331,8 @@ plugins de guerra, y más de un guild.
    siguiente reconciliación.
 9. Un residente sin vincular no ve el canal de su town; al vincular, lo ve sin
    ejecutar nada más.
-10. Una town eliminada deja su canal archivado y legible, nunca borrado sin que
-    un administrador lo ordene.
+10. Una town eliminada deja su canal archivado y legible para administradores,
+    nunca borrado sin que un administrador lo ordene.
 11. Con el canal de logs activo y muchas operaciones seguidas, el servidor no
     pierde ticks.
 
