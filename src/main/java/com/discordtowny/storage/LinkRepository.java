@@ -34,8 +34,15 @@ public interface LinkRepository {
     /** Suma uno a los intentos fallidos y devuelve el total. */
     int incrementAttempts(String code);
 
-    /** Borra los codigos caducados. Lo llama el job periodico. */
-    int purgeExpiredCodes();
+    /**
+     * Borra los codigos caducados a la fecha indicada.
+     *
+     * <p>El instante se recibe, no se consulta aqui: si el repositorio leyera
+     * el reloj del sistema por su cuenta, su nocion de "ahora" diferiria de la
+     * del servicio que lo llama, y no habria forma de probarlo con un reloj
+     * controlado.
+     */
+    int purgeExpiredCodes(java.time.Instant now);
 
     /** Cuantos vinculos hay. Para {@code /dt admin list}. */
     int count();

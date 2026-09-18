@@ -197,11 +197,11 @@ final class SqlLinkRepository implements LinkRepository {
     }
 
     @Override
-    public int purgeExpiredCodes() {
+    public int purgeExpiredCodes(Instant now) {
         String sql = "DELETE FROM " + tCodes + " WHERE expires_at < ?";
         try (Connection conn = ds.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, Instant.now().toEpochMilli());
+            ps.setLong(1, now.toEpochMilli());
             return ps.executeUpdate();
         } catch (SQLException e) {
             throw new StorageException("Error al purgar codigos caducados", e);

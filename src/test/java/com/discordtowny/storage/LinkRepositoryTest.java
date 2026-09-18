@@ -194,7 +194,7 @@ class LinkRepositoryTest extends StorageTestBase {
         links.saveCode(expirado);
         links.saveCode(vigente);
 
-        int borrados = links.purgeExpiredCodes();
+        int borrados = links.purgeExpiredCodes(Instant.now());
 
         assertEquals(1, borrados);
         assertTrue(links.findCode("EXP001").isEmpty(), "El codigo caducado debe haberse borrado");
