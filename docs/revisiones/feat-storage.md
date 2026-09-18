@@ -12,3 +12,17 @@ Build: verde, 52 tests
 | 4 | menor | src/main/java/com/discordtowny/storage/HikariStorage.java:39 | Re-inicialización sin control de fuga de recursos. Si se llama a `initialize()` más de una vez en la misma instancia, se crea un nuevo `HikariDataSource` y se sobreescribe la referencia sin cerrar el pool previo, fugando conexiones activas. | Lanzar `IllegalStateException` al inicio de `initialize()` si `dataSource != null && !dataSource.isClosed()`. |
 
 Veredicto: requiere correcciones
+
+## Cierre
+
+Todos los hallazgos corregidos por el autor y verificados por el arquitecto.
+
+- #1 bloqueante: el tamano del pool se fija ahora dentro de `configureSqlite` y
+  `configureMysql`, no despues de forma global. SQLite conserva su unica
+  conexion; MySQL respeta lo configurado. Cubierto por 4 pruebas nuevas en
+  `HikariStorageTest`, que fallan si alguien vuelve a pisarlo.
+- #2, #3 y #4 menores: corregidos.
+
+Build verificado por el arquitecto: BUILD SUCCESSFUL, 57 tests, 0 fallos.
+
+Veredicto final: **integrable**.
