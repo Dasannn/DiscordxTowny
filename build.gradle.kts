@@ -26,10 +26,13 @@ dependencies {
     }
     implementation("com.zaxxer:HikariCP:7.1.0")
 
+    // Driver SQLite necesario en runtime (SQLite es la alternativa automatica a MySQL/MariaDB).
+    // Unico cambio fuera de storage/ autorizado por la ficha T2.
+    implementation("org.xerial:sqlite-jdbc:3.51.0.0")
+
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("org.mockito:mockito-core:5.20.0")
-    testImplementation("org.xerial:sqlite-jdbc:3.51.0.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -58,6 +61,7 @@ tasks.shadowJar {
         "org.apache.commons.collections4",
         "com.fasterxml.jackson",
         "org.slf4j",
+        "org.sqlite",
     ).forEach { relocate(it, "com.discordtowny.lib.$it") }
 
     // Sin minimize: JDA carga clases por reflexion y el recorte las elimina.
