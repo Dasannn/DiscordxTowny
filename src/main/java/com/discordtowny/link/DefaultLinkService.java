@@ -13,6 +13,7 @@ import com.discordtowny.storage.StorageException;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
 
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -22,6 +23,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
@@ -44,6 +46,7 @@ public final class DefaultLinkService implements LinkService {
     private final Executor executor;
     private final CodeGenerator codeGenerator;
     private final AttemptTracker attemptTracker;
+    private final ConcurrentHashMap<UUID, String> pendingPlayerNames = new ConcurrentHashMap<>();
 
     public DefaultLinkService(
             LinkRepository linkRepository,
@@ -89,6 +92,11 @@ public final class DefaultLinkService implements LinkService {
 
     @Override
     public CompletableFuture<Optional<String>> generateCode(UUID uuid) {
+        return generateCode(uuid, "");
+    }
+
+    @Override
+    public CompletableFuture<Optional<String>> generateCode(UUID uuid, String lastKnownName) {
         return CompletableFuture.supplyAsync(() -> {
             // Devuelve vacio si el jugador ya esta vinculado
             if (linkRepository.findByUuid(uuid).isPresent()) {
@@ -108,6 +116,13 @@ public final class DefaultLinkService implements LinkService {
 
             // Guarda el codigo sustituyendo cualquier codigo previo del mismo jugador
             linkRepository.saveCode(linkCode);
+
+            // Guardar el nombre capturado para cuando se canjee el codigo
+            if (lastKnownName != null && !lastKnownName.isBlank()) {
+                pendingPlayerNames.put(uuid, lastKnownName);
+            } else {
+                pendingPlayerNames.remove(uuid);
+            }
 
             return Optional.of(code);
         }, executor);
@@ -151,6 +166,7 @@ public final class DefaultLinkService implements LinkService {
             // 4. Comprobar si el codigo ha caducado
             if (linkCode.isExpired(now)) {
                 linkRepository.deleteCode(code);
+                pendingPlayerNames.remove(linkCode.uuid());
                 boolean locked = attemptTracker.recordFailure(
                         discordId, now, config.linking().maxAttempts(), config.linking().attemptLockout());
                 if (discordGateway != null) {
@@ -165,6 +181,7 @@ public final class DefaultLinkService implements LinkService {
             UUID playerUuid = linkCode.uuid();
             if (linkRepository.findByUuid(playerUuid).isPresent()) {
                 linkRepository.deleteCode(code);
+                pendingPlayerNames.remove(playerUuid);
                 if (discordGateway != null) {
                     discordGateway.log(new AuditEvent(
                             now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
@@ -173,31 +190,40 @@ public final class DefaultLinkService implements LinkService {
                 return LinkResult.PLAYER_ALREADY_LINKED;
             }
 
-            // 6. Obtener nombre del residente si esta disponible
-            String lastKnownName = null;
-            if (townyFacade != null) {
-                try {
-                    lastKnownName = townyFacade.resident(playerUuid)
-                            .map(ResidentSnapshot::name)
-                            .orElse(null);
-                } catch (Exception ignored) {
-                    // TownyFacade solo se consulta en hilo principal; si falla se ignora
+            // 6. Obtener nombre del residente o jugador para mostrar (nunca null)
+            String lastKnownName = pendingPlayerNames.remove(playerUuid);
+            if (lastKnownName == null || lastKnownName.isBlank()) {
+                if (townyFacade != null) {
+                    try {
+                        lastKnownName = townyFacade.resident(playerUuid)
+                                .map(ResidentSnapshot::name)
+                                .orElse(null);
+                    } catch (Exception ignored) {
+                        // TownyFacade solo se consulta en hilo principal; si falla se ignora
+                    }
                 }
             }
+            if (lastKnownName == null || lastKnownName.isBlank()) {
+                lastKnownName = "";
+            }
 
-            // 7. Persistir el vinculo capturando choques de unicidad de la base de datos
+            // 7. Persistir el vinculo distinguiendo choques de unicidad de otros fallos
             AccountLink link = new AccountLink(playerUuid, discordId, now, lastKnownName);
             try {
                 linkRepository.save(link);
             } catch (StorageException e) {
-                // Choque en las restricciones UNIQUE por peticiones concurrentes
-                linkRepository.deleteCode(code);
-                if (linkRepository.findByDiscordId(discordId).isPresent()) {
-                    return LinkResult.DISCORD_ALREADY_LINKED;
+                if (isUniqueViolation(e)) {
+                    // Choque genuino en las restricciones UNIQUE por peticiones concurrentes
+                    linkRepository.deleteCode(code);
+                    if (linkRepository.findByDiscordId(discordId).isPresent()) {
+                        return LinkResult.DISCORD_ALREADY_LINKED;
+                    }
+                    if (linkRepository.findByUuid(playerUuid).isPresent()) {
+                        return LinkResult.PLAYER_ALREADY_LINKED;
+                    }
                 }
-                if (linkRepository.findByUuid(playerUuid).isPresent()) {
-                    return LinkResult.PLAYER_ALREADY_LINKED;
-                }
+                // Si fue otro fallo de base de datos o no se pudo resolver el choque,
+                // propagamos la excepcion para indicar que la operacion fallo
                 throw e;
             }
 
@@ -238,6 +264,7 @@ public final class DefaultLinkService implements LinkService {
     @Override
     public CompletableFuture<Boolean> unlink(UUID uuid) {
         return CompletableFuture.supplyAsync(() -> {
+            pendingPlayerNames.remove(uuid);
             Optional<AccountLink> optLink = linkRepository.findByUuid(uuid);
             if (optLink.isEmpty()) {
                 return false;
@@ -316,5 +343,32 @@ public final class DefaultLinkService implements LinkService {
         } catch (Exception ignored) {
             // Ignorado si no se pudo acceder a Towny
         }
+    }
+
+    /**
+     * Distingue si la excepcion de almacenamiento corresponde a una violacion
+     * de unicidad (choque por concurrencia) o a un fallo generico de base de datos.
+     */
+    private static boolean isUniqueViolation(StorageException e) {
+        String msg = e.getMessage();
+        if (msg != null && (msg.contains("Ya existe")
+                || msg.contains("UNIQUE constraint failed")
+                || msg.contains("Duplicate entry")
+                || msg.contains("PRIMARY KEY must be unique"))) {
+            return true;
+        }
+        Throwable cause = e.getCause();
+        if (cause != null) {
+            String causeMsg = cause.getMessage();
+            if (causeMsg != null && (causeMsg.contains("UNIQUE constraint failed")
+                    || causeMsg.contains("PRIMARY KEY must be unique")
+                    || causeMsg.contains("Duplicate entry"))) {
+                return true;
+            }
+            if (cause instanceof SQLException sqlEx && sqlEx.getErrorCode() == 1062) {
+                return true;
+            }
+        }
+        return false;
     }
 }

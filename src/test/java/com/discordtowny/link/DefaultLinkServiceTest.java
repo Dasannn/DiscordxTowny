@@ -9,6 +9,7 @@ import com.discordtowny.model.LinkCode;
 import com.discordtowny.storage.HikariStorage;
 import com.discordtowny.storage.LinkRepository;
 import com.discordtowny.storage.SpaceRepository;
+import com.discordtowny.storage.StorageException;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
 import org.junit.jupiter.api.AfterEach;
@@ -19,12 +20,14 @@ import org.mockito.ArgumentCaptor;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.logging.Logger;
 
@@ -367,5 +370,71 @@ class DefaultLinkServiceTest {
 
         assertTrue(linkRepository.findCode(code1).isEmpty());
         assertTrue(linkRepository.findCode(code2).isPresent());
+    }
+
+    // --- 9. Captura de nombre y manejo de fallos de persistencia ---
+
+    @Test
+    void nombreCapturadoEnGeneracionSePersisteAlCanjear() {
+        UUID uuid = UUID.randomUUID();
+        String code = service.generateCode(uuid, "Steve").join().orElseThrow();
+
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, "discord_steve").join());
+
+        AccountLink link = service.findByUuid(uuid).join().orElseThrow();
+        assertEquals("Steve", link.lastKnownName());
+    }
+
+    @Test
+    void falloGenericoDeBaseDeDatosNoSeReportaComoVinculoDuplicado() {
+        LinkRepository mockRepo = mock(LinkRepository.class);
+        UUID uuid = UUID.randomUUID();
+        String code = "ABC234";
+        LinkCode linkCode = new LinkCode(code, uuid, clock.instant().plusSeconds(600), 0);
+
+        when(mockRepo.findCode(code)).thenReturn(Optional.of(linkCode));
+        when(mockRepo.findByDiscordId("discord_test")).thenReturn(Optional.empty());
+        when(mockRepo.findByUuid(uuid)).thenReturn(Optional.empty());
+        doThrow(new StorageException("Error al guardar vinculo", new SQLException("disk I/O error")))
+                .when(mockRepo).save(any());
+
+        DefaultLinkService failService = new DefaultLinkService(
+                mockRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
+        );
+
+        CompletionException ex = assertThrows(
+                CompletionException.class,
+                () -> failService.redeem(code, "discord_test").join()
+        );
+
+        assertInstanceOf(StorageException.class, ex.getCause());
+        assertFalse(ex.getCause().getMessage().contains("Ya existe"));
+        verify(mockRepo, never()).deleteCode(code);
+    }
+
+    @Test
+    void choqueDeUnicidadPorConcurrenciaSeDetectaCorrectamente() {
+        LinkRepository mockRepo = mock(LinkRepository.class);
+        UUID uuid = UUID.randomUUID();
+        String code = "ABC234";
+        String discordId = "discord_concurrent";
+        LinkCode linkCode = new LinkCode(code, uuid, clock.instant().plusSeconds(600), 0);
+
+        when(mockRepo.findCode(code)).thenReturn(Optional.of(linkCode));
+        when(mockRepo.findByDiscordId(discordId)).thenReturn(
+                Optional.empty(),
+                Optional.of(new AccountLink(UUID.randomUUID(), discordId, Instant.now(), "Otro"))
+        );
+        when(mockRepo.findByUuid(uuid)).thenReturn(Optional.empty());
+        doThrow(new StorageException("Ya existe un vinculo para este UUID o Discord ID: " + uuid))
+                .when(mockRepo).save(any());
+
+        DefaultLinkService concurrentService = new DefaultLinkService(
+                mockRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
+        );
+
+        LinkService.LinkResult result = concurrentService.redeem(code, discordId).join();
+        assertEquals(LinkService.LinkResult.DISCORD_ALREADY_LINKED, result);
+        verify(mockRepo).deleteCode(code);
     }
 }

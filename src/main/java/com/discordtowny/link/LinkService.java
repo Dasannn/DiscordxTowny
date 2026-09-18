@@ -21,7 +21,19 @@ public interface LinkService {
      *
      * @return el codigo, o vacio si el jugador ya esta vinculado
      */
-    CompletableFuture<Optional<String>> generateCode(UUID uuid);
+    default CompletableFuture<Optional<String>> generateCode(UUID uuid) {
+        return generateCode(uuid, "");
+    }
+
+    /**
+     * Genera un codigo para el jugador guardando su ultimo nombre conocido,
+     * invalidando el anterior si lo tenia.
+     *
+     * @param uuid identificador del jugador
+     * @param lastKnownName ultimo nombre conocido del jugador para mostrar
+     * @return el codigo, o vacio si el jugador ya esta vinculado
+     */
+    CompletableFuture<Optional<String>> generateCode(UUID uuid, String lastKnownName);
 
     /** Consume el codigo y crea el vinculo. */
     CompletableFuture<LinkResult> redeem(String code, String discordId);

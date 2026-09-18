@@ -55,8 +55,8 @@ public final class LinkMinecraftCommands {
                             // Responder de inmediato en el hilo principal
                             player.sendMessage(messages.get("general.working"));
 
-                            // Operacion asincrona fuera del hilo principal
-                            linkService.generateCode(player.getUniqueId()).thenAccept(optCode -> {
+                            // Operacion asincrona fuera del hilo principal pasando el nombre capturado
+                            linkService.generateCode(player.getUniqueId(), player.getName()).thenAccept(optCode -> {
                                 if (optCode.isEmpty()) {
                                     player.sendMessage(messages.get("linking.already-linked"));
                                 } else {
