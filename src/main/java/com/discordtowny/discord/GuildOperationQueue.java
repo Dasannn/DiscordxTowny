@@ -1,11 +1,13 @@
 package com.discordtowny.discord;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.time.Duration;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Level;
+import java.util.function.UnaryOperator;
 import java.util.logging.Logger;
 
 /**
@@ -32,6 +34,7 @@ final class GuildOperationQueue {
     private final BlockingQueue<QueuedOperation> queue;
     private final Thread consumerThread;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final UnaryOperator<String> sanitizer;
 
     private final int maxRetries;
     private final Duration baseDelay;
@@ -41,17 +44,28 @@ final class GuildOperationQueue {
     record QueuedOperation(GuildOperation operation, CompletableFuture<OperationOutcome> future) {}
 
     GuildOperationQueue(GuildOperationExecutor executor, Logger logger) {
-        this(executor, logger, DEFAULT_MAX_RETRIES, DEFAULT_BASE_DELAY, DEFAULT_BACKOFF_MULTIPLIER);
+        this(executor, logger, DEFAULT_MAX_RETRIES, DEFAULT_BASE_DELAY, DEFAULT_BACKOFF_MULTIPLIER, s -> s);
+    }
+
+    GuildOperationQueue(GuildOperationExecutor executor, Logger logger, UnaryOperator<String> sanitizer) {
+        this(executor, logger, DEFAULT_MAX_RETRIES, DEFAULT_BASE_DELAY, DEFAULT_BACKOFF_MULTIPLIER, sanitizer);
     }
 
     /** Constructor con parametros de reintentos, para tests. */
     GuildOperationQueue(GuildOperationExecutor executor, Logger logger,
                         int maxRetries, Duration baseDelay, double backoffMultiplier) {
+        this(executor, logger, maxRetries, baseDelay, backoffMultiplier, s -> s);
+    }
+
+    GuildOperationQueue(GuildOperationExecutor executor, Logger logger,
+                        int maxRetries, Duration baseDelay, double backoffMultiplier,
+                        UnaryOperator<String> sanitizer) {
         this.executor = executor;
         this.logger = logger;
         this.maxRetries = maxRetries;
         this.baseDelay = baseDelay;
         this.backoffMultiplier = backoffMultiplier;
+        this.sanitizer = sanitizer != null ? sanitizer : s -> s;
         this.queue = new LinkedBlockingQueue<>();
         this.consumerThread = Thread.ofVirtual().name("dt-guild-queue").unstarted(this::consume);
     }
@@ -86,12 +100,22 @@ final class GuildOperationQueue {
             return CompletableFuture.completedFuture(
                     OperationOutcome.permanentFailure("Operacion nula"));
         }
+        if (!running.get()) {
+            return CompletableFuture.completedFuture(
+                    OperationOutcome.transientFailure("Cola detenida"));
+        }
         var future = new CompletableFuture<OperationOutcome>();
         try {
             queue.offer(new QueuedOperation(operation, future));
         } catch (Exception e) {
             future.complete(OperationOutcome.transientFailure(
-                    "Error al encolar operacion: " + e.getMessage()));
+                    "Error al encolar operacion: " + sanitize(e.getMessage())));
+        }
+        // Verificar si se detuvo concurrentemente
+        if (!running.get()) {
+            if (queue.removeIf(item -> item.future() == future)) {
+                future.complete(OperationOutcome.transientFailure("Cola detenida"));
+            }
         }
         return future;
     }
@@ -115,10 +139,11 @@ final class GuildOperationQueue {
                 // El shutdown interrumpe al consumidor; simplemente salimos del bucle
                 break;
             } catch (Throwable t) {
-                logger.log(Level.SEVERE, "[Cola] Error inesperado en el consumidor", t);
+                String safeTrace = sanitizeThrowable(t);
+                logger.severe("[Cola] Error inesperado en el consumidor: " + safeTrace);
                 if (item != null && !item.future().isDone()) {
                     item.future().complete(OperationOutcome.transientFailure(
-                            "Fallo critico en ejecucion: " + t.getMessage()));
+                            "Fallo critico en ejecucion: " + sanitize(t.getMessage())));
                 }
             }
         }
@@ -144,10 +169,11 @@ final class GuildOperationQueue {
                     Thread.currentThread().interrupt();
                     return OperationOutcome.transientFailure("Interrumpido durante ejecucion");
                 }
+                String safeMsg = sanitize(t.getMessage());
                 logger.warning("[Cola] Excepcion no controlada en '"
-                        + operation.describe() + "': " + t.getMessage());
+                        + operation.describe() + "': " + safeMsg);
                 lastOutcome = OperationOutcome.transientFailure(
-                        "Excepcion: " + t.getMessage());
+                        "Excepcion: " + safeMsg);
             }
 
             switch (lastOutcome.status()) {
@@ -155,16 +181,20 @@ final class GuildOperationQueue {
                     return lastOutcome;
                 }
                 case PERMANENT_FAILURE -> {
+                    String safeReason = sanitize(lastOutcome.reason().orElse("sin detalle"));
                     logger.warning("[Cola] Fallo permanente en '" + operation.describe()
-                            + "': " + lastOutcome.reason().orElse("sin detalle"));
+                            + "': " + safeReason);
+                    executor.onOperationFailed(operation, lastOutcome);
                     return lastOutcome;
                 }
                 case TRANSIENT_FAILURE -> {
                     attempt++;
                     if (attempt > maxRetries) {
+                        String safeReason = sanitize(lastOutcome.reason().orElse("sin detalle"));
                         logger.warning("[Cola] Agotados los reintentos para '"
                                 + operation.describe() + "': "
-                                + lastOutcome.reason().orElse("sin detalle"));
+                                + safeReason);
+                        executor.onOperationFailed(operation, lastOutcome);
                         return lastOutcome;
                     }
                     long delayMs = (long) (baseDelay.toMillis()
@@ -185,5 +215,17 @@ final class GuildOperationQueue {
         // Nunca deberia llegar aqui, pero por seguridad
         return lastOutcome != null ? lastOutcome
                 : OperationOutcome.transientFailure("Error inesperado en la cola");
+    }
+
+    private String sanitize(String message) {
+        if (message == null) return "error desconocido";
+        return sanitizer.apply(message);
+    }
+
+    private String sanitizeThrowable(Throwable t) {
+        if (t == null) return "error desconocido";
+        StringWriter sw = new StringWriter();
+        t.printStackTrace(new PrintWriter(sw));
+        return sanitize(sw.toString());
     }
 }

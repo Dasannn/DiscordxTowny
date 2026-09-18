@@ -9,6 +9,8 @@ import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.requests.GatewayIntent;
+import net.dv8tion.jda.api.utils.ChunkingFilter;
+import net.dv8tion.jda.api.utils.MemberCachePolicy;
 import net.dv8tion.jda.api.utils.cache.CacheFlag;
 import java.awt.Color;
 import java.time.ZoneId;
@@ -57,12 +59,17 @@ public final class JdaDiscordGateway implements DiscordGateway {
     // -- Arranque y apagado --
 
     /**
-     * Conecta con Discord. Bloquea hasta que JDA este listo.
+     * Conecta con Discord de forma asincrona fuera del hilo principal.
      *
      * <p>Si falla, no lanza excepcion: deja el gateway como no disponible.
-     * El servidor de Minecraft sigue funcionando.
+     * El servidor de Minecraft sigue funcionando sin bloquear el arranque.
      */
-    public void connect() {
+    public CompletableFuture<Void> connect() {
+        return CompletableFuture.runAsync(this::doConnect,
+                r -> Thread.ofVirtual().name("dt-discord-connect").start(r));
+    }
+
+    private void doConnect() {
         try {
             // Intents MINIMOS: solo los que necesitamos
             // GUILD_MEMBERS para saber quien tiene que roles
@@ -72,6 +79,8 @@ public final class JdaDiscordGateway implements DiscordGateway {
                             GatewayIntent.GUILD_MEMBERS,
                             GatewayIntent.GUILD_MESSAGES
                     ))
+                    .setMemberCachePolicy(MemberCachePolicy.ALL)
+                    .setChunkingFilter(ChunkingFilter.ALL)
                     .disableCache(EnumSet.of(
                             CacheFlag.VOICE_STATE,
                             CacheFlag.EMOJI,
@@ -92,24 +101,28 @@ public final class JdaDiscordGateway implements DiscordGateway {
             }
             this.guild = g;
 
-            // Cola de operaciones
+            // Cola de operaciones con sanitizador
             var executor = new JdaGuildOperationExecutor(g, config, spaces, logger);
-            this.operationQueue = new GuildOperationQueue(executor, logger);
+            this.operationQueue = new GuildOperationQueue(executor, logger, this::sanitizeMessage);
             operationQueue.start();
 
-            // Cola de logs
+            // Cola de logs con sanitizador
             int queueSize = config.logging().queueSize();
             this.logQueue = new LogQueue(
                     queueSize > 0 ? queueSize : 100,
                     this::sendLogBatch,
-                    logger);
+                    logger,
+                    this::sanitizeMessage);
             logQueue.start(config.logging().flushInterval());
 
             available = true;
             logger.info("[Discord] Conectado al guild '" + g.getName() + "'");
 
+            // Comprobar permisos fuera del hilo principal una vez conectado
+            verifyPermissions().ifPresent(msg ->
+                    logger.warning("[Discord] Advertencia de permisos: " + msg));
+
         } catch (Exception e) {
-            // No filtramos el token: el mensaje de JDA podria contenerlo
             String safeMessage = sanitizeMessage(e.getMessage());
             logger.severe("[Discord] No se pudo conectar: " + safeMessage);
             available = false;
@@ -175,6 +188,11 @@ public final class JdaDiscordGateway implements DiscordGateway {
         });
 
         return PermissionVerifier.verify(guild, managedRoleIds);
+    }
+
+    @Override
+    public CompletableFuture<Optional<String>> verifyPermissionsAsync() {
+        return CompletableFuture.supplyAsync(this::verifyPermissions);
     }
 
     /** Devuelve el guild conectado, si lo hay. Para uso interno del paquete. */
@@ -244,11 +262,6 @@ public final class JdaDiscordGateway implements DiscordGateway {
      * El token NUNCA debe aparecer en logs (P7 de la constitucion).
      */
     String sanitizeMessage(String message) {
-        if (message == null) return "error desconocido";
-        String token = config.discord().token();
-        if (token != null && !token.isEmpty() && message.contains(token)) {
-            return message.replace(token, "[TOKEN_OCULTO]");
-        }
-        return message;
+        return DiscordSanitizer.sanitize(message, config.discord().token());
     }
 }

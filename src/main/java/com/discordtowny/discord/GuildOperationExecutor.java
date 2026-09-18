@@ -20,4 +20,10 @@ interface GuildOperationExecutor {
      * {@link OperationOutcome}. El llamador decide si reintentar.
      */
     OperationOutcome execute(GuildOperation operation);
+
+    /**
+     * Notifica cuando una operacion ha fallado definitivamente o ha agotado
+     * sus reintentos. Permite marcar espacios como inconsistentes.
+     */
+    default void onOperationFailed(GuildOperation operation, OperationOutcome outcome) {}
 }

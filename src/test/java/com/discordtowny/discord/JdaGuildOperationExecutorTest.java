@@ -9,12 +9,18 @@ import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
+import net.dv8tion.jda.api.exceptions.ErrorResponseException;
+import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
+import net.dv8tion.jda.api.requests.ErrorResponse;
 import net.dv8tion.jda.api.requests.restaction.AuditableRestAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
@@ -23,6 +29,9 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 /**
@@ -193,6 +202,10 @@ class JdaGuildOperationExecutorTest {
         when(existingRole.getId()).thenReturn("role-saved");
         when(guild.getRoleById("role-saved")).thenReturn(existingRole);
 
+        Role existingMayorRole = mock(Role.class);
+        when(existingMayorRole.getId()).thenReturn("role-mayor-saved");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(existingMayorRole));
+
         TownSpace partialSpace = new TownSpace(
                 townUuid, townName,
                 Optional.of("cat-saved"), Optional.empty(), Optional.empty(),
@@ -290,5 +303,333 @@ class JdaGuildOperationExecutorTest {
                 eq(townRole),
                 eq(java.util.EnumSet.of(net.dv8tion.jda.api.Permission.VIEW_CHANNEL, net.dv8tion.jda.api.Permission.MESSAGE_SEND)),
                 isNull());
+    }
+
+    @Test
+    @DisplayName("createSpace no duplica canales de texto ni de voz si ya existen")
+    void createSpaceDoesNotDuplicateExistingChannels() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "Metropolis";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id");
+
+        Category category = mock(Category.class);
+        when(category.getId()).thenReturn("cat-saved");
+        when(guild.getCategoryById("cat-saved")).thenReturn(category);
+
+        TextChannel existingText = mock(TextChannel.class);
+        when(existingText.getId()).thenReturn("text-saved");
+        when(existingText.getName()).thenReturn("Metropolis");
+        when(category.getTextChannels()).thenReturn(List.of(existingText));
+        when(guild.getTextChannelById("text-saved")).thenReturn(existingText);
+
+        VoiceChannel existingVoice = mock(VoiceChannel.class);
+        when(existingVoice.getId()).thenReturn("voice-saved");
+        when(existingVoice.getName()).thenReturn("Metropolis");
+        when(category.getVoiceChannels()).thenReturn(List.of(existingVoice));
+        when(guild.getVoiceChannelById("voice-saved")).thenReturn(existingVoice);
+
+        Role existingRole = mock(Role.class);
+        when(existingRole.getId()).thenReturn("role-saved");
+        when(guild.getRoleById("role-saved")).thenReturn(existingRole);
+
+        Role existingMayorRole = mock(Role.class);
+        when(existingMayorRole.getId()).thenReturn("role-mayor-saved");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(existingMayorRole));
+
+        TownSpace partialSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-saved"), Optional.of("text-saved"), Optional.of("voice-saved"),
+                Optional.of("role-saved"), SpaceState.INCONSISTENT,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(partialSpace));
+
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.textChannelName()).thenReturn("{town}");
+        when(structureConfig.voiceChannelName()).thenReturn("{town}");
+        when(structureConfig.createTextChannel()).thenReturn(true);
+        when(structureConfig.createVoiceChannel()).thenReturn(true);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertTrue(outcome.succeeded());
+        verify(category, never()).createTextChannel(any());
+        verify(category, never()).createVoiceChannel(any());
+        verify(guild, never()).createRole();
+        verify(guild, never()).createCategory(any());
+    }
+
+    @Test
+    @DisplayName("El alcalde recibe su rol de alcalde y el rol de town al crear espacio")
+    @SuppressWarnings("unchecked")
+    void mayorReceivesMayorRoleOnCreateSpace() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "Alcaldia";
+        String mayorId = "mayor-discord-123";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), mayorId);
+
+        Category category = mock(Category.class);
+        when(category.getId()).thenReturn("cat-1");
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn("role-town-id");
+        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        Member mayorMember = mock(Member.class);
+        when(mayorMember.getRoles()).thenReturn(Collections.emptyList());
+        when(guild.getMemberById(mayorId)).thenReturn(mayorMember);
+
+        AuditableRestAction<Void> addAction = mock(AuditableRestAction.class);
+        when(guild.addRoleToMember(any(), any())).thenReturn(addAction);
+
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.createTextChannel()).thenReturn(false);
+        when(structureConfig.createVoiceChannel()).thenReturn(false);
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertTrue(outcome.succeeded());
+        verify(guild).addRoleToMember(mayorMember, mayorRole);
+        verify(guild).addRoleToMember(mayorMember, townRole);
+    }
+
+    @Test
+    @DisplayName("Recupera miembro de la API de Discord cuando no esta en cache")
+    @SuppressWarnings("unchecked")
+    void retrievesMemberFromApiWhenNotInCache() {
+        String memberId = "uncached-user-456";
+        when(guild.getMemberById(memberId)).thenReturn(null);
+
+        Member member = mock(Member.class);
+        when(member.getRoles()).thenReturn(Collections.emptyList());
+
+        net.dv8tion.jda.api.requests.restaction.CacheRestAction<Member> retrieveAction = mock(net.dv8tion.jda.api.requests.restaction.CacheRestAction.class);
+        when(guild.retrieveMemberById(memberId)).thenReturn(retrieveAction);
+        when(retrieveAction.complete()).thenReturn(member);
+
+        String townRoleId = "role-town-uncached";
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(townRoleId);
+        when(townRole.getName()).thenReturn("TestTown");
+        when(guild.getRoleById(townRoleId)).thenReturn(townRole);
+
+        TownSpace space = new TownSpace(
+                UUID.randomUUID(), "TestTown",
+                Optional.of("cat-1"), Optional.of("text-1"), Optional.of("voice-1"),
+                Optional.of(townRoleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findAll()).thenReturn(List.of(space));
+
+        AuditableRestAction<Void> addAction = mock(AuditableRestAction.class);
+        when(guild.addRoleToMember(any(), any())).thenReturn(addAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var op = new GuildOperation.ApplyMemberRoles(memberId, List.of(townRoleId), List.of());
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertTrue(outcome.succeeded());
+        verify(guild).retrieveMemberById(memberId);
+        verify(guild).addRoleToMember(member, townRole);
+    }
+
+    @Test
+    @DisplayName("PermissionException se clasifica como fallo permanente")
+    void permissionExceptionClassifiedAsPermanentFailure() {
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        InsufficientPermissionException permEx = mock(InsufficientPermissionException.class);
+        when(permEx.getMessage()).thenReturn("Missing permission MANAGE_CHANNEL");
+        doThrow(permEx).when(guild).getCategoriesByName("Comunidades", true);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var op = new GuildOperation.CreateSpace(new SpaceRequest(
+                UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor"));
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+    }
+
+    @Test
+    @DisplayName("Crea categoria numerada cuando la actual tiene 50 canales")
+    @SuppressWarnings("unchecked")
+    void createsNumberedCategoryWhenLimitReached() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "NuevaTown";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor");
+
+        // Categoria 1: Comunidades llena (50 canales)
+        Category fullCat = mock(Category.class);
+        when(fullCat.getId()).thenReturn("cat-full");
+        List<net.dv8tion.jda.api.entities.channel.middleman.GuildChannel> fiftyChannels = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            fiftyChannels.add(mock(net.dv8tion.jda.api.entities.channel.middleman.GuildChannel.class));
+        }
+        when(fullCat.getChannels()).thenReturn(fiftyChannels);
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(fullCat));
+
+        // Comunidades 2 no existe aun
+        when(guild.getCategoriesByName("Comunidades 2", true)).thenReturn(Collections.emptyList());
+        net.dv8tion.jda.api.requests.restaction.ChannelAction<Category> createCatAction = mock(net.dv8tion.jda.api.requests.restaction.ChannelAction.class);
+        Category newCat = mock(Category.class);
+        when(newCat.getId()).thenReturn("cat-num-2");
+        when(newCat.getChannels()).thenReturn(Collections.emptyList());
+        when(guild.createCategory("Comunidades 2")).thenReturn(createCatAction);
+        when(createCatAction.complete()).thenReturn(newCat);
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn("role-1");
+        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+
+        Role mayorRole = mock(Role.class);
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.createTextChannel()).thenReturn(true);
+        when(structureConfig.textChannelName()).thenReturn("{town}");
+        when(structureConfig.createVoiceChannel()).thenReturn(false);
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+
+        net.dv8tion.jda.api.requests.restaction.ChannelAction<TextChannel> textChAction = mock(net.dv8tion.jda.api.requests.restaction.ChannelAction.class);
+        when(newCat.createTextChannel(any())).thenReturn(textChAction);
+        when(textChAction.addPermissionOverride(any(), any(), any())).thenReturn(textChAction);
+        TextChannel createdText = mock(TextChannel.class);
+        when(createdText.getId()).thenReturn("text-num-2");
+        when(textChAction.complete()).thenReturn(createdText);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertTrue(outcome.succeeded());
+        verify(guild).createCategory("Comunidades 2");
+    }
+
+    @Test
+    @DisplayName("UNKNOWN_CHANNEL y UNKNOWN_ROLE en DeleteSpace son tratados como exito idempotente")
+    @SuppressWarnings("unchecked")
+    void unknownResourceTreatedAsSuccessOnDelete() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "OldTown",
+                Optional.of("cat-1"), Optional.of("text-deleted"), Optional.of("voice-deleted"),
+                Optional.of("role-deleted"), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(space));
+
+        ErrorResponseException unknownRoleEx = mock(ErrorResponseException.class);
+        when(unknownRoleEx.getErrorResponse()).thenReturn(ErrorResponse.UNKNOWN_ROLE);
+
+        Role role = mock(Role.class);
+        when(guild.getRoleById("role-deleted")).thenReturn(role);
+        AuditableRestAction<Void> roleDelete = mock(AuditableRestAction.class);
+        when(role.delete()).thenReturn(roleDelete);
+        when(roleDelete.complete()).thenThrow(unknownRoleEx);
+
+        ErrorResponseException unknownChannelEx = mock(ErrorResponseException.class);
+        when(unknownChannelEx.getErrorResponse()).thenReturn(ErrorResponse.UNKNOWN_CHANNEL);
+
+        TextChannel textCh = mock(TextChannel.class);
+        when(guild.getTextChannelById("text-deleted")).thenReturn(textCh);
+        AuditableRestAction<Void> textDelete = mock(AuditableRestAction.class);
+        when(textCh.delete()).thenReturn(textDelete);
+        when(textDelete.complete()).thenThrow(unknownChannelEx);
+
+        VoiceChannel voiceCh = mock(VoiceChannel.class);
+        when(guild.getVoiceChannelById("voice-deleted")).thenReturn(voiceCh);
+        AuditableRestAction<Void> voiceDelete = mock(AuditableRestAction.class);
+        when(voiceCh.delete()).thenReturn(voiceDelete);
+        when(voiceDelete.complete()).thenThrow(unknownChannelEx);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.DeleteSpace(townUuid, "OldTown"));
+
+        assertTrue(outcome.succeeded());
+        verify(spaces).delete(townUuid);
+    }
+
+    @Test
+    @DisplayName("restoreSpace persiste el rol creado de inmediato antes de mover canales")
+    @SuppressWarnings("unchecked")
+    void restoreSpacePersistsRoleImmediately() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "Revivida";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor");
+
+        TownSpace archivedSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of("text-ch"), Optional.empty(),
+                Optional.empty(), SpaceState.ARCHIVED,
+                Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(archivedSpace));
+
+        Category category = mock(Category.class);
+        when(category.getId()).thenReturn("cat-active");
+        when(guild.getCategoryById("cat-active")).thenReturn(category);
+        when(category.getChannels()).thenReturn(Collections.emptyList());
+
+        Role newRole = mock(Role.class);
+        when(newRole.getId()).thenReturn("new-role-id");
+        when(guild.getRolesByName(townName, true)).thenReturn(List.of(newRole));
+
+        Role mayorRole = mock(Role.class);
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        TextChannel textCh = mock(TextChannel.class);
+        when(guild.getTextChannelById("text-ch")).thenReturn(textCh);
+        net.dv8tion.jda.api.managers.channel.concrete.TextChannelManager chManager = mock(net.dv8tion.jda.api.managers.channel.concrete.TextChannelManager.class);
+        when(textCh.getManager()).thenReturn(chManager);
+        when(chManager.setParent(category)).thenReturn(chManager);
+
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.RestoreSpace(req));
+
+        assertTrue(outcome.succeeded());
+        // Verificar que spaces.save se llamo con un TownSpace que ya contenia new-role-id
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.roleId().isPresent() && s.roleId().get().equals("new-role-id")));
+    }
+
+    @Test
+    @DisplayName("newEmptySpace inicializa el estado como INCONSISTENT y pasa a ACTIVE al completar")
+    void newEmptySpaceStartsInconsistentAndCompletesActive() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "EstadoTest";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor");
+
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
+
+        Category category = mock(Category.class);
+        when(category.getId()).thenReturn("cat-1");
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn("role-1");
+        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+
+        Role mayorRole = mock(Role.class);
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.createTextChannel()).thenReturn(false);
+        when(structureConfig.createVoiceChannel()).thenReturn(false);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertTrue(outcome.succeeded());
+        // El primer save guardo la categoria con estado INCONSISTENT
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+        // El ultimo save guardo el espacio con estado ACTIVE
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.ACTIVE));
     }
 }

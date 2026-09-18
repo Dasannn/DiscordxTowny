@@ -84,8 +84,8 @@ class GuildOperationQueueTest {
     }
 
     @Test
-    @DisplayName("Reintento tras fallo parcial no duplica recursos")
-    void retryDoesNotDuplicate() throws Exception {
+    @DisplayName("Reintento tras fallo transitorio completa la tarea exitosamente")
+    void retryOnTransientFailureCompletesSuccessfully() throws Exception {
         AtomicInteger attempts = new AtomicInteger(0);
         List<String> createdRoles = new ArrayList<>();
         List<String> createdChannels = new ArrayList<>();
@@ -335,5 +335,57 @@ class GuildOperationQueueTest {
         assertNotNull(r3);
         assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, r2.status());
         assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, r3.status());
+    }
+
+    @Test
+    @DisplayName("submit() tras shutdown() devuelve fallo transitorio inmediatamente")
+    void submitAfterShutdownReturnsTransientFailureImmediately() throws Exception {
+        var queue = new GuildOperationQueue(op -> OperationOutcome.success(), LOGGER);
+        queue.start();
+        queue.shutdown();
+
+        var op = new GuildOperation.DeleteSpace(java.util.UUID.randomUUID(), "town");
+        CompletableFuture<OperationOutcome> future = queue.submit(op);
+
+        assertNotNull(future);
+        assertTrue(future.isDone());
+        assertFalse(future.isCompletedExceptionally());
+        OperationOutcome outcome = future.get(1, TimeUnit.SECONDS);
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, outcome.status());
+        assertTrue(outcome.reason().orElse("").contains("Cola detenida"));
+    }
+
+    @Test
+    @DisplayName("La cola sanitiza el token si una excepcion no controlada lo contiene")
+    void sanitizerMasksTokenWhenExceptionOccurs() throws Exception {
+        String secretToken = "super-secret-bot-token-999";
+        List<String> loggedWarnings = new ArrayList<>();
+        Logger testLogger = new Logger("test-sanitizer", null) {
+            @Override
+            public void warning(String msg) {
+                loggedWarnings.add(msg);
+            }
+        };
+
+        GuildOperationExecutor executor = op -> {
+            throw new RuntimeException("Error fatal con token " + secretToken);
+        };
+
+        var queue = new GuildOperationQueue(executor, testLogger, 1, java.time.Duration.ofMillis(5), 1.0,
+                msg -> msg.replace(secretToken, "[TOKEN_OCULTO]"));
+        queue.start();
+
+        var op = new GuildOperation.DeleteSpace(java.util.UUID.randomUUID(), "town");
+        OperationOutcome outcome = queue.submit(op).get(5, TimeUnit.SECONDS);
+        queue.shutdown();
+
+        assertFalse(outcome.succeeded());
+        assertFalse(outcome.reason().orElse("").contains(secretToken));
+        assertTrue(outcome.reason().orElse("").contains("[TOKEN_OCULTO]"));
+        assertFalse(loggedWarnings.isEmpty());
+        for (String logMsg : loggedWarnings) {
+            assertFalse(logMsg.contains(secretToken), "El log nunca debe contener el token");
+        }
     }
 }

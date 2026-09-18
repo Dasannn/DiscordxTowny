@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import java.util.logging.Logger;
 
 /**
@@ -38,6 +39,7 @@ final class LogQueue {
     private final AtomicInteger droppedCount = new AtomicInteger(0);
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean senderFailed = new AtomicBoolean(false);
+    private final UnaryOperator<String> sanitizer;
 
     /** Lote de eventos listo para enviar. */
     record LogBatch(List<AuditEvent> events, int droppedSinceLastFlush) {}
@@ -48,6 +50,10 @@ final class LogQueue {
      * @param logger      logger del plugin
      */
     LogQueue(int maxSize, Consumer<LogBatch> sender, Logger logger) {
+        this(maxSize, sender, logger, s -> s);
+    }
+
+    LogQueue(int maxSize, Consumer<LogBatch> sender, Logger logger, UnaryOperator<String> sanitizer) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize debe ser positivo: " + maxSize);
         }
@@ -55,6 +61,7 @@ final class LogQueue {
         this.buffer = new ArrayBlockingQueue<>(maxSize);
         this.sender = sender;
         this.logger = logger;
+        this.sanitizer = sanitizer != null ? sanitizer : s -> s;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = Thread.ofVirtual().name("dt-log-queue").unstarted(r);
             return t;
@@ -168,7 +175,8 @@ final class LogQueue {
             // Un fallo al enviar a Discord no debe afectar nada.
             // Anotamos en consola una sola vez para no saturar.
             if (senderFailed.compareAndSet(false, true)) {
-                logger.warning("[Logs] Error al enviar logs a Discord: " + e.getMessage()
+                String safeMsg = sanitizer.apply(e.getMessage() != null ? e.getMessage() : "error desconocido");
+                logger.warning("[Logs] Error al enviar logs a Discord: " + safeMsg
                         + ". Los proximos errores se omiten hasta que funcione.");
             }
         }
