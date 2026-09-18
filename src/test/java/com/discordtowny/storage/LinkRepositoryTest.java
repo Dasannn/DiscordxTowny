@@ -226,4 +226,57 @@ class LinkRepositoryTest extends StorageTestBase {
         assertFalse(e.getMessage().contains("Ya existe"),
                 "Un nombre nulo no es un vinculo duplicado: " + e.getMessage());
     }
+
+    // --- canje atomico ---
+
+    @Test
+    void canjeAtomicoConsumeElCodigoYCreaElVinculo() {
+        UUID uuid = UUID.randomUUID();
+        links.saveCode(new LinkCode("ABC123", uuid, Instant.now().plusSeconds(600), 0));
+
+        var salida = links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now());
+
+        assertEquals(LinkRepository.ConsumeResult.OK, salida.result());
+        assertTrue(salida.link().isPresent());
+        assertEquals(uuid, salida.link().get().uuid());
+        assertTrue(links.findCode("ABC123").isEmpty(), "El codigo debe quedar consumido");
+        assertTrue(links.findByUuid(uuid).isPresent());
+    }
+
+    @Test
+    void elMismoCodigoNoSePuedeCanjearDosVeces() {
+        UUID uuid = UUID.randomUUID();
+        links.saveCode(new LinkCode("ABC123", uuid, Instant.now().plusSeconds(600), 0));
+
+        assertEquals(LinkRepository.ConsumeResult.OK,
+                links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now()).result());
+        assertEquals(LinkRepository.ConsumeResult.CODE_NOT_FOUND,
+                links.consumeCodeAndLink("ABC123", "discord_2", "Alex", Instant.now()).result());
+    }
+
+    @Test
+    void unChoqueDeUnicidadDevuelveElCodigoASuSitio() {
+        // El jugador ya esta vinculado; su codigo no debe quemarse al fallar.
+        UUID uuid = UUID.randomUUID();
+        links.save(new AccountLink(uuid, "discord_previo", Instant.now(), "Steve"));
+        links.saveCode(new LinkCode("ABC123", uuid, Instant.now().plusSeconds(600), 0));
+
+        var salida = links.consumeCodeAndLink("ABC123", "discord_nuevo", "Steve", Instant.now());
+
+        assertEquals(LinkRepository.ConsumeResult.PLAYER_ALREADY_LINKED, salida.result());
+        assertTrue(links.findCode("ABC123").isPresent(),
+                "Un choque de unicidad no puede quemar el codigo del jugador");
+    }
+
+    @Test
+    void codigoCaducadoSeConsumeYSeRechaza() {
+        UUID uuid = UUID.randomUUID();
+        links.saveCode(new LinkCode("ABC123", uuid, Instant.now().minusSeconds(1), 0));
+
+        var salida = links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now());
+
+        assertEquals(LinkRepository.ConsumeResult.CODE_EXPIRED, salida.result());
+        assertTrue(links.findCode("ABC123").isEmpty());
+        assertTrue(links.findByUuid(uuid).isEmpty());
+    }
 }
