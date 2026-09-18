@@ -28,37 +28,28 @@ If required project documentation does not exist yet, do not start implementatio
 
 Help define and create the documentation first.
 
-# **To-Develop:**
+# Estado del proyecto
 
-We are starting a new project from scratch.
+La fase de planificación **está cerrada y aprobada**. Los cinco documentos
+existen y mandan sobre cualquier decisión: `docs/constitution.md`,
+`docs/spec.md`, `ARCHITECTURE.md`, `docs/plan.md` y `docs/tasks.md`.
 
-Do not implement any code yet.
+**Se implementa código.** No vuelvas a proponer planificación ni entrevistas:
+esa etapa ya pasó.
 
-You are acting as the lead product architect for this project.
+## Cómo se trabaja
 
-Before doing anything:
+- Cada agente recibe una ficha de `docs/tasks.md` y trabaja en su propio
+  worktree, sobre una zona de archivos exclusiva.
+- No salgas de tu zona. Si necesitas algo de otro paquete, dilo en tu informe
+  en lugar de tocarlo.
+- Nadie hace merge ni toca `master`: integra el arquitecto.
+- Cada rama la revisa un agente distinto del autor, que escribe su informe en
+  `docs/revisiones/` y **no corrige el código que revisa**.
+- Si el entorno te impide compilar o hacer commit, **dilo claramente y sigue
+  con el resto del trabajo**. No supongas que algo funciona sin comprobarlo, y
+  no te detengas por ello si puedes avanzar en lo demás.
 
-1. Read CLAUDE.md and all files it imports.
-2. Inspect the repository.
-3. Interview me to understand exactly what I want to build.
+## Estado por tarea
 
-We will create the project specification in stages:
-
-1. constitution.md
-2. spec.md
-3. ARCHITECTURE.md
-4. plan.md
-5. tasks.md
-
-Do NOT generate all documents at once.
-
-For each stage:
-
-- ask me the necessary questions
-- identify ambiguities
-- propose the document
-- wait for my feedback
-- revise it
-- only then proceed to the next stage
-
-Do not write application code until the planning phase has been approved.
+Ver `docs/tasks.md`. Integradas: T0, T1, T2, T3, T4.
