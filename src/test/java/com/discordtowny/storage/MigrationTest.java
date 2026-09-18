@@ -31,11 +31,11 @@ class MigrationTest extends StorageTestBase {
         assertTrue(storage.isHealthy(), "El storage debe estar sano tras las migraciones");
 
         try (Connection conn = storage.dataSource().getConnection()) {
-            // Verificar que la tabla de versiones registro la version 4.
+            // Verificar que la tabla de versiones registro la ultima version.
             try (Statement st = conn.createStatement();
                  ResultSet rs = st.executeQuery("SELECT MAX(version) FROM dt_schema_version")) {
                 assertTrue(rs.next(), "Debe existir registro en la tabla de versiones");
-                assertEquals(4, rs.getInt(1), "La version final registrada debe ser 4");
+                assertEquals(5, rs.getInt(1), "La version final registrada debe ser 5");
             }
 
             // Verificar la existencia fisica de las tablas del esquema.

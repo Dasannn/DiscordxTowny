@@ -123,7 +123,8 @@ final class MigrationRunner {
             migration1Links(),
             migration2LinkCodes(),
             migration3Spaces(),
-            migration4AuditLog(sqlite)
+            migration4AuditLog(sqlite),
+            migration5Settings()
         };
     }
 
@@ -157,6 +158,21 @@ final class MigrationRunner {
             + "uuid VARCHAR(36) NOT NULL UNIQUE,"
             + "expires_at BIGINT NOT NULL,"
             + "attempts INTEGER NOT NULL DEFAULT 0"
+            + ")"
+        });
+    }
+
+    /**
+     * v5: tabla settings.
+     *
+     * <p>Estado que el plugin se escribe a si mismo entre arranques. No es
+     * configuracion del administrador: esa vive en config.yml.
+     */
+    private Migration migration5Settings() {
+        return new Migration(5, new String[]{
+            "CREATE TABLE IF NOT EXISTS " + prefix + "settings ("
+            + "setting_key VARCHAR(64) NOT NULL PRIMARY KEY,"
+            + "value VARCHAR(255) NOT NULL"
             + ")"
         });
     }

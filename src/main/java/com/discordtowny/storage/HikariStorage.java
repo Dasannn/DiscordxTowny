@@ -26,6 +26,7 @@ public final class HikariStorage implements Storage {
     private SqlLinkRepository linkRepo;
     private SqlSpaceRepository spaceRepo;
     private SqlAuditRepository auditRepo;
+    private SqlSettingsRepository settingsRepo;
 
     public HikariStorage(PluginConfig.Database dbConfig, Logger logger) {
         this.dbConfig = dbConfig;
@@ -51,6 +52,7 @@ public final class HikariStorage implements Storage {
         linkRepo  = new SqlLinkRepository(dataSource, prefix);
         spaceRepo = new SqlSpaceRepository(dataSource, prefix, isSqlite);
         auditRepo = new SqlAuditRepository(dataSource, prefix);
+        settingsRepo = new SqlSettingsRepository(dataSource, prefix, isSqlite);
         logger.info("Almacenamiento inicializado (" + dbConfig.type() + ").");
     }
 
@@ -64,6 +66,12 @@ public final class HikariStorage implements Storage {
     public SpaceRepository spaces() {
         assertInitialized();
         return spaceRepo;
+    }
+
+    @Override
+    public SettingsRepository settings() {
+        assertInitialized();
+        return settingsRepo;
     }
 
     @Override
