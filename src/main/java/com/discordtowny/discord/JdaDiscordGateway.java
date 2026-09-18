@@ -2,6 +2,7 @@ package com.discordtowny.discord;
 
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.AuditEvent;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
@@ -42,6 +43,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
     private final PluginConfig config;
     private final SpaceRepository spaces;
+    private final SettingsRepository settings;
     private final Logger logger;
 
     private final AtomicReference<JDA> jdaRef = new AtomicReference<>();
@@ -50,10 +52,29 @@ public final class JdaDiscordGateway implements DiscordGateway {
     private volatile LogQueue logQueue;
     private volatile boolean available = false;
 
-    public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces, Logger logger) {
+    public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces,
+                             SettingsRepository settings, Logger logger) {
         this.config = config;
         this.spaces = spaces;
+        this.settings = settings;
         this.logger = logger;
+    }
+
+    public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces, Logger logger) {
+        this(config, spaces, null, logger);
+    }
+
+    /** Constructor de prueba con conexion simulada. */
+    JdaDiscordGateway(PluginConfig config, SpaceRepository spaces,
+                      SettingsRepository settings, Logger logger,
+                      JDA jda, Guild guild) {
+        this.config = config;
+        this.spaces = spaces;
+        this.settings = settings;
+        this.logger = logger;
+        this.jdaRef.set(jda);
+        this.guild = guild;
+        this.available = true;
     }
 
     // -- Arranque y apagado --
@@ -102,7 +123,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
             this.guild = g;
 
             // Cola de operaciones con sanitizador
-            var executor = new JdaGuildOperationExecutor(g, config, spaces, logger);
+            var executor = new JdaGuildOperationExecutor(g, config, spaces, settings, logger);
             this.operationQueue = new GuildOperationQueue(executor, logger, this::sanitizeMessage);
             operationQueue.start();
 
@@ -182,17 +203,21 @@ public final class JdaDiscordGateway implements DiscordGateway {
                 .toList());
 
         guild().ifPresent(g -> {
-            Optional<String> persisted = MayorRoleRegistry.getMayorRoleId();
+            Optional<String> persisted = settings != null
+                    ? settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)
+                    : Optional.empty();
             if (persisted.isPresent()) {
                 net.dv8tion.jda.api.entities.Role r = g.getRoleById(persisted.get());
                 if (r != null) {
                     managedRoleIds.add(r.getId());
-                    return;
                 }
+                return;
             }
             for (net.dv8tion.jda.api.entities.Role r : g.getRolesByName(config.roles().mayorRoleName(), true)) {
                 managedRoleIds.add(r.getId());
-                MayorRoleRegistry.saveMayorRoleId(r.getId());
+                if (settings != null) {
+                    settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, r.getId());
+                }
             }
         });
 
@@ -211,7 +236,9 @@ public final class JdaDiscordGateway implements DiscordGateway {
         }
 
         // 1. Identidad estable persistida
-        Optional<String> persistedId = MayorRoleRegistry.getMayorRoleId();
+        Optional<String> persistedId = settings != null
+                ? settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)
+                : Optional.empty();
         if (persistedId.isPresent()) {
             net.dv8tion.jda.api.entities.Role role = guild.getRoleById(persistedId.get());
             if (role != null) {
@@ -225,7 +252,9 @@ public final class JdaDiscordGateway implements DiscordGateway {
         List<net.dv8tion.jda.api.entities.Role> roles = guild.getRolesByName(config.roles().mayorRoleName(), true);
         if (!roles.isEmpty()) {
             String id = roles.getFirst().getId();
-            MayorRoleRegistry.saveMayorRoleId(id);
+            if (settings != null) {
+                settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, id);
+            }
             return Optional.of(id);
         }
 

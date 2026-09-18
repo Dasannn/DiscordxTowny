@@ -4,6 +4,7 @@ import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.SpaceRequest;
 import com.discordtowny.model.SpaceState;
 import com.discordtowny.model.TownSpace;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
@@ -51,6 +52,7 @@ class JdaGuildOperationExecutorTest {
     private Guild guild;
     private PluginConfig config;
     private SpaceRepository spaces;
+    private SettingsRepository settings;
     private PluginConfig.Roles rolesConfig;
     private PluginConfig.Structure structureConfig;
     private PluginConfig.Discord discordConfig;
@@ -60,6 +62,7 @@ class JdaGuildOperationExecutorTest {
         guild = mock(Guild.class);
         config = mock(PluginConfig.class);
         spaces = mock(SpaceRepository.class);
+        settings = mock(SettingsRepository.class);
 
         rolesConfig = mock(PluginConfig.Roles.class);
         structureConfig = mock(PluginConfig.Structure.class);
@@ -72,12 +75,6 @@ class JdaGuildOperationExecutorTest {
         when(rolesConfig.mayorRoleName()).thenReturn("Alcalde");
         when(rolesConfig.townRoleName()).thenReturn("{town}");
         when(discordConfig.token()).thenReturn("token-secreto-12345");
-        MayorRoleRegistry.clear();
-    }
-
-    @org.junit.jupiter.api.AfterEach
-    void tearDown() {
-        MayorRoleRegistry.clear();
     }
 
     @Test
@@ -191,7 +188,7 @@ class JdaGuildOperationExecutorTest {
     }
 
     @Test
-    @DisplayName("ApplyMemberRoles reconoce el rol de alcalde por ID estable aunque haya sido renombrado")
+    @DisplayName("ApplyMemberRoles reconoce el rol de alcalde por ID persistido aunque haya sido renombrado")
     @SuppressWarnings("unchecked")
     void applyMemberRolesRecognizesMayorRoleByStableIdEvenIfRenamed() {
         String memberId = "111222333";
@@ -208,13 +205,13 @@ class JdaGuildOperationExecutorTest {
         when(member.getRoles()).thenReturn(List.of(mayorRole));
         when(spaces.findAll()).thenReturn(List.of());
 
-        // Identidad estable persistida previamente
-        MayorRoleRegistry.saveMayorRoleId(mayorRoleId);
+        // Identidad estable persistida previamente en SettingsRepository
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.of(mayorRoleId));
 
         AuditableRestAction<Void> removeAction = mock(AuditableRestAction.class);
         when(guild.removeRoleFromMember(any(), any())).thenReturn(removeAction);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
 
         var op = new GuildOperation.ApplyMemberRoles(
                 memberId,
@@ -225,6 +222,43 @@ class JdaGuildOperationExecutorTest {
 
         assertTrue(outcome.succeeded());
         verify(guild).removeRoleFromMember(member, mayorRole);
+    }
+
+    @Test
+    @DisplayName("ApplyMemberRoles no retira rol de alcalde renombrado si no esta persistido su ID")
+    @SuppressWarnings("unchecked")
+    void applyMemberRolesDoesNotRevokeRenamedMayorRoleWithoutPersistedId() {
+        String memberId = "111222333";
+        Member member = mock(Member.class);
+        when(guild.getMemberById(memberId)).thenReturn(member);
+
+        String mayorRoleId = "role-mayor-renamed";
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn(mayorRoleId);
+        when(mayorRole.getName()).thenReturn("Burgomaestre");
+        when(guild.getRoleById(mayorRoleId)).thenReturn(mayorRole);
+
+        when(member.getRoles()).thenReturn(List.of(mayorRole));
+        when(spaces.findAll()).thenReturn(List.of());
+
+        // No hay ID persistido previo
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.empty());
+
+        AuditableRestAction<Void> removeAction = mock(AuditableRestAction.class);
+        when(guild.removeRoleFromMember(any(), any())).thenReturn(removeAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+
+        var op = new GuildOperation.ApplyMemberRoles(
+                memberId,
+                Collections.emptyList(),
+                List.of(mayorRoleId));
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertTrue(outcome.succeeded());
+        // Al no reconocerse como gestionado, se omite y no se retira
+        verify(guild, never()).removeRoleFromMember(member, mayorRole);
     }
 
     @Test

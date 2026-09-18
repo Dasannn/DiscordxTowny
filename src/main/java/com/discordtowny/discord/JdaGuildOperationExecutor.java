@@ -4,6 +4,7 @@ import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.SpaceRequest;
 import com.discordtowny.model.SpaceState;
 import com.discordtowny.model.TownSpace;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
@@ -42,14 +43,21 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
     private final Guild guild;
     private final PluginConfig config;
     private final SpaceRepository spaces;
+    private final SettingsRepository settings;
     private final Logger logger;
 
     JdaGuildOperationExecutor(Guild guild, PluginConfig config,
-                              SpaceRepository spaces, Logger logger) {
+                              SpaceRepository spaces, SettingsRepository settings, Logger logger) {
         this.guild = guild;
         this.config = config;
         this.spaces = spaces;
+        this.settings = settings;
         this.logger = logger;
+    }
+
+    JdaGuildOperationExecutor(Guild guild, PluginConfig config,
+                              SpaceRepository spaces, Logger logger) {
+        this(guild, config, spaces, null, logger);
     }
 
     @Override
@@ -418,12 +426,21 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         if (managedRoleIds.contains(role.getId())) {
             return true;
         }
-        Optional<String> mayorId = MayorRoleRegistry.getMayorRoleId();
-        if (mayorId.isPresent()) {
-            return role.getId().equals(mayorId.get());
+        if (settings != null) {
+            Optional<String> mayorId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
+            if (mayorId.isPresent()) {
+                return role.getId().equals(mayorId.get());
+            }
         }
         if (role.getName().equalsIgnoreCase(config.roles().mayorRoleName())) {
-            MayorRoleRegistry.saveMayorRoleId(role.getId());
+            if (settings != null) {
+                try {
+                    settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, role.getId());
+                } catch (Exception e) {
+                    logger.warning("[Ejecutor] No se pudo persistir el ID del rol de alcalde: "
+                            + sanitizeMessage(e.getMessage()));
+                }
+            }
             return true;
         }
         return false;
@@ -471,7 +488,9 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
 
     /** Asegura que el rol de alcalde existe; si no, lo crea. */
     private Role ensureMayorRole() {
-        Optional<String> persistedId = MayorRoleRegistry.getMayorRoleId();
+        Optional<String> persistedId = settings != null
+                ? settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)
+                : Optional.empty();
         if (persistedId.isPresent()) {
             Role role = guild.getRoleById(persistedId.get());
             if (role != null) {
@@ -489,8 +508,13 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
             role = action != null ? action.setName(mayorRoleName).complete() : null;
         }
 
-        if (role != null) {
-            MayorRoleRegistry.saveMayorRoleId(role.getId());
+        if (role != null && settings != null) {
+            try {
+                settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, role.getId());
+            } catch (Exception e) {
+                logger.warning("[Ejecutor] No se pudo persistir el ID del rol de alcalde: "
+                        + sanitizeMessage(e.getMessage()));
+            }
         }
         return role;
     }
