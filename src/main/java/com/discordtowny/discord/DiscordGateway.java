@@ -45,7 +45,19 @@ public interface DiscordGateway {
      * Comprueba que el bot puede operar: rol por encima de los que gestiona y
      * permisos necesarios en el guild.
      *
+     * <p>Realiza I/O bloqueante de base de datos. No invocar desde el hilo principal
+     * de Paper; preferir {@link #verifyPermissionsAsync()}.
+     *
      * @return vacio si todo esta bien, o la razon por la que no puede operar.
      */
     java.util.Optional<String> verifyPermissions();
+
+    /**
+     * Comprueba de forma asincrona fuera del hilo principal que el bot puede operar.
+     *
+     * @return futuro con vacio si todo esta bien, o la razon por la que no puede operar.
+     */
+    default CompletableFuture<java.util.Optional<String>> verifyPermissionsAsync() {
+        return CompletableFuture.supplyAsync(this::verifyPermissions);
+    }
 }
