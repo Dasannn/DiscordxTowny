@@ -78,11 +78,21 @@ final class GuildOperationQueue {
     /**
      * Encola una operacion. No bloquea.
      *
-     * <p>El futuro nunca completa de forma excepcional.
+     * <p>El futuro nunca completa de forma excepcional: los fallos viajan
+     * dentro de {@link OperationOutcome}.
      */
     CompletableFuture<OperationOutcome> submit(GuildOperation operation) {
+        if (operation == null) {
+            return CompletableFuture.completedFuture(
+                    OperationOutcome.permanentFailure("Operacion nula"));
+        }
         var future = new CompletableFuture<OperationOutcome>();
-        queue.offer(new QueuedOperation(operation, future));
+        try {
+            queue.offer(new QueuedOperation(operation, future));
+        } catch (Exception e) {
+            future.complete(OperationOutcome.transientFailure(
+                    "Error al encolar operacion: " + e.getMessage()));
+        }
         return future;
     }
 
@@ -95,13 +105,21 @@ final class GuildOperationQueue {
 
     private void consume() {
         while (running.get()) {
+            QueuedOperation item = null;
             try {
-                QueuedOperation item = queue.take();
+                item = queue.take();
                 OperationOutcome outcome = executeWithRetries(item.operation());
                 item.future().complete(outcome);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 // El shutdown interrumpe al consumidor; simplemente salimos del bucle
+                break;
+            } catch (Throwable t) {
+                logger.log(Level.SEVERE, "[Cola] Error inesperado en el consumidor", t);
+                if (item != null && !item.future().isDone()) {
+                    item.future().complete(OperationOutcome.transientFailure(
+                            "Fallo critico en ejecucion: " + t.getMessage()));
+                }
             }
         }
     }
@@ -117,11 +135,19 @@ final class GuildOperationQueue {
 
             try {
                 lastOutcome = executor.execute(operation);
-            } catch (Exception e) {
+                if (lastOutcome == null) {
+                    lastOutcome = OperationOutcome.transientFailure(
+                            "El ejecutor devolvio un resultado nulo");
+                }
+            } catch (Throwable t) {
+                if (t instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                    return OperationOutcome.transientFailure("Interrumpido durante ejecucion");
+                }
                 logger.warning("[Cola] Excepcion no controlada en '"
-                        + operation.describe() + "': " + e.getMessage());
+                        + operation.describe() + "': " + t.getMessage());
                 lastOutcome = OperationOutcome.transientFailure(
-                        "Excepcion: " + e.getMessage());
+                        "Excepcion: " + t.getMessage());
             }
 
             switch (lastOutcome.status()) {

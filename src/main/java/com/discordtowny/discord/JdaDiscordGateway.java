@@ -163,10 +163,16 @@ public final class JdaDiscordGateway implements DiscordGateway {
         if (!isAvailable()) {
             return Optional.of("Discord no esta conectado");
         }
-        // Recopilar los IDs de roles gestionados
-        List<String> managedRoleIds = spaces.findAll().stream()
+        // Recopilar los IDs de roles gestionados (roles de towns + rol de alcalde)
+        List<String> managedRoleIds = new java.util.ArrayList<>(spaces.findAll().stream()
                 .flatMap(s -> s.roleId().stream())
-                .toList();
+                .toList());
+
+        guild().ifPresent(g -> {
+            for (net.dv8tion.jda.api.entities.Role r : g.getRolesByName(config.roles().mayorRoleName(), true)) {
+                managedRoleIds.add(r.getId());
+            }
+        });
 
         return PermissionVerifier.verify(guild, managedRoleIds);
     }
@@ -237,7 +243,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
      * Elimina el token del mensaje de error, si aparece.
      * El token NUNCA debe aparecer en logs (P7 de la constitucion).
      */
-    private String sanitizeMessage(String message) {
+    String sanitizeMessage(String message) {
         if (message == null) return "error desconocido";
         String token = config.discord().token();
         if (token != null && !token.isEmpty() && message.contains(token)) {

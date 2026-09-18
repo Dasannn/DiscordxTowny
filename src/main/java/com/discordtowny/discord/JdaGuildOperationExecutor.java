@@ -60,9 +60,10 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         } catch (ErrorResponseException e) {
             return classifyError(e, operation.describe());
         } catch (Exception e) {
+            String safeMsg = sanitizeMessage(e.getMessage());
             logger.warning("[Ejecutor] Error inesperado en '" + operation.describe()
-                    + "': " + e.getMessage());
-            return OperationOutcome.transientFailure(e.getMessage());
+                    + "': " + safeMsg);
+            return OperationOutcome.transientFailure(safeMsg);
         }
     }
 
@@ -311,19 +312,35 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         // Solo tocamos roles gestionados por el plugin
         for (String roleId : op.grantRoleIds()) {
             Role role = guild.getRoleById(roleId);
-            if (role != null && !member.getRoles().contains(role)) {
+            if (role != null && isManagedRole(role) && !member.getRoles().contains(role)) {
                 guild.addRoleToMember(member, role).complete();
             }
         }
 
         for (String roleId : op.revokeRoleIds()) {
             Role role = guild.getRoleById(roleId);
-            if (role != null && member.getRoles().contains(role)) {
+            if (role != null && isManagedRole(role) && member.getRoles().contains(role)) {
                 guild.removeRoleFromMember(member, role).complete();
             }
         }
 
         return OperationOutcome.success();
+    }
+
+    /**
+     * Comprueba si un rol esta gestionado por el plugin.
+     * Solo son roles gestionados los de las towns registradas y el rol global de alcalde.
+     */
+    private boolean isManagedRole(Role role) {
+        if (role == null) {
+            return false;
+        }
+        if (role.getName().equalsIgnoreCase(config.roles().mayorRoleName())) {
+            return true;
+        }
+        String roleId = role.getId();
+        return spaces.findAll().stream()
+                .anyMatch(s -> s.roleId().filter(roleId::equals).isPresent());
     }
 
     // -- Utilidades --
@@ -390,6 +407,11 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                 return ch;
             }
         }
+        for (TextChannel existing : category.getTextChannels()) {
+            if (existing.getName().equalsIgnoreCase(name)) {
+                return existing;
+            }
+        }
         // Crear con permisos: @everyone sin ver, rol de town con acceso
         TextChannel ch = category.createTextChannel(name)
                 .addPermissionOverride(guild.getPublicRole(),
@@ -413,6 +435,11 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
             VoiceChannel ch = guild.getVoiceChannelById(space.voiceChannelId().get());
             if (ch != null) {
                 return ch;
+            }
+        }
+        for (VoiceChannel existing : category.getVoiceChannels()) {
+            if (existing.getName().equalsIgnoreCase(name)) {
+                return existing;
             }
         }
         VoiceChannel ch = category.createVoiceChannel(name)
@@ -509,5 +536,18 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         return new TownSpace(s.townUuid(), s.townName(),
                 s.categoryId(), s.textChannelId(), Optional.of(channelId), s.roleId(),
                 s.state(), s.createdAt(), s.archivedAt(), s.lastActivityAt());
+    }
+
+    /**
+     * Elimina el token del mensaje de error, si aparece.
+     * El token NUNCA debe aparecer en logs (P7 de la constitucion).
+     */
+    private String sanitizeMessage(String message) {
+        if (message == null) return "error desconocido";
+        String token = config.discord().token();
+        if (token != null && !token.isEmpty() && message.contains(token)) {
+            return message.replace(token, "[TOKEN_OCULTO]");
+        }
+        return message;
     }
 }
