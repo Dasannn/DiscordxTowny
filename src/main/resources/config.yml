@@ -1,0 +1,136 @@
+# DiscordTowny
+#
+# Los valores se validan al arrancar. Si algo esta mal, el plugin lo dice
+# senalando la clave exacta y arranca en modo degradado en lugar de operar con
+# datos invalidos.
+#
+# NUNCA compartas este archivo: contiene el token del bot y las credenciales de
+# la base de datos.
+
+discord:
+  # Token del bot. Obligatorio.
+  token: "PON_AQUI_TU_TOKEN"
+  # ID del servidor de Discord donde opera el bot. Obligatorio.
+  guild-id: ""
+  # Canal donde el bot publica lo que hace. Vacio lo desactiva.
+  log-channel-id: ""
+
+database:
+  # mysql, mariadb o sqlite. Con sqlite se ignora todo lo demas de este bloque.
+  type: sqlite
+  host: localhost
+  port: 3306
+  name: discordtowny
+  user: ""
+  password: ""
+  # Prefijo de las tablas, por si compartes base de datos con otros plugins.
+  table-prefix: "dt_"
+  pool:
+    maximum-size: 10
+    minimum-idle: 2
+    connection-timeout-seconds: 10
+
+# Estructura que el bot crea en Discord para cada town.
+structure:
+  # Categoria que contiene los espacios activos. La crea el bot si no existe.
+  category-name: "Comunidades"
+  # Categoria donde van los espacios archivados.
+  archive-category-name: "Archivo"
+  create-text-channel: true
+  create-voice-channel: true
+  # Marcadores disponibles: {town}, {mayor}
+  text-channel-name: "{town}"
+  voice-channel-name: "{town}"
+
+roles:
+  # Rol unico, compartido por todos los alcaldes del servidor.
+  mayor-role-name: "Alcalde"
+  # Un rol por town. Marcadores: {town}
+  town-role-name: "{town}"
+  # Color en hexadecimal, vacio para el color por defecto de Discord.
+  town-role-color: ""
+  # Mostrar el rol de town separado en la lista de miembros.
+  town-role-hoisted: false
+
+limits:
+  # Techo propio del plugin. Discord admite 500 canales y 250 roles por
+  # servidor: con dos canales y un rol por town el maximo real ronda 240.
+  max-towns: 200
+  # Residentes minimos para que una town pueda tener espacio.
+  min-residents: 2
+  # Espera entre creaciones, para no chocar con el limite de peticiones.
+  creation-cooldown-seconds: 60
+
+lifecycle:
+  # Que hacer cuando una town desaparece o cae en ruinas.
+  # archive: canal a solo lectura, movido al archivo, rol eliminado.
+  # Nada se borra automaticamente: el borrado definitivo es /dt admin purge.
+  on-town-deleted: archive
+  on-town-ruined: archive
+  # Dias que se conservan los espacios archivados antes de avisar de que
+  # conviene purgarlos. 0 desactiva el aviso.
+  archive-reminder-days: 30
+
+sync:
+  # Cada cuantos minutos se reconcilia todo. 0 lo desactiva.
+  interval-minutes: 30
+  # repair aplica las correcciones; report solo las registra.
+  mode: repair
+  # Elementos por lote y pausa entre lotes, para no saturar el limite de
+  # peticiones de Discord.
+  batch-size: 20
+  batch-pause-seconds: 5
+
+linking:
+  code-expiry-minutes: 10
+  # Intentos fallidos permitidos por usuario de Discord antes de bloquearlo
+  # temporalmente.
+  max-attempts: 5
+  attempt-lockout-minutes: 15
+  # Quitar el vinculo si el jugador sale del servidor de Discord.
+  unlink-on-guild-leave: true
+
+logging:
+  # Cada cuanto se vacia la cola de mensajes hacia el canal de logs.
+  flush-interval-seconds: 10
+  # Tamano maximo de la cola. Si se llena, se descartan los eventos menos
+  # relevantes y se anota cuantos se perdieron.
+  queue-size: 500
+  # full registra todo; changes solo creaciones, borrados y cambios de rol;
+  # errors solo fallos.
+  detail: full
+
+updates:
+  # Comprobar si hay una version nueva publicada en GitHub.
+  check-enabled: true
+  check-interval-hours: 12
+  # Descargar la actualizacion automaticamente al detectarla. Se aplica al
+  # reiniciar el servidor: el jar en uso nunca se toca.
+  auto-download: true
+  notify-admins-on-join: true
+
+commands:
+  # Cada comando de Discord se puede desactivar, y su respuesta puede ser
+  # efimera (solo la ve quien lo ejecuta) o publica.
+  cooldown-seconds: 5
+  town:
+    enabled: true
+    ephemeral: false
+  residents:
+    enabled: true
+    ephemeral: false
+  res:
+    enabled: true
+    ephemeral: false
+  townlist:
+    enabled: true
+    ephemeral: false
+  mytown:
+    enabled: true
+    ephemeral: true
+  help:
+    enabled: true
+    ephemeral: true
+
+# No toques esto: lo usa el plugin para saber si debe migrar la configuracion.
+config-version: 1

@@ -1,0 +1,61 @@
+# Textos del plugin. Editables sin tocar config.yml.
+#
+# Marcadores disponibles segun el mensaje: {player}, {town}, {mayor}, {code},
+# {minutes}, {current}, {latest}, {max}, {reason}.
+# Colores con el formato de Minecraft usando &.
+
+prefix: "&8[&bDiscordTowny&8] &r"
+
+general:
+  no-permission: "&cNo tienes permiso para usar esto."
+  players-only: "&cEste comando solo funciona dentro del juego."
+  unknown-command: "&cComando desconocido. Usa &f/dt help&c."
+  working: "&7Trabajando en ello, te aviso al terminar."
+  discord-unavailable: "&cDiscord no esta disponible ahora mismo. Intentalo mas tarde."
+  database-unavailable: "&cNo se puede acceder a la base de datos. Avisa a un administrador."
+  not-in-town: "&cNo perteneces a ninguna town."
+  not-mayor: "&cSolo el alcalde de la town puede hacer esto."
+  town-not-found: "&cNo existe ninguna town llamada &f{town}&c."
+
+linking:
+  code-generated: "&aTu codigo es &f{code}&a. Escribe &f/link {code}&a en Discord. Caduca en {minutes} minutos."
+  already-linked: "&cYa tienes una cuenta de Discord vinculada. Usa &f/dt unlink&c primero."
+  discord-already-linked: "&cEsa cuenta de Discord ya esta vinculada a otro jugador."
+  code-invalid: "&cEse codigo no es valido."
+  code-expired: "&cEse codigo ha caducado. Genera uno nuevo con &f/dt link&c."
+  too-many-attempts: "&cDemasiados intentos fallidos. Espera {minutes} minutos."
+  link-success: "&aCuenta vinculada correctamente."
+  unlink-success: "&aVinculo eliminado. Has perdido los roles que te dio el plugin."
+  not-linked: "&cNo tienes ninguna cuenta vinculada."
+  link-required: "&cNecesitas vincular tu cuenta de Discord. Usa &f/dt link&c."
+
+space:
+  created: "&aEl espacio de &f{town}&a esta listo en Discord."
+  already-exists: "&cLa town &f{town}&c ya tiene su espacio en Discord."
+  creating: "&7Creando el espacio de &f{town}&7 en Discord..."
+  too-few-residents: "&cTu town necesita al menos {min} residentes para tener espacio."
+  limit-reached: "&cSe alcanzo el limite de {max} towns con espacio. Avisa a un administrador."
+  cooldown: "&cEspera {seconds} segundos antes de volver a intentarlo."
+  archived: "&aEl espacio de &f{town}&a fue archivado. Los canales quedan en solo lectura."
+  restored: "&aEl espacio de &f{town}&a fue restaurado con su historial."
+  delete-confirm: "&eEsto archivara los canales de &f{town}&e. Repite el comando para confirmar."
+  renamed: "&aLos canales de &f{town}&a fueron renombrados."
+  failed: "&cNo se pudo completar la operacion: {reason}. Se reintentara automaticamente."
+
+sync:
+  started: "&7Sincronizando..."
+  finished: "&aSincronizacion terminada."
+  player-synced: "&aTus roles de Discord estan al dia."
+
+updates:
+  available: "&eHay una version nueva de DiscordTowny: &f{latest}&e (tienes &f{current}&e)."
+  downloaded: "&aLa version &f{latest}&a esta descargada. Reinicia el servidor para aplicarla."
+  download-failed: "&cNo se pudo descargar la actualizacion: {reason}."
+  checksum-mismatch: "&cLa descarga no coincide con el checksum publicado y fue descartada."
+  up-to-date: "&aEstas en la ultima version."
+
+admin:
+  reloaded: "&aConfiguracion recargada."
+  purge-confirm: "&cEsto borrara definitivamente {count} espacios archivados. Repite el comando para confirmar."
+  purged: "&aSe borraron {count} espacios archivados."
+  unlinked: "&a{player} ya no tiene cuenta vinculada."
