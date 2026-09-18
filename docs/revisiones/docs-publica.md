@@ -13,3 +13,19 @@ Build: No aplica (documentación pública)
 | 4 | menor | `README.md:5, 114, 120` y `docs/guia-de-uso.md:3, 70, 72, 93` | La documentación incluye comentarios internos y dudas sobre la especificación técnica ("La spec permite...", "La especificación no aclara...", "No acredita que las funciones estén implementadas"). Esto contradice la ficha T11 y `docs/spec.md` 13 (*"documentación escrita para jugadores y administradores de servidor, no para desarrolladores: sin detalles de código ni de arquitectura"*). | Reformular las secciones desde la perspectiva del usuario final, explicando qué hace el plugin de forma afirmativa y práctica, eliminando los meta-comentarios sobre la redacción interna de la spec. |
 
 Veredicto: requiere correcciones
+
+## Cierre
+
+Verificado por el arquitecto.
+
+| # | Estado | Comprobacion |
+|---|---|---|
+| 1 | resuelto | El paso 2 de "Crear e invitar al bot" indica activar **Server Members Intent** en Privileged Gateway Intents, y advierte de que sin el Discord rechaza la conexion. |
+| 2 | resuelto | El paso 4 incluye **Conectar** en la lista de permisos de la invitacion. |
+| 3 | resuelto | Desaparece la instruccion de copiar config.yml desde el codigo fuente. |
+| 4 | resuelto | Eliminados los comentarios internos sobre la especificacion en ambos archivos. |
+
+Ademas refleja los dos cambios de spec: categorias numeradas y canal archivado
+visible solo para administradores.
+
+Veredicto final: **integrable**.
