@@ -12,3 +12,18 @@ Build: verde, 79 tests
 | 4 | menor | src/main/java/com/discordtowny/config/YamlConfigLoader.java:168 | Validación permisiva del marcador `{mayor}` en `roles.town-role-name`. Según `config.yml` (línea 49), el rol de town solo admite el marcador `{town}`. La función de validación `nombre()` admite indistintamente `{town}` y `{mayor}` para todas las plantillas. | Diferenciar los marcadores válidos por tipo de plantilla, restringiendo `roles.town-role-name` exclusivamente a `{town}`. |
 
 Veredicto: requiere correcciones
+
+## Cierre
+
+Verificado por el arquitecto leyendo el codigo, no el informe del autor.
+
+| # | Estado | Comprobacion |
+|---|---|---|
+| 1 | resuelto | Desaparece el pestillo `falloLectura`. `isAvailable()` consulta el estado real en cada llamada, asi que un fallo transitorio ya no deja Towny inhabilitado hasta reiniciar. Cubierto por `disponibilidadSeRecuperaTrasFalloTransitorioDeLectura` y `disponibilidadReintentaTrasFalloDeLaComprobacion`. |
+| 2 | resuelto | `townSnapshot` devuelve `null` cuando la town no tiene alcalde, y `allTowns` filtra los nulos. Una town sin alcalde ya no tumba el listado completo. Cubierto por `townSinAlcaldeNoInvalidaLasDemas`. |
+| 3 | resuelto | `sync.interval-minutes: 0` se acepta y desactiva la reconciliacion, como dice `config.yml`. Cubierto por `intervaloCeroDesactivaReconciliacion`. |
+| 4 | resuelto | Los marcadores se validan por plantilla: `roles.town-role-name` rechaza `{mayor}`. |
+
+Build verificado por el arquitecto: BUILD SUCCESSFUL, 84 tests, 0 fallos.
+
+Veredicto final: **integrable**.
