@@ -10,8 +10,6 @@ import com.palmergames.bukkit.towny.db.TownyDataSource;
 import com.palmergames.bukkit.towny.object.Nation;
 import com.palmergames.bukkit.towny.object.Resident;
 import com.palmergames.bukkit.towny.object.Town;
-import com.palmergames.bukkit.towny.object.economy.Account;
-import com.palmergames.bukkit.towny.object.economy.BankAccount;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -70,12 +68,17 @@ class LiveTownyFacadeTest {
     void copiaTodosLosCamposConYSinEconomia(boolean economia) {
         try (var estado = mockStatic(TownyEconomyHandler.class)) {
             estado.when(TownyEconomyHandler::isActive).thenReturn(economia);
-            var banco = mock(BankAccount.class);
-            var cuenta = mock(Account.class);
-            when(town.getAccount()).thenReturn(banco);
-            when(banco.getHoldingBalance()).thenReturn(42.5);
-            when(residente.getAccount()).thenReturn(cuenta);
-            when(cuenta.getHoldingBalance()).thenReturn(7.5);
+            // Las cuentas de Towny requieren un servidor; sustituir solo su lectura.
+            fachada = new LiveTownyFacade(() -> api, () -> true, () -> true, avisos::add,
+                    entidad -> {
+                        assertTrue(economia, "No leer saldo sin economia");
+                        assertSame(town, entidad);
+                        return 42.5;
+                    }, entidad -> {
+                        assertTrue(economia, "No leer saldo sin economia");
+                        assertSame(residente, entidad);
+                        return 7.5;
+                    });
             Nation nacion = mock(Nation.class);
             when(nacion.getName()).thenReturn("Italia");
             when(town.getNationOrNull()).thenReturn(nacion);

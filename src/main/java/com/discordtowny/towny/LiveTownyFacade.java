@@ -14,6 +14,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.ToDoubleFunction;
 import org.bukkit.Bukkit;
 
 /** Lecturas en vivo; ningun objeto mutable de Towny cruza esta frontera. */
@@ -22,6 +23,8 @@ public final class LiveTownyFacade implements TownyFacade {
     private final BooleanSupplier disponible;
     private final BooleanSupplier hiloPrincipal;
     private final Consumer<String> aviso;
+    private final ToDoubleFunction<Town> saldoTown;
+    private final ToDoubleFunction<Resident> saldoResidente;
     private boolean falloLectura;
     private boolean avisado;
 
@@ -34,10 +37,20 @@ public final class LiveTownyFacade implements TownyFacade {
 
     LiveTownyFacade(Supplier<?> api, BooleanSupplier disponible,
                     BooleanSupplier hiloPrincipal, Consumer<String> aviso) {
+        this(api, disponible, hiloPrincipal, aviso,
+                town -> town.getAccount().getHoldingBalance(),
+                residente -> residente.getAccount().getHoldingBalance());
+    }
+
+    LiveTownyFacade(Supplier<?> api, BooleanSupplier disponible,
+                    BooleanSupplier hiloPrincipal, Consumer<String> aviso,
+                    ToDoubleFunction<Town> saldoTown, ToDoubleFunction<Resident> saldoResidente) {
         this.api = api;
         this.disponible = disponible;
         this.hiloPrincipal = hiloPrincipal;
         this.aviso = aviso;
+        this.saldoTown = saldoTown;
+        this.saldoResidente = saldoResidente;
     }
 
     private <T> T leer(Function<TownyAPI, T> lectura, T vacio) {
@@ -115,7 +128,7 @@ public final class LiveTownyFacade implements TownyFacade {
         return new TownSnapshot(town.getUUID(), town.getName(), town.getMayor().getUUID(),
                 town.getResidents().stream().map(Resident::getUUID).toList(), town.isRuined(),
                 Optional.ofNullable(town.getNationOrNull()).map(nacion -> nacion.getName()),
-                town.getNumTownBlocks(), TownyEconomyHandler.isActive() ? town.getAccount().getHoldingBalance() : 0,
+                town.getNumTownBlocks(), TownyEconomyHandler.isActive() ? saldoTown.applyAsDouble(town) : 0,
                 town.getRegistered());
     }
 
@@ -124,6 +137,6 @@ public final class LiveTownyFacade implements TownyFacade {
         return new ResidentSnapshot(residente.getUUID(), residente.getName(),
                 Optional.ofNullable(town).map(Town::getName), Optional.ofNullable(town).map(Town::getUUID),
                 residente.isMayor(), residente.isOnline(), residente.getLastOnline(),
-                TownyEconomyHandler.isActive() ? residente.getAccount().getHoldingBalance() : 0);
+                TownyEconomyHandler.isActive() ? saldoResidente.applyAsDouble(residente) : 0);
     }
 }
