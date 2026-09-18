@@ -22,3 +22,30 @@ Build: Compilación exitosa, 27 tests en verde
 | 13 | menor | `src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java:462-479` | `applyChannelPermissions` y `applyVoiceChannelPermissions` (usados al restaurar espacio) no configuran override explícito para el bot (`guild.getSelfMember()`), a diferencia de `ensureTextChannel` y `ensureVoiceChannel`. | Incluir el override del bot con `VIEW_CHANNEL`, `MANAGE_CHANNEL` y `MESSAGE_SEND` / `VOICE_CONNECT` al restaurar permisos. |
 
 Veredicto: requiere correcciones
+
+## Cierre
+
+Revisado en commit `abd19c3`.
+
+| # | Estado | Comprobación |
+|---|---|---|
+| 1 | resuelto | Se implementó `ensureMayorRole()` y en `createSpace` (L129-133) y `restoreSpace` (L302-306) se busca/crea el rol de alcalde y se asigna junto al rol de town a `req.mayorDiscordId()` de forma idempotente (`assignRoleToMember`). |
+| 2 | resuelto | Se configuró `MemberCachePolicy.ALL` y `ChunkingFilter.ALL` en el gateway; `findMember` (L632-653) llama a `retrieveMemberById().complete()` en hilo virtual si no está en caché, distinguiendo 404 (`UNKNOWN_MEMBER`/`UNKNOWN_USER`) de fallos transitorios que se relanzan a la cola. |
+| 3 | resuelto | En `GuildOperationQueue.submit` (L103-121) se comprueba `!running.get()` al inicio y tras `offer()` ante carreras con `shutdown()`, completando de inmediato con fallo transitorio ("Cola detenida"). |
+| 4 | resuelto | Se capturó explícitamente `PermissionException` (L66-73) antes de `catch (Exception e)`, clasificándolo como `PERMANENT_FAILURE` y notificando `onOperationFailed`. |
+| 5 | resuelto | En `restoreSpace` (L278-282), se ejecuta `spaces.save(space)` con `withRole` inmediatamente después de crear/obtener el rol, antes de mover canales. |
+| 6 | resuelto | `newEmptySpace` nace en `INCONSISTENT` (L738-744) y solo pasa a `ACTIVE` al completar todo con éxito (L136-137); `restoreSpace` marca `INCONSISTENT` al entrar (L268-269); y `onOperationFailed` (L700-734) actualiza la BD a `INCONSISTENT` ante fallos permanentes o reintentos agotados. |
+| 7 | resuelto | Acorde a la clarificación de spec (`spec.md` 4.3 y 10), `archiveSpace` (L220-243) deniega `VIEW_CHANNEL` a `@everyone` ocultándolo a ex-residentes tras borrar el rol, y otorga override al bot; el staff mantiene visibilidad y lectura mediante permisos nativos de administrador. |
+| 8 | resuelto | `connect()` (L67-70) ahora es asíncrono devolviendo `CompletableFuture<Void>` en hilo virtual (`dt-discord-connect`) donde se evalúa `verifyPermissions()`; y se añadió `verifyPermissionsAsync()` a la interfaz. |
+| 9 | resuelto | Se creó `DiscordSanitizer` (con soporte para texto y trazas completas) e integró en `LogQueue` (L175-178), `GuildOperationQueue` (L139-178) y `JdaGuildOperationExecutor` (L81-85), enmascarando cualquier token con `[TOKEN_OCULTO]`. |
+| 10 | resuelto | En `applyMemberRoles` (L388-390), se invoca `spaces.findAll()` una sola vez para construir `managedRoleIds` en memoria antes de evaluar las listas de concesión y revocación. |
+| 11 | resuelto | En `deleteSpace` (L330-369) se capturan e ignoran `UNKNOWN_ROLE` y `UNKNOWN_CHANNEL` como éxito idempotente, y en `classifyError` (L680-686) se mapean a `success()` durante `DeleteSpace` y a `permanentFailure` para las demás operaciones. |
+| 12 | resuelto | Se renombró el test en la cola a `retryOnTransientFailureCompletesSuccessfully` y se añadieron pruebas reales en `JdaGuildOperationExecutorTest` (L188-360) que verifican la no duplicación de categorías, roles y canales en el código de producción. |
+| 13 | resuelto | Se añadió override explícito para el bot (`guild.getSelfMember()`) con permisos de visualización y gestión en `applyChannelPermissions` (L600-605) y `applyVoiceChannelPermissions` (L620-625). |
+
+### Comprobación de cambios de especificación
+
+- **Categorías numeradas al llegar a 50 canales:** `ensureCategoryWithCapacity` calcula `cat.getChannels().size() + channelsNeeded <= 50`, teniendo en cuenta los canales a crear en la operación para no superar el límite. Si una categoría numerada ya existe pero también está llena, el bucle incrementa `index` hasta encontrar una con capacidad suficiente o instanciar la siguiente libre en secuencia.
+- **Canal archivado visible solo para administradores:** Al eliminar el rol de la town y denegar `VIEW_CHANNEL` a `@everyone`, los ex-residentes no tienen acceso al canal. Los administradores del servidor lo leen gracias al bypass nativo de `ADMINISTRATOR` en Discord, preservando el cupo de roles del servidor.
+
+Veredicto final: integrable
