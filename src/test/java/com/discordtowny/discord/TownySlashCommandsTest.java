@@ -31,12 +31,18 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -57,6 +63,7 @@ class TownySlashCommandsTest {
     private Messages messages;
     private PluginConfig config;
     private Executor trackingExecutor;
+    private Executor asyncExecutor;
     private int mainThreadHopCount;
     private Clock fixedClock;
     private TownySlashCommands commands;
@@ -85,6 +92,7 @@ class TownySlashCommandsTest {
             mainThreadHopCount++;
             runnable.run();
         };
+        asyncExecutor = Runnable::run;
 
         fixedClock = Clock.fixed(Instant.parse("2026-09-19T12:00:00Z"), ZoneId.of("UTC"));
 
@@ -109,7 +117,7 @@ class TownySlashCommandsTest {
                 ))
         );
 
-        commands = new TownySlashCommands(townyFacade, linkService, config, messages, trackingExecutor, fixedClock);
+        commands = new TownySlashCommands(townyFacade, linkService, config, messages, trackingExecutor, asyncExecutor, fixedClock);
 
         event = mock(SlashCommandInteractionEvent.class);
         replyAction = mock(ReplyCallbackAction.class);
@@ -213,7 +221,7 @@ class TownySlashCommandsTest {
 
         disabledCommands.onSlashCommandInteraction(event);
 
-        verify(event).reply("general.no-permission");
+        verify(event).reply("general.command-disabled");
         verify(replyAction).setEphemeral(true);
         verifyNoInteractions(townyFacade);
         verifyNoInteractions(linkService);
@@ -238,21 +246,34 @@ class TownySlashCommandsTest {
         commands.onSlashCommandInteraction(event);
 
         // Rejected on cooldown
-        verify(event).reply(contains("space.cooldown"));
+        verify(event).reply(contains("general.cooldown"));
         verify(replyAction).setEphemeral(true);
         // Towny not invoked a second time
         assertEquals(1, mainThreadHopCount);
     }
 
-    // --- Mandatory Linking ---
+    // --- Selective Linking (Spec 5.1) ---
 
     @Test
-    void unlinkedAuthorExecutingTownCommandIsRejectedWithExplanation() {
+    void unlinkedAuthorExecutingTownCommandWithNameSucceedsWithoutTouchingLinkService() {
         when(event.getName()).thenReturn("town");
         OptionMapping opt = mock(OptionMapping.class);
         when(opt.getAsString()).thenReturn("Rome");
         when(event.getOption("name")).thenReturn(opt);
 
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 10, 100.0, 1000L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void unlinkedAuthorExecutingTownCommandWithoutArgIsRejectedWithExplanation() {
+        when(event.getName()).thenReturn("town");
         when(linkService.findByDiscordId(discordUserId)).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
 
         commands.onSlashCommandInteraction(event);
@@ -275,7 +296,7 @@ class TownySlashCommandsTest {
     }
 
     @Test
-    void unlinkedAuthorExecutingResCommandIsRejectedWithExplanation() {
+    void unlinkedAuthorExecutingResCommandWithoutArgIsRejectedWithExplanation() {
         when(event.getName()).thenReturn("res");
         when(linkService.findByDiscordId(discordUserId)).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
 
@@ -287,7 +308,24 @@ class TownySlashCommandsTest {
     }
 
     @Test
-    void unlinkedAuthorExecutingResidentsCommandIsRejectedWithExplanation() {
+    void unlinkedAuthorExecutingResCommandWithNameSucceedsWithoutTouchingLinkService() {
+        when(event.getName()).thenReturn("res");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("Alice");
+        when(event.getOption("resident")).thenReturn(opt);
+
+        UUID aliceUuid = UUID.randomUUID();
+        ResidentSnapshot res = new ResidentSnapshot(aliceUuid, "Alice", Optional.of("Rome"), Optional.of(townUuid), false, true, 0L, 75.25);
+        when(townyFacade.residentByName("Alice")).thenReturn(Optional.of(res));
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void unlinkedAuthorExecutingResidentsCommandWithoutArgIsRejectedWithExplanation() {
         when(event.getName()).thenReturn("residents");
         when(linkService.findByDiscordId(discordUserId)).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
 
@@ -299,15 +337,55 @@ class TownySlashCommandsTest {
     }
 
     @Test
-    void unlinkedAuthorExecutingTownlistCommandIsRejectedWithExplanation() {
-        when(event.getName()).thenReturn("townlist");
-        when(linkService.findByDiscordId(discordUserId)).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+    void unlinkedAuthorExecutingResidentsCommandWithTownSucceedsWithoutTouchingLinkService() {
+        when(event.getName()).thenReturn("residents");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("Rome");
+        when(event.getOption("town")).thenReturn(opt);
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 10, 100.0, 1000L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
 
         commands.onSlashCommandInteraction(event);
 
-        verify(hook).editOriginal("linking.link-required");
-        verify(hook, never()).editOriginalEmbeds(any(MessageEmbed.class));
-        verifyNoInteractions(townyFacade);
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void unlinkedAuthorExecutingTownlistCommandSucceedsWithoutTouchingLinkService() {
+        when(event.getName()).thenReturn("townlist");
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 10, 100.0, 1000L);
+        when(townyFacade.allTowns()).thenReturn(List.of(town));
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void databaseOutageDoesNotAffectIdentityIndependentCommands() {
+        when(linkService.findByDiscordId(anyString()))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Database down")));
+
+        // /town Rome still works
+        when(event.getName()).thenReturn("town");
+        OptionMapping townOpt = mock(OptionMapping.class);
+        when(townOpt.getAsString()).thenReturn("Rome");
+        when(event.getOption("name")).thenReturn(townOpt);
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 10, 100.0, 1000L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+        verify(hook, never()).editOriginal("general.database-unavailable");
     }
 
     // --- Non-Existent Entities ---
@@ -537,6 +615,7 @@ class TownySlashCommandsTest {
         assertTrue(embed.getFields().stream().anyMatch(f -> f.getName().equals("embed.town") && "embed.none".equals(f.getValue())));
         assertTrue(embed.getFields().stream().anyMatch(f -> f.getName().equals("embed.rank") && "embed.mayor".equals(f.getValue())));
         assertTrue(embed.getFields().stream().anyMatch(f -> f.getName().equals("embed.status") && "embed.offline".equals(f.getValue())));
+        assertTrue(embed.getFields().stream().anyMatch(f -> f.getName().equals("embed.last-online")));
     }
 
     // --- Pagination ---
@@ -562,7 +641,7 @@ class TownySlashCommandsTest {
         verify(hook).editOriginalEmbeds(embedCaptor.capture());
         MessageEmbed embed = embedCaptor.getValue();
 
-        assertEquals("Towns List", embed.getTitle());
+        assertEquals("embed.town-list-title", embed.getTitle());
         assertTrue(embed.getFooter().getText().contains("embed.page:1/3"));
         assertTrue(embed.getDescription().contains("1. Town01"));
         assertTrue(embed.getDescription().contains("10. Town10"));
@@ -710,7 +789,7 @@ class TownySlashCommandsTest {
     void residentsInteractiveButtonUpdatesPage() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
-        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:Rome");
+        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
 
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
         when(btnEvent.deferEdit()).thenReturn(editCallback);
@@ -719,9 +798,6 @@ class TownySlashCommandsTest {
             cb.accept(hook);
             return null;
         }).when(editCallback).queue(any());
-
-        when(linkService.findByDiscordId(discordUserId))
-                .thenReturn(CompletableFuture.completedFuture(Optional.of(new AccountLink(playerUuid, discordUserId, Instant.now(), "Steve"))));
 
         List<UUID> residentUuids = new ArrayList<>();
         residentUuids.add(mayorUuid);
@@ -733,7 +809,7 @@ class TownySlashCommandsTest {
         when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
 
         TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, residentUuids, false, Optional.empty(), 10, 100.0, 0L);
-        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
 
         commands.onButtonInteraction(btnEvent);
 
@@ -742,6 +818,331 @@ class TownySlashCommandsTest {
         verify(hook).editOriginalEmbeds(embedCaptor.capture());
         MessageEmbed embed = embedCaptor.getValue();
         assertTrue(embed.getFooter().getText().contains("embed.page:2/2"));
+    }
+
+    @Test
+    void residentsPaginationResolvesByUuidWhenTownIsRenamedBetweenClicks() {
+        ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+        when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
+
+        MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+        when(btnEvent.deferEdit()).thenReturn(editCallback);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(editCallback).queue(any());
+
+        List<UUID> residentUuids = new ArrayList<>();
+        residentUuids.add(mayorUuid);
+        for (int i = 1; i <= 14; i++) {
+            UUID id = UUID.randomUUID();
+            residentUuids.add(id);
+            when(townyFacade.resident(id)).thenReturn(Optional.of(new ResidentSnapshot(id, String.format("Res%02d", i), Optional.of("NewRome"), Optional.of(townUuid), false, true, 0, 0)));
+        }
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("NewRome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        // Town was renamed to "NewRome"
+        TownSnapshot renamedTown = new TownSnapshot(townUuid, "NewRome", mayorUuid, residentUuids, false, Optional.empty(), 10, 100.0, 0L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(renamedTown));
+
+        commands.onButtonInteraction(btnEvent);
+
+        verify(townyFacade).town(townUuid);
+        verify(townyFacade, never()).townByName(anyString());
+        ArgumentCaptor<MessageEmbed> embedCaptor = ArgumentCaptor.forClass(MessageEmbed.class);
+        verify(hook).editOriginalEmbeds(embedCaptor.capture());
+        MessageEmbed embed = embedCaptor.getValue();
+        assertEquals("embed.residents: NewRome", embed.getTitle());
+        assertTrue(embed.getFooter().getText().contains("embed.page:2/2"));
+    }
+
+    @Test
+    void residentsPaginationIdentifiesTownByUuidWhenOldNameIsReusedByDifferentTown() {
+        ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+        when(btnEvent.getUser()).thenReturn(user);
+        UUID originalTownUuid = UUID.randomUUID();
+        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + originalTownUuid);
+
+        MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+        when(btnEvent.deferEdit()).thenReturn(editCallback);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(editCallback).queue(any());
+
+        List<UUID> residentUuids = new ArrayList<>();
+        residentUuids.add(mayorUuid);
+        for (int i = 1; i <= 14; i++) {
+            UUID id = UUID.randomUUID();
+            residentUuids.add(id);
+            when(townyFacade.resident(id)).thenReturn(Optional.of(new ResidentSnapshot(id, String.format("Res%02d", i), Optional.of("OldRomeCapital"), Optional.of(originalTownUuid), false, true, 0, 0)));
+        }
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("OldRomeCapital"), Optional.of(originalTownUuid), true, true, 0, 0)));
+
+        TownSnapshot originalTown = new TownSnapshot(originalTownUuid, "OldRomeCapital", mayorUuid, residentUuids, false, Optional.empty(), 10, 100.0, 0L);
+        when(townyFacade.town(originalTownUuid)).thenReturn(Optional.of(originalTown));
+
+        // Another unrelated town has taken the name "OldRome"
+        UUID impostorTownUuid = UUID.randomUUID();
+        TownSnapshot impostorTown = new TownSnapshot(impostorTownUuid, "OldRome", UUID.randomUUID(), List.of(), false, Optional.empty(), 1, 0.0, 0L);
+        when(townyFacade.townByName("OldRome")).thenReturn(Optional.of(impostorTown));
+
+        commands.onButtonInteraction(btnEvent);
+
+        verify(townyFacade).town(originalTownUuid);
+        verify(townyFacade, never()).townByName(anyString());
+        verify(townyFacade, never()).town(impostorTownUuid);
+        ArgumentCaptor<MessageEmbed> embedCaptor = ArgumentCaptor.forClass(MessageEmbed.class);
+        verify(hook).editOriginalEmbeds(embedCaptor.capture());
+        MessageEmbed embed = embedCaptor.getValue();
+        assertEquals("embed.residents: OldRomeCapital", embed.getTitle());
+    }
+
+    @Test
+    void disabledCommandRejectsTownlistButtonWithoutInvokingTowny() {
+        PluginConfig disabledConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of(
+                        new PluginConfig.DiscordCommand("town", true, false),
+                        new PluginConfig.DiscordCommand("mytown", true, true),
+                        new PluginConfig.DiscordCommand("res", true, false),
+                        new PluginConfig.DiscordCommand("residents", true, false),
+                        new PluginConfig.DiscordCommand("townlist", false, false),
+                        new PluginConfig.DiscordCommand("help", true, true)
+                ))
+        );
+        TownySlashCommands testCommands = new TownySlashCommands(
+                townyFacade, linkService, disabledConfig, messages, trackingExecutor, asyncExecutor, fixedClock);
+
+        ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+        when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getComponentId()).thenReturn("dt:townlist:2");
+        ReplyCallbackAction btnReplyAction = mock(ReplyCallbackAction.class);
+        when(btnEvent.reply(anyString())).thenReturn(btnReplyAction);
+        when(btnReplyAction.setEphemeral(anyBoolean())).thenReturn(btnReplyAction);
+        doAnswer(inv -> null).when(btnReplyAction).queue();
+
+        testCommands.onButtonInteraction(btnEvent);
+
+        verify(btnEvent).reply("general.command-disabled");
+        verify(btnReplyAction).setEphemeral(true);
+        verify(btnEvent, never()).deferEdit();
+        verifyNoInteractions(townyFacade);
+    }
+
+    @Test
+    void disabledCommandRejectsResidentsButtonWithoutInvokingTowny() {
+        PluginConfig disabledConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of(
+                        new PluginConfig.DiscordCommand("town", true, false),
+                        new PluginConfig.DiscordCommand("mytown", true, true),
+                        new PluginConfig.DiscordCommand("res", true, false),
+                        new PluginConfig.DiscordCommand("residents", false, false),
+                        new PluginConfig.DiscordCommand("townlist", true, false),
+                        new PluginConfig.DiscordCommand("help", true, true)
+                ))
+        );
+        TownySlashCommands testCommands = new TownySlashCommands(
+                townyFacade, linkService, disabledConfig, messages, trackingExecutor, asyncExecutor, fixedClock);
+
+        ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+        when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
+        ReplyCallbackAction btnReplyAction = mock(ReplyCallbackAction.class);
+        when(btnEvent.reply(anyString())).thenReturn(btnReplyAction);
+        when(btnReplyAction.setEphemeral(anyBoolean())).thenReturn(btnReplyAction);
+        doAnswer(inv -> null).when(btnReplyAction).queue();
+
+        testCommands.onButtonInteraction(btnEvent);
+
+        verify(btnEvent).reply("general.command-disabled");
+        verify(btnReplyAction).setEphemeral(true);
+        verify(btnEvent, never()).deferEdit();
+        verifyNoInteractions(townyFacade);
+    }
+
+    @Test
+    void buttonInteractionOnCooldownIsRejectedWithoutInvokingTowny() {
+        ButtonInteractionEvent firstEvent = mock(ButtonInteractionEvent.class);
+        when(firstEvent.getUser()).thenReturn(user);
+        when(firstEvent.getComponentId()).thenReturn("dt:townlist:2");
+        MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+        when(firstEvent.deferEdit()).thenReturn(editCallback);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(editCallback).queue(any());
+
+        when(townyFacade.allTowns()).thenReturn(List.of());
+
+        // First click succeeds
+        commands.onButtonInteraction(firstEvent);
+        verify(firstEvent).deferEdit();
+        assertEquals(1, mainThreadHopCount);
+
+        // Second click immediately after by same user
+        ButtonInteractionEvent secondEvent = mock(ButtonInteractionEvent.class);
+        when(secondEvent.getUser()).thenReturn(user);
+        when(secondEvent.getComponentId()).thenReturn("dt:townlist:3");
+        ReplyCallbackAction btnReplyAction = mock(ReplyCallbackAction.class);
+        when(secondEvent.reply(anyString())).thenReturn(btnReplyAction);
+        when(btnReplyAction.setEphemeral(anyBoolean())).thenReturn(btnReplyAction);
+        doAnswer(inv -> null).when(btnReplyAction).queue();
+
+        commands.onButtonInteraction(secondEvent);
+
+        // Rejected on cooldown
+        verify(secondEvent).reply(contains("general.cooldown"));
+        verify(btnReplyAction).setEphemeral(true);
+        verify(secondEvent, never()).deferEdit();
+        // Towny not invoked a second time
+        assertEquals(1, mainThreadHopCount);
+    }
+
+    @Test
+    void residentsFinalPageShowsExactRemainingItemsAndDisablesNextButton() {
+        when(event.getName()).thenReturn("residents");
+        OptionMapping townOpt = mock(OptionMapping.class);
+        when(townOpt.getAsString()).thenReturn("Rome");
+        when(event.getOption("town")).thenReturn(townOpt);
+        OptionMapping pageOpt = mock(OptionMapping.class);
+        when(pageOpt.getAsInt()).thenReturn(2);
+        when(event.getOption("page")).thenReturn(pageOpt);
+
+        List<UUID> residentUuids = new ArrayList<>();
+        residentUuids.add(mayorUuid);
+        for (int i = 1; i <= 13; i++) {
+            UUID id = UUID.randomUUID();
+            residentUuids.add(id);
+            when(townyFacade.resident(id)).thenReturn(Optional.of(new ResidentSnapshot(id, String.format("Res%02d", i), Optional.of("Rome"), Optional.of(townUuid), false, true, 0, 0)));
+        }
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, residentUuids, false, Optional.empty(), 10, 100.0, 0L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+
+        commands.onSlashCommandInteraction(event);
+
+        ArgumentCaptor<MessageEmbed> embedCaptor = ArgumentCaptor.forClass(MessageEmbed.class);
+        verify(hook).editOriginalEmbeds(embedCaptor.capture());
+        MessageEmbed embed = embedCaptor.getValue();
+
+        assertTrue(embed.getFooter().getText().contains("embed.page:2/2"));
+        // Caesar (mayor) and Res01..Res09 are page 1. Res10..Res13 are page 2.
+        assertFalse(embed.getDescription().contains("Caesar"));
+        assertFalse(embed.getDescription().contains("Res01"));
+        assertTrue(embed.getDescription().contains("Res10"));
+        assertTrue(embed.getDescription().contains("Res11"));
+        assertTrue(embed.getDescription().contains("Res12"));
+        assertTrue(embed.getDescription().contains("Res13"));
+
+        ArgumentCaptor<ActionRow> rowCaptor = ArgumentCaptor.forClass(ActionRow.class);
+        verify(editAction).setComponents(rowCaptor.capture());
+        ActionRow row = rowCaptor.getValue();
+        Button prev = row.getButtons().get(0);
+        Button next = row.getButtons().get(1);
+        assertFalse(prev.isDisabled(), "Previous button on page 2 must be enabled");
+        assertTrue(next.isDisabled(), "Next button on final page must be disabled");
+    }
+
+    @Test
+    void residentsPaginationClampsOutOfRangePageNumber() {
+        when(event.getName()).thenReturn("residents");
+        OptionMapping townOpt = mock(OptionMapping.class);
+        when(townOpt.getAsString()).thenReturn("Rome");
+        when(event.getOption("town")).thenReturn(townOpt);
+        OptionMapping pageOpt = mock(OptionMapping.class);
+        when(pageOpt.getAsInt()).thenReturn(99);
+        when(event.getOption("page")).thenReturn(pageOpt);
+
+        List<UUID> residentUuids = new ArrayList<>();
+        residentUuids.add(mayorUuid);
+        for (int i = 1; i <= 13; i++) {
+            UUID id = UUID.randomUUID();
+            residentUuids.add(id);
+            when(townyFacade.resident(id)).thenReturn(Optional.of(new ResidentSnapshot(id, String.format("Res%02d", i), Optional.of("Rome"), Optional.of(townUuid), false, true, 0, 0)));
+        }
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, residentUuids, false, Optional.empty(), 10, 100.0, 0L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+
+        commands.onSlashCommandInteraction(event);
+
+        ArgumentCaptor<MessageEmbed> embedCaptor = ArgumentCaptor.forClass(MessageEmbed.class);
+        verify(hook).editOriginalEmbeds(embedCaptor.capture());
+        MessageEmbed embed = embedCaptor.getValue();
+
+        // Clamped to max page 2
+        assertTrue(embed.getFooter().getText().contains("embed.page:2/2"));
+        assertTrue(embed.getDescription().contains("Res13"));
+    }
+
+    @Test
+    void residentsPaginationHandlesTownShrinkageBetweenClicks() {
+        ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+        when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
+
+        MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+        when(btnEvent.deferEdit()).thenReturn(editCallback);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(editCallback).queue(any());
+
+        // Shrunk to 1 resident (1 page total)
+        List<UUID> residentUuids = List.of(mayorUuid);
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, residentUuids, false, Optional.empty(), 10, 100.0, 0L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        commands.onButtonInteraction(btnEvent);
+
+        ArgumentCaptor<MessageEmbed> embedCaptor = ArgumentCaptor.forClass(MessageEmbed.class);
+        verify(hook).editOriginalEmbeds(embedCaptor.capture());
+        MessageEmbed embed = embedCaptor.getValue();
+
+        // Clamped to page 1/1
+        assertTrue(embed.getFooter().getText().contains("embed.page:1/1"));
+        assertTrue(embed.getDescription().contains("Caesar"));
+        // When totalPages == 1, buttons are cleared
+        verify(editAction).setComponents(Collections.emptyList());
+    }
+
+    @Test
+    void residentsPaginationWhenTownDeletedBetweenClicksReturnsTownNotFound() {
+        ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+        when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
+
+        MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+        when(btnEvent.deferEdit()).thenReturn(editCallback);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(editCallback).queue(any());
+
+        // Town was deleted
+        when(townyFacade.town(townUuid)).thenReturn(Optional.empty());
+
+        commands.onButtonInteraction(btnEvent);
+
+        verify(hook).editOriginal(contains("general.town-not-found"));
+        verify(hook, never()).editOriginalEmbeds(any(MessageEmbed.class));
+        verify(editAction).setComponents(Collections.emptyList());
     }
 
     @Test
@@ -792,7 +1193,8 @@ class TownySlashCommandsTest {
         verify(hook).editOriginalEmbeds(embedCaptor.capture());
         MessageEmbed embed = embedCaptor.getValue();
 
-        assertEquals("DiscordTowny — Help", embed.getTitle());
+        assertEquals("embed.help-title", embed.getTitle());
+        assertTrue(embed.getDescription().contains("embed.help-intro"));
         assertTrue(embed.getDescription().contains("/town"));
         assertTrue(embed.getDescription().contains("/mytown"));
         assertTrue(embed.getDescription().contains("/res"));
@@ -806,27 +1208,189 @@ class TownySlashCommandsTest {
         verifyNoInteractions(townyFacade);
     }
 
-    // --- Main Thread Hop Proof ---
+    // --- Thread-Aware Execution Proof ---
 
     @Test
-    void allTownyReadsHopThroughMainThreadExecutor() {
-        when(event.getName()).thenReturn("town");
-        OptionMapping opt = mock(OptionMapping.class);
-        when(opt.getAsString()).thenReturn("Rome");
-        when(event.getOption("name")).thenReturn(opt);
+    void slashCommandTownyReadsOnMainThreadAndDiscordWorkOffMainThread() throws Exception {
+        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        try {
+            TownySlashCommands threadedCommands = new TownySlashCommands(
+                    townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
 
-        when(linkService.findByDiscordId(discordUserId))
-                .thenReturn(CompletableFuture.completedFuture(Optional.of(new AccountLink(playerUuid, discordUserId, Instant.now(), "Steve"))));
+            when(event.getName()).thenReturn("town");
+            OptionMapping opt = mock(OptionMapping.class);
+            when(opt.getAsString()).thenReturn("Rome");
+            when(event.getOption("name")).thenReturn(opt);
 
-        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 1, 0, 0);
-        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
-        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.empty());
+            TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 1, 0, 0);
+            AtomicReference<String> townyThread = new AtomicReference<>();
+            when(townyFacade.townByName("Rome")).thenAnswer(inv -> {
+                townyThread.set(Thread.currentThread().getName());
+                return Optional.of(town);
+            });
+            when(townyFacade.resident(mayorUuid)).thenAnswer(inv -> {
+                townyThread.set(Thread.currentThread().getName());
+                return Optional.empty();
+            });
 
-        assertEquals(0, mainThreadHopCount);
-        commands.onSlashCommandInteraction(event);
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> discordThread = new AtomicReference<>();
+            when(hook.editOriginalEmbeds(any(MessageEmbed.class))).thenAnswer(inv -> {
+                discordThread.set(Thread.currentThread().getName());
+                latch.countDown();
+                return editAction;
+            });
 
-        // Proves that TownyFacade was called through the mainThreadExecutor seam
-        assertTrue(mainThreadHopCount >= 1, "TownyFacade must be called via the main thread executor seam");
-        verify(townyFacade).townByName("Rome");
+            threadedCommands.onSlashCommandInteraction(event);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "Discord hook was not invoked within timeout");
+            assertEquals("server-main", townyThread.get());
+            assertEquals("discord-worker", discordThread.get());
+            assertNotEquals("server-main", discordThread.get());
+            assertNotEquals("discord-worker", townyThread.get());
+        } finally {
+            mainService.shutdownNow();
+            asyncService.shutdownNow();
+        }
+    }
+
+    @Test
+    void slashCommandFailureContinuationRunsOffMainThread() throws Exception {
+        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        try {
+            TownySlashCommands threadedCommands = new TownySlashCommands(
+                    townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
+
+            when(event.getName()).thenReturn("town");
+            OptionMapping opt = mock(OptionMapping.class);
+            when(opt.getAsString()).thenReturn("Rome");
+            when(event.getOption("name")).thenReturn(opt);
+
+            AtomicReference<String> townyThread = new AtomicReference<>();
+            when(townyFacade.townByName("Rome")).thenAnswer(inv -> {
+                townyThread.set(Thread.currentThread().getName());
+                throw new TownyReadException("Towny boom");
+            });
+
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> discordThread = new AtomicReference<>();
+            when(hook.editOriginal("general.towny-read-failed")).thenAnswer(inv -> {
+                discordThread.set(Thread.currentThread().getName());
+                latch.countDown();
+                return editAction;
+            });
+
+            threadedCommands.onSlashCommandInteraction(event);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "Discord hook failure callback was not invoked within timeout");
+            assertEquals("server-main", townyThread.get());
+            assertEquals("discord-worker", discordThread.get());
+            assertNotEquals("server-main", discordThread.get());
+            assertNotEquals("discord-worker", townyThread.get());
+        } finally {
+            mainService.shutdownNow();
+            asyncService.shutdownNow();
+        }
+    }
+
+    @Test
+    void buttonInteractionTownyReadsOnMainThreadAndDiscordWorkOffMainThread() throws Exception {
+        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        try {
+            TownySlashCommands threadedCommands = new TownySlashCommands(
+                    townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
+
+            ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+            when(btnEvent.getUser()).thenReturn(user);
+            when(btnEvent.getComponentId()).thenReturn("dt:townlist:1");
+
+            MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+            when(btnEvent.deferEdit()).thenReturn(editCallback);
+            doAnswer(inv -> {
+                Consumer<InteractionHook> cb = inv.getArgument(0);
+                cb.accept(hook);
+                return null;
+            }).when(editCallback).queue(any());
+
+            TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 1, 0, 0);
+            AtomicReference<String> townyThread = new AtomicReference<>();
+            when(townyFacade.allTowns()).thenAnswer(inv -> {
+                townyThread.set(Thread.currentThread().getName());
+                return List.of(town);
+            });
+            when(townyFacade.resident(mayorUuid)).thenAnswer(inv -> {
+                townyThread.set(Thread.currentThread().getName());
+                return Optional.empty();
+            });
+
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> discordThread = new AtomicReference<>();
+            when(hook.editOriginalEmbeds(any(MessageEmbed.class))).thenAnswer(inv -> {
+                discordThread.set(Thread.currentThread().getName());
+                latch.countDown();
+                return editAction;
+            });
+
+            threadedCommands.onButtonInteraction(btnEvent);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "Discord hook was not invoked within timeout");
+            assertEquals("server-main", townyThread.get());
+            assertEquals("discord-worker", discordThread.get());
+            assertNotEquals("server-main", discordThread.get());
+            assertNotEquals("discord-worker", townyThread.get());
+        } finally {
+            mainService.shutdownNow();
+            asyncService.shutdownNow();
+        }
+    }
+
+    @Test
+    void buttonInteractionFailureContinuationRunsOffMainThread() throws Exception {
+        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        try {
+            TownySlashCommands threadedCommands = new TownySlashCommands(
+                    townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
+
+            ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
+            when(btnEvent.getUser()).thenReturn(user);
+            when(btnEvent.getComponentId()).thenReturn("dt:townlist:1");
+
+            MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
+            when(btnEvent.deferEdit()).thenReturn(editCallback);
+            doAnswer(inv -> {
+                Consumer<InteractionHook> cb = inv.getArgument(0);
+                cb.accept(hook);
+                return null;
+            }).when(editCallback).queue(any());
+
+            AtomicReference<String> townyThread = new AtomicReference<>();
+            when(townyFacade.allTowns()).thenAnswer(inv -> {
+                townyThread.set(Thread.currentThread().getName());
+                throw new TownyReadException("Towny read failure");
+            });
+
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> discordThread = new AtomicReference<>();
+            when(hook.editOriginal("general.towny-read-failed")).thenAnswer(inv -> {
+                discordThread.set(Thread.currentThread().getName());
+                latch.countDown();
+                return editAction;
+            });
+
+            threadedCommands.onButtonInteraction(btnEvent);
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "Discord hook failure callback was not invoked within timeout");
+            assertEquals("server-main", townyThread.get());
+            assertEquals("discord-worker", discordThread.get());
+            assertNotEquals("server-main", discordThread.get());
+            assertNotEquals("discord-worker", townyThread.get());
+        } finally {
+            mainService.shutdownNow();
+            asyncService.shutdownNow();
+        }
     }
 }

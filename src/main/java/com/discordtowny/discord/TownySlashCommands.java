@@ -39,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.function.Supplier;
 
 /**
@@ -53,7 +54,8 @@ import java.util.function.Supplier;
  *       Discord's 3-second timeout.</li>
  *   <li><b>Definitive answers.</b> A non-existent entity receives a clear error message, and a failed read
  *       receives an error message. Never render an empty embed.</li>
- *   <li><b>Mandatory linking.</b> Commands exposing town data require a verified linked account.</li>
+ *   <li><b>Mandatory linking.</b> Information commands do not require linking, except identity-dependent forms
+ *       (/mytown, and /town and /res without an argument).</li>
  * </ul>
  */
 public final class TownySlashCommands extends ListenerAdapter {
@@ -67,13 +69,18 @@ public final class TownySlashCommands extends ListenerAdapter {
     public record TownCardData(TownSnapshot town, String mayorName) {}
     public record ResidentEntry(UUID uuid, String name, boolean isMayor, boolean isOnline) {}
     public record TownSummary(String name, int residentCount, Optional<String> nationName, String mayorName, boolean ruined) {}
-    public record ResidentsListData(String townName, List<ResidentEntry> residents, int page) {}
+    public record ResidentsListData(UUID townUuid, String townName, List<ResidentEntry> residents, int page) {
+        public ResidentsListData(String townName, List<ResidentEntry> residents, int page) {
+            this(null, townName, residents, page);
+        }
+    }
 
     private final TownyFacade townyFacade;
     private final LinkService linkService;
     private final PluginConfig config;
     private final Messages messages;
     private final Executor mainThreadExecutor;
+    private final Executor asyncExecutor;
     private final Clock clock;
     private final ConcurrentHashMap<String, Instant> userCooldowns = new ConcurrentHashMap<>();
 
@@ -83,12 +90,14 @@ public final class TownySlashCommands extends ListenerAdapter {
             PluginConfig config,
             Messages messages,
             Executor mainThreadExecutor,
+            Executor asyncExecutor,
             Clock clock) {
         this.townyFacade = Objects.requireNonNull(townyFacade, "townyFacade");
         this.linkService = Objects.requireNonNull(linkService, "linkService");
         this.config = Objects.requireNonNull(config, "config");
         this.messages = Objects.requireNonNull(messages, "messages");
         this.mainThreadExecutor = Objects.requireNonNull(mainThreadExecutor, "mainThreadExecutor");
+        this.asyncExecutor = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
         this.clock = clock != null ? clock : Clock.systemUTC();
     }
 
@@ -97,8 +106,28 @@ public final class TownySlashCommands extends ListenerAdapter {
             LinkService linkService,
             PluginConfig config,
             Messages messages,
+            Executor mainThreadExecutor,
+            Clock clock) {
+        this(townyFacade, linkService, config, messages, mainThreadExecutor, ForkJoinPool.commonPool(), clock);
+    }
+
+    public TownySlashCommands(
+            TownyFacade townyFacade,
+            LinkService linkService,
+            PluginConfig config,
+            Messages messages,
+            Executor mainThreadExecutor,
+            Executor asyncExecutor) {
+        this(townyFacade, linkService, config, messages, mainThreadExecutor, asyncExecutor, Clock.systemUTC());
+    }
+
+    public TownySlashCommands(
+            TownyFacade townyFacade,
+            LinkService linkService,
+            PluginConfig config,
+            Messages messages,
             Executor mainThreadExecutor) {
-        this(townyFacade, linkService, config, messages, mainThreadExecutor, Clock.systemUTC());
+        this(townyFacade, linkService, config, messages, mainThreadExecutor, ForkJoinPool.commonPool(), Clock.systemUTC());
     }
 
     /**
@@ -163,7 +192,7 @@ public final class TownySlashCommands extends ListenerAdapter {
         // Check if the command is enabled according to configuration
         Optional<PluginConfig.DiscordCommand> cmdOpt = config.commands().byName(name);
         if (cmdOpt.isPresent() && !cmdOpt.get().enabled()) {
-            event.reply(messages.plain("general.no-permission", Map.of())).setEphemeral(true).queue();
+            event.reply(messages.plain("general.command-disabled", Map.of())).setEphemeral(true).queue();
             return;
         }
 
@@ -177,7 +206,7 @@ public final class TownySlashCommands extends ListenerAdapter {
                 Duration elapsed = Duration.between(lastExecution, now);
                 if (elapsed.compareTo(cooldown) < 0) {
                     long remainingSeconds = Math.max(1, cooldown.minus(elapsed).toSeconds());
-                    String msg = messages.plain("space.cooldown", Map.of("seconds", String.valueOf(remainingSeconds)));
+                    String msg = messages.plain("general.cooldown", Map.of("seconds", String.valueOf(remainingSeconds)));
                     event.reply(msg).setEphemeral(true).queue();
                     return;
                 }
@@ -205,16 +234,50 @@ public final class TownySlashCommands extends ListenerAdapter {
     @Override
     public void onButtonInteraction(ButtonInteractionEvent event) {
         String id = event.getComponentId();
+        String commandName;
         if (id.startsWith("dt:townlist:")) {
+            commandName = "townlist";
+        } else if (id.startsWith("dt:residents:")) {
+            commandName = "residents";
+        } else {
+            return;
+        }
+
+        // Check if the command is enabled according to configuration
+        Optional<PluginConfig.DiscordCommand> cmdOpt = config.commands().byName(commandName);
+        if (cmdOpt.isPresent() && !cmdOpt.get().enabled()) {
+            event.reply(messages.plain("general.command-disabled", Map.of())).setEphemeral(true).queue();
+            return;
+        }
+
+        // Check per-user cooldown
+        String userId = event.getUser().getId();
+        Instant now = clock.instant();
+        Duration cooldown = config.commands().cooldown();
+        if (cooldown != null && !cooldown.isZero() && !cooldown.isNegative()) {
+            Instant lastExecution = userCooldowns.get(userId);
+            if (lastExecution != null) {
+                Duration elapsed = Duration.between(lastExecution, now);
+                if (elapsed.compareTo(cooldown) < 0) {
+                    long remainingSeconds = Math.max(1, cooldown.minus(elapsed).toSeconds());
+                    String msg = messages.plain("general.cooldown", Map.of("seconds", String.valueOf(remainingSeconds)));
+                    event.reply(msg).setEphemeral(true).queue();
+                    return;
+                }
+            }
+            userCooldowns.put(userId, now);
+        }
+
+        if ("townlist".equals(commandName)) {
             int page;
             try {
                 page = Integer.parseInt(id.substring("dt:townlist:".length()));
             } catch (NumberFormatException e) {
                 return;
             }
-            event.deferEdit().queue(hook -> handleTownlistButton(hook, event.getUser().getId(), page));
-        } else if (id.startsWith("dt:residents:")) {
-            // format: dt:residents:<page>:<townName>
+            event.deferEdit().queue(hook -> handleTownlistButton(hook, page));
+        } else {
+            // format: dt:residents:<page>:<townUuid>
             String rest = id.substring("dt:residents:".length());
             int colon = rest.indexOf(':');
             if (colon == -1) {
@@ -226,8 +289,13 @@ public final class TownySlashCommands extends ListenerAdapter {
             } catch (NumberFormatException e) {
                 return;
             }
-            String townName = rest.substring(colon + 1);
-            event.deferEdit().queue(hook -> handleResidentsButton(hook, event.getUser().getId(), townName, page));
+            UUID townUuid;
+            try {
+                townUuid = UUID.fromString(rest.substring(colon + 1));
+            } catch (IllegalArgumentException e) {
+                return;
+            }
+            event.deferEdit().queue(hook -> handleResidentsButton(hook, townUuid, page));
         }
     }
 
@@ -241,21 +309,10 @@ public final class TownySlashCommands extends ListenerAdapter {
     }
 
     private void handleTown(SlashCommandInteractionEvent event, InteractionHook hook, String userId) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
-            if (optLink.isEmpty()) {
-                hook.editOriginal(messages.plain("linking.link-required", Map.of())).queue();
-                return;
-            }
-            AccountLink link = optLink.get();
-            String targetName = getOptionalString(event, "name", "town", "nombre");
-
+        String targetName = getOptionalString(event, "name", "town", "nombre");
+        if (targetName != null && !targetName.isBlank()) {
             callTowny(() -> {
-                Optional<TownSnapshot> townOpt;
-                if (targetName != null && !targetName.isBlank()) {
-                    townOpt = townyFacade.townByName(targetName.trim());
-                } else {
-                    townOpt = townyFacade.townOf(link.uuid());
-                }
+                Optional<TownSnapshot> townOpt = townyFacade.townByName(targetName.trim());
                 if (townOpt.isEmpty()) {
                     return Optional.<TownCardData>empty();
                 }
@@ -264,30 +321,22 @@ public final class TownySlashCommands extends ListenerAdapter {
                         .map(ResidentSnapshot::name)
                         .orElse(town.mayorUuid().toString());
                 return Optional.of(new TownCardData(town, mayorName));
-            }).thenAccept(optCard -> {
+            }).thenAcceptAsync(optCard -> {
                 if (optCard.isEmpty()) {
-                    if (targetName != null && !targetName.isBlank()) {
-                        hook.editOriginal(messages.plain("general.town-not-found", Map.of("town", targetName.trim()))).queue();
-                    } else {
-                        hook.editOriginal(messages.plain("general.not-in-town", Map.of())).queue();
-                    }
+                    hook.editOriginal(messages.plain("general.town-not-found", Map.of("town", targetName.trim()))).queue();
                     return;
                 }
                 TownCardData card = optCard.get();
                 MessageEmbed embed = buildTownEmbed(card.town(), card.mayorName());
                 hook.editOriginalEmbeds(embed).queue();
-            }).exceptionally(ex -> {
+            }, asyncExecutor).exceptionallyAsync(ex -> {
                 hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
                 return null;
-            });
-        }).exceptionally(ex -> {
-            hook.editOriginal(messages.plain("general.database-unavailable", Map.of())).queue();
-            return null;
-        });
-    }
+            }, asyncExecutor);
+            return;
+        }
 
-    private void handleMyTown(SlashCommandInteractionEvent event, InteractionHook hook, String userId) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
+        linkService.findByDiscordId(userId).thenAcceptAsync(optLink -> {
             if (optLink.isEmpty()) {
                 hook.editOriginal(messages.plain("linking.link-required", Map.of())).queue();
                 return;
@@ -304,7 +353,7 @@ public final class TownySlashCommands extends ListenerAdapter {
                         .map(ResidentSnapshot::name)
                         .orElse(town.mayorUuid().toString());
                 return Optional.of(new TownCardData(town, mayorName));
-            }).thenAccept(optCard -> {
+            }).thenAcceptAsync(optCard -> {
                 if (optCard.isEmpty()) {
                     hook.editOriginal(messages.plain("general.not-in-town", Map.of())).queue();
                     return;
@@ -312,68 +361,151 @@ public final class TownySlashCommands extends ListenerAdapter {
                 TownCardData card = optCard.get();
                 MessageEmbed embed = buildTownEmbed(card.town(), card.mayorName());
                 hook.editOriginalEmbeds(embed).queue();
-            }).exceptionally(ex -> {
+            }, asyncExecutor).exceptionallyAsync(ex -> {
                 hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
                 return null;
-            });
-        }).exceptionally(ex -> {
+            }, asyncExecutor);
+        }, asyncExecutor).exceptionallyAsync(ex -> {
             hook.editOriginal(messages.plain("general.database-unavailable", Map.of())).queue();
             return null;
-        });
+        }, asyncExecutor);
+    }
+
+    private void handleMyTown(SlashCommandInteractionEvent event, InteractionHook hook, String userId) {
+        linkService.findByDiscordId(userId).thenAcceptAsync(optLink -> {
+            if (optLink.isEmpty()) {
+                hook.editOriginal(messages.plain("linking.link-required", Map.of())).queue();
+                return;
+            }
+            AccountLink link = optLink.get();
+
+            callTowny(() -> {
+                Optional<TownSnapshot> townOpt = townyFacade.townOf(link.uuid());
+                if (townOpt.isEmpty()) {
+                    return Optional.<TownCardData>empty();
+                }
+                TownSnapshot town = townOpt.get();
+                String mayorName = townyFacade.resident(town.mayorUuid())
+                        .map(ResidentSnapshot::name)
+                        .orElse(town.mayorUuid().toString());
+                return Optional.of(new TownCardData(town, mayorName));
+            }).thenAcceptAsync(optCard -> {
+                if (optCard.isEmpty()) {
+                    hook.editOriginal(messages.plain("general.not-in-town", Map.of())).queue();
+                    return;
+                }
+                TownCardData card = optCard.get();
+                MessageEmbed embed = buildTownEmbed(card.town(), card.mayorName());
+                hook.editOriginalEmbeds(embed).queue();
+            }, asyncExecutor).exceptionallyAsync(ex -> {
+                hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
+                return null;
+            }, asyncExecutor);
+        }, asyncExecutor).exceptionallyAsync(ex -> {
+            hook.editOriginal(messages.plain("general.database-unavailable", Map.of())).queue();
+            return null;
+        }, asyncExecutor);
     }
 
     private void handleRes(SlashCommandInteractionEvent event, InteractionHook hook, String userId) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
+        String targetName = getOptionalString(event, "resident", "name", "player", "jugador");
+        if (targetName != null && !targetName.isBlank()) {
+            callTowny(() -> townyFacade.residentByName(targetName.trim()))
+                    .thenAcceptAsync(optRes -> {
+                        if (optRes.isEmpty()) {
+                            hook.editOriginal(messages.plain("general.resident-not-found", Map.of("resident", targetName.trim()))).queue();
+                            return;
+                        }
+                        MessageEmbed embed = buildResidentEmbed(optRes.get());
+                        hook.editOriginalEmbeds(embed).queue();
+                    }, asyncExecutor).exceptionallyAsync(ex -> {
+                        hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
+                        return null;
+                    }, asyncExecutor);
+            return;
+        }
+
+        linkService.findByDiscordId(userId).thenAcceptAsync(optLink -> {
             if (optLink.isEmpty()) {
                 hook.editOriginal(messages.plain("linking.link-required", Map.of())).queue();
                 return;
             }
             AccountLink link = optLink.get();
-            String targetName = getOptionalString(event, "resident", "name", "player", "jugador");
 
-            callTowny(() -> {
-                if (targetName != null && !targetName.isBlank()) {
-                    return townyFacade.residentByName(targetName.trim());
-                } else {
-                    return townyFacade.resident(link.uuid());
-                }
-            }).thenAccept(optRes -> {
-                if (optRes.isEmpty()) {
-                    String missingName = (targetName != null && !targetName.isBlank())
-                            ? targetName.trim()
-                            : (link.lastKnownName() != null && !link.lastKnownName().isBlank() ? link.lastKnownName() : link.uuid().toString());
-                    hook.editOriginal(messages.plain("general.resident-not-found", Map.of("resident", missingName))).queue();
-                    return;
-                }
-                MessageEmbed embed = buildResidentEmbed(optRes.get());
-                hook.editOriginalEmbeds(embed).queue();
-            }).exceptionally(ex -> {
-                hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
-                return null;
-            });
-        }).exceptionally(ex -> {
+            callTowny(() -> townyFacade.resident(link.uuid()))
+                    .thenAcceptAsync(optRes -> {
+                        if (optRes.isEmpty()) {
+                            String missingName = (link.lastKnownName() != null && !link.lastKnownName().isBlank())
+                                    ? link.lastKnownName()
+                                    : link.uuid().toString();
+                            hook.editOriginal(messages.plain("general.resident-not-found", Map.of("resident", missingName))).queue();
+                            return;
+                        }
+                        MessageEmbed embed = buildResidentEmbed(optRes.get());
+                        hook.editOriginalEmbeds(embed).queue();
+                    }, asyncExecutor).exceptionallyAsync(ex -> {
+                        hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
+                        return null;
+                    }, asyncExecutor);
+        }, asyncExecutor).exceptionallyAsync(ex -> {
             hook.editOriginal(messages.plain("general.database-unavailable", Map.of())).queue();
             return null;
-        });
+        }, asyncExecutor);
     }
 
     private void handleResidents(SlashCommandInteractionEvent event, InteractionHook hook, String userId) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
+        String targetTown = getOptionalString(event, "town", "name", "nombre");
+        int requestedPage = getOptionalInt(event, 1, "page", "pagina");
+
+        if (targetTown != null && !targetTown.isBlank()) {
+            callTowny(() -> {
+                Optional<TownSnapshot> townOpt = townyFacade.townByName(targetTown.trim());
+                if (townOpt.isEmpty()) {
+                    return Optional.<ResidentsListData>empty();
+                }
+                TownSnapshot town = townOpt.get();
+                List<UUID> residentUuids = town.residentUuids();
+                List<ResidentEntry> entries = new ArrayList<>(residentUuids.size());
+                for (UUID uuid : residentUuids) {
+                    Optional<ResidentSnapshot> resOpt = townyFacade.resident(uuid);
+                    String name = resOpt.map(ResidentSnapshot::name).orElse(uuid.toString());
+                    boolean isMayor = town.isMayor(uuid);
+                    boolean isOnline = resOpt.map(ResidentSnapshot::online).orElse(false);
+                    entries.add(new ResidentEntry(uuid, name, isMayor, isOnline));
+                }
+                entries.sort((a, b) -> {
+                    if (a.isMayor() != b.isMayor()) {
+                        return a.isMayor() ? -1 : 1;
+                    }
+                    if (a.isOnline() != b.isOnline()) {
+                        return a.isOnline() ? -1 : 1;
+                    }
+                    return String.CASE_INSENSITIVE_ORDER.compare(a.name(), b.name());
+                });
+                return Optional.of(new ResidentsListData(town.uuid(), town.name(), entries, requestedPage));
+            }).thenAcceptAsync(optData -> {
+                if (optData.isEmpty()) {
+                    hook.editOriginal(messages.plain("general.town-not-found", Map.of("town", targetTown.trim()))).queue();
+                    return;
+                }
+                ResidentsListData data = optData.get();
+                sendPaginatedResidents(hook, data.townUuid(), data.townName(), data.residents(), data.page());
+            }, asyncExecutor).exceptionallyAsync(ex -> {
+                hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
+                return null;
+            }, asyncExecutor);
+            return;
+        }
+
+        linkService.findByDiscordId(userId).thenAcceptAsync(optLink -> {
             if (optLink.isEmpty()) {
                 hook.editOriginal(messages.plain("linking.link-required", Map.of())).queue();
                 return;
             }
             AccountLink link = optLink.get();
-            String targetTown = getOptionalString(event, "town", "name", "nombre");
-            int requestedPage = getOptionalInt(event, 1, "page", "pagina");
 
             callTowny(() -> {
-                Optional<TownSnapshot> townOpt;
-                if (targetTown != null && !targetTown.isBlank()) {
-                    townOpt = townyFacade.townByName(targetTown.trim());
-                } else {
-                    townOpt = townyFacade.townOf(link.uuid());
-                }
+                Optional<TownSnapshot> townOpt = townyFacade.townOf(link.uuid());
                 if (townOpt.isEmpty()) {
                     return Optional.<ResidentsListData>empty();
                 }
@@ -396,166 +528,127 @@ public final class TownySlashCommands extends ListenerAdapter {
                     }
                     return String.CASE_INSENSITIVE_ORDER.compare(a.name(), b.name());
                 });
-                return Optional.of(new ResidentsListData(town.name(), entries, requestedPage));
-            }).thenAccept(optData -> {
+                return Optional.of(new ResidentsListData(town.uuid(), town.name(), entries, requestedPage));
+            }).thenAcceptAsync(optData -> {
                 if (optData.isEmpty()) {
-                    if (targetTown != null && !targetTown.isBlank()) {
-                        hook.editOriginal(messages.plain("general.town-not-found", Map.of("town", targetTown.trim()))).queue();
-                    } else {
-                        hook.editOriginal(messages.plain("general.not-in-town", Map.of())).queue();
-                    }
+                    hook.editOriginal(messages.plain("general.not-in-town", Map.of())).queue();
                     return;
                 }
                 ResidentsListData data = optData.get();
-                sendPaginatedResidents(hook, data.townName(), data.residents(), data.page());
-            }).exceptionally(ex -> {
+                sendPaginatedResidents(hook, data.townUuid(), data.townName(), data.residents(), data.page());
+            }, asyncExecutor).exceptionallyAsync(ex -> {
                 hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
                 return null;
-            });
-        }).exceptionally(ex -> {
+            }, asyncExecutor);
+        }, asyncExecutor).exceptionallyAsync(ex -> {
             hook.editOriginal(messages.plain("general.database-unavailable", Map.of())).queue();
             return null;
-        });
+        }, asyncExecutor);
     }
 
     private void handleTownlist(SlashCommandInteractionEvent event, InteractionHook hook, String userId) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
-            if (optLink.isEmpty()) {
-                hook.editOriginal(messages.plain("linking.link-required", Map.of())).queue();
+        int requestedPage = getOptionalInt(event, 1, "page", "pagina");
+
+        callTowny(() -> {
+            List<TownSnapshot> towns = townyFacade.allTowns();
+            List<TownSummary> summaries = new ArrayList<>(towns.size());
+            for (TownSnapshot t : towns) {
+                String mayor = townyFacade.resident(t.mayorUuid())
+                        .map(ResidentSnapshot::name)
+                        .orElse(messages.label("embed.unknown", Map.of()));
+                summaries.add(new TownSummary(t.name(), t.residentCount(), t.nationName(), mayor, t.ruined()));
+            }
+            summaries.sort(Comparator.comparing(TownSummary::name, String.CASE_INSENSITIVE_ORDER));
+            return summaries;
+        }).thenAcceptAsync(summaries -> {
+            if (summaries.isEmpty()) {
+                hook.editOriginal(messages.plain("general.no-towns-found", Map.of())).queue();
                 return;
             }
-            int requestedPage = getOptionalInt(event, 1, "page", "pagina");
-
-            callTowny(() -> {
-                List<TownSnapshot> towns = townyFacade.allTowns();
-                List<TownSummary> summaries = new ArrayList<>(towns.size());
-                for (TownSnapshot t : towns) {
-                    String mayor = townyFacade.resident(t.mayorUuid())
-                            .map(ResidentSnapshot::name)
-                            .orElse(messages.label("embed.unknown", Map.of()));
-                    summaries.add(new TownSummary(t.name(), t.residentCount(), t.nationName(), mayor, t.ruined()));
-                }
-                summaries.sort(Comparator.comparing(TownSummary::name, String.CASE_INSENSITIVE_ORDER));
-                return summaries;
-            }).thenAccept(summaries -> {
-                if (summaries.isEmpty()) {
-                    hook.editOriginal(messages.plain("general.no-towns-found", Map.of())).queue();
-                    return;
-                }
-                sendPaginatedTownlist(hook, summaries, requestedPage);
-            }).exceptionally(ex -> {
-                hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
-                return null;
-            });
-        }).exceptionally(ex -> {
-            hook.editOriginal(messages.plain("general.database-unavailable", Map.of())).queue();
+            sendPaginatedTownlist(hook, summaries, requestedPage);
+        }, asyncExecutor).exceptionallyAsync(ex -> {
+            hook.editOriginal(messages.plain("general.towny-read-failed", Map.of())).queue();
             return null;
-        });
+        }, asyncExecutor);
     }
 
     private void handleHelp(InteractionHook hook) {
-        MessageEmbed embed = buildHelpEmbed(config);
+        MessageEmbed embed = buildHelpEmbed(config, messages);
         hook.editOriginalEmbeds(embed).queue();
     }
 
-    private void handleTownlistButton(InteractionHook hook, String userId, int page) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
-            if (optLink.isEmpty()) {
-                hook.editOriginal(messages.plain("linking.link-required", Map.of()))
+    private void handleTownlistButton(InteractionHook hook, int page) {
+        callTowny(() -> {
+            List<TownSnapshot> towns = townyFacade.allTowns();
+            List<TownSummary> summaries = new ArrayList<>(towns.size());
+            for (TownSnapshot t : towns) {
+                String mayor = townyFacade.resident(t.mayorUuid())
+                        .map(ResidentSnapshot::name)
+                        .orElse(messages.label("embed.unknown", Map.of()));
+                summaries.add(new TownSummary(t.name(), t.residentCount(), t.nationName(), mayor, t.ruined()));
+            }
+            summaries.sort(Comparator.comparing(TownSummary::name, String.CASE_INSENSITIVE_ORDER));
+            return summaries;
+        }).thenAcceptAsync(summaries -> {
+            if (summaries.isEmpty()) {
+                hook.editOriginal(messages.plain("general.no-towns-found", Map.of()))
                         .setComponents(Collections.emptyList())
                         .queue();
                 return;
             }
-            callTowny(() -> {
-                List<TownSnapshot> towns = townyFacade.allTowns();
-                List<TownSummary> summaries = new ArrayList<>(towns.size());
-                for (TownSnapshot t : towns) {
-                    String mayor = townyFacade.resident(t.mayorUuid())
-                            .map(ResidentSnapshot::name)
-                            .orElse(messages.label("embed.unknown", Map.of()));
-                    summaries.add(new TownSummary(t.name(), t.residentCount(), t.nationName(), mayor, t.ruined()));
-                }
-                summaries.sort(Comparator.comparing(TownSummary::name, String.CASE_INSENSITIVE_ORDER));
-                return summaries;
-            }).thenAccept(summaries -> {
-                if (summaries.isEmpty()) {
-                    hook.editOriginal(messages.plain("general.no-towns-found", Map.of()))
-                            .setComponents(Collections.emptyList())
-                            .queue();
-                    return;
-                }
-                sendPaginatedTownlist(hook, summaries, page);
-            }).exceptionally(ex -> {
-                hook.editOriginal(messages.plain("general.towny-read-failed", Map.of()))
-                        .setComponents(Collections.emptyList())
-                        .queue();
-                return null;
-            });
-        }).exceptionally(ex -> {
-            hook.editOriginal(messages.plain("general.database-unavailable", Map.of()))
+            sendPaginatedTownlist(hook, summaries, page);
+        }, asyncExecutor).exceptionallyAsync(ex -> {
+            hook.editOriginal(messages.plain("general.towny-read-failed", Map.of()))
                     .setComponents(Collections.emptyList())
                     .queue();
             return null;
-        });
+        }, asyncExecutor);
     }
 
-    private void handleResidentsButton(InteractionHook hook, String userId, String townName, int page) {
-        linkService.findByDiscordId(userId).thenAccept(optLink -> {
-            if (optLink.isEmpty()) {
-                hook.editOriginal(messages.plain("linking.link-required", Map.of()))
+    private void handleResidentsButton(InteractionHook hook, UUID townUuid, int page) {
+        callTowny(() -> {
+            Optional<TownSnapshot> townOpt = townyFacade.town(townUuid);
+            if (townOpt.isEmpty()) {
+                return Optional.<ResidentsListData>empty();
+            }
+            TownSnapshot town = townOpt.get();
+            List<UUID> residentUuids = town.residentUuids();
+            List<ResidentEntry> entries = new ArrayList<>(residentUuids.size());
+            for (UUID uuid : residentUuids) {
+                Optional<ResidentSnapshot> resOpt = townyFacade.resident(uuid);
+                String name = resOpt.map(ResidentSnapshot::name).orElse(uuid.toString());
+                boolean isMayor = town.isMayor(uuid);
+                boolean isOnline = resOpt.map(ResidentSnapshot::online).orElse(false);
+                entries.add(new ResidentEntry(uuid, name, isMayor, isOnline));
+            }
+            entries.sort((a, b) -> {
+                if (a.isMayor() != b.isMayor()) {
+                    return a.isMayor() ? -1 : 1;
+                }
+                if (a.isOnline() != b.isOnline()) {
+                    return a.isOnline() ? -1 : 1;
+                }
+                return String.CASE_INSENSITIVE_ORDER.compare(a.name(), b.name());
+            });
+            return Optional.of(new ResidentsListData(town.uuid(), town.name(), entries, page));
+        }).thenAcceptAsync(optData -> {
+            if (optData.isEmpty()) {
+                hook.editOriginal(messages.plain("general.town-not-found", Map.of("town", townUuid.toString())))
                         .setComponents(Collections.emptyList())
                         .queue();
                 return;
             }
-            callTowny(() -> {
-                Optional<TownSnapshot> townOpt = townyFacade.townByName(townName);
-                if (townOpt.isEmpty()) {
-                    return Optional.<ResidentsListData>empty();
-                }
-                TownSnapshot town = townOpt.get();
-                List<UUID> residentUuids = town.residentUuids();
-                List<ResidentEntry> entries = new ArrayList<>(residentUuids.size());
-                for (UUID uuid : residentUuids) {
-                    Optional<ResidentSnapshot> resOpt = townyFacade.resident(uuid);
-                    String name = resOpt.map(ResidentSnapshot::name).orElse(uuid.toString());
-                    boolean isMayor = town.isMayor(uuid);
-                    boolean isOnline = resOpt.map(ResidentSnapshot::online).orElse(false);
-                    entries.add(new ResidentEntry(uuid, name, isMayor, isOnline));
-                }
-                entries.sort((a, b) -> {
-                    if (a.isMayor() != b.isMayor()) {
-                        return a.isMayor() ? -1 : 1;
-                    }
-                    if (a.isOnline() != b.isOnline()) {
-                        return a.isOnline() ? -1 : 1;
-                    }
-                    return String.CASE_INSENSITIVE_ORDER.compare(a.name(), b.name());
-                });
-                return Optional.of(new ResidentsListData(town.name(), entries, page));
-            }).thenAccept(optData -> {
-                if (optData.isEmpty()) {
-                    hook.editOriginal(messages.plain("general.town-not-found", Map.of("town", townName)))
-                            .setComponents(Collections.emptyList())
-                            .queue();
-                    return;
-                }
-                ResidentsListData data = optData.get();
-                sendPaginatedResidents(hook, data.townName(), data.residents(), data.page());
-            }).exceptionally(ex -> {
-                hook.editOriginal(messages.plain("general.towny-read-failed", Map.of()))
-                        .setComponents(Collections.emptyList())
-                        .queue();
-                return null;
-            });
-        }).exceptionally(ex -> {
-            hook.editOriginal(messages.plain("general.database-unavailable", Map.of()))
+            ResidentsListData data = optData.get();
+            sendPaginatedResidents(hook, data.townUuid(), data.townName(), data.residents(), data.page());
+        }, asyncExecutor).exceptionallyAsync(ex -> {
+            hook.editOriginal(messages.plain("general.towny-read-failed", Map.of()))
                     .setComponents(Collections.emptyList())
                     .queue();
             return null;
-        });
+        }, asyncExecutor);
     }
 
-    private void sendPaginatedResidents(InteractionHook hook, String townName, List<ResidentEntry> residents, int requestedPage) {
+    private void sendPaginatedResidents(InteractionHook hook, UUID townUuid, String townName, List<ResidentEntry> residents, int requestedPage) {
         int totalResidents = residents.size();
         int totalPages = Math.max(1, (int) Math.ceil((double) totalResidents / PAGE_SIZE));
         int page = Math.max(1, Math.min(requestedPage, totalPages));
@@ -567,8 +660,8 @@ public final class TownySlashCommands extends ListenerAdapter {
         MessageEmbed embed = buildResidentsPageEmbed(townName, pageItems, page, totalPages, totalResidents);
         var action = hook.editOriginalEmbeds(embed);
         if (totalPages > 1) {
-            Button prev = Button.secondary("dt:residents:" + (page - 1) + ":" + townName, messages.label("embed.previous", Map.of())).withDisabled(page <= 1);
-            Button next = Button.secondary("dt:residents:" + (page + 1) + ":" + townName, messages.label("embed.next", Map.of())).withDisabled(page >= totalPages);
+            Button prev = Button.secondary("dt:residents:" + (page - 1) + ":" + townUuid, messages.label("embed.previous", Map.of())).withDisabled(page <= 1);
+            Button next = Button.secondary("dt:residents:" + (page + 1) + ":" + townUuid, messages.label("embed.next", Map.of())).withDisabled(page >= totalPages);
             action = action.setComponents(ActionRow.of(prev, next));
         } else {
             action = action.setComponents(Collections.emptyList());
@@ -636,7 +729,7 @@ public final class TownySlashCommands extends ListenerAdapter {
         embed.addField(messages.label("embed.status", Map.of()), resident.online() ? messages.label("embed.online", Map.of()) : messages.label("embed.offline", Map.of()), true);
         embed.addField(messages.label("embed.balance", Map.of()), String.format(Locale.US, "%.2f", resident.balance()), true);
         if (!resident.online() && resident.lastOnlineMillis() > 0) {
-            embed.addField("Last Online", "<t:" + (resident.lastOnlineMillis() / 1000) + ":R>", true);
+            embed.addField(messages.label("embed.last-online", Map.of()), "<t:" + (resident.lastOnlineMillis() / 1000) + ":R>", true);
         }
         return embed.build();
     }
@@ -653,7 +746,7 @@ public final class TownySlashCommands extends ListenerAdapter {
         embed.setColor(new Color(0x3498DB));
 
         if (pageResidents.isEmpty()) {
-            embed.setDescription("No residents found.");
+            embed.setDescription(messages.label("embed.no-residents", Map.of()));
         } else {
             StringBuilder sb = new StringBuilder();
             int startIndex = (page - 1) * PAGE_SIZE;
@@ -681,11 +774,11 @@ public final class TownySlashCommands extends ListenerAdapter {
     public static MessageEmbed buildTownlistPageEmbed(
             List<TownSummary> pageTowns, int page, int totalPages, int totalTowns, Messages messages) {
         EmbedBuilder embed = new EmbedBuilder();
-        embed.setTitle("Towns List");
+        embed.setTitle(messages.label("embed.town-list-title", Map.of()));
         embed.setColor(new Color(0x3498DB));
 
         if (pageTowns.isEmpty()) {
-            embed.setDescription("No towns found.");
+            embed.setDescription(messages.label("general.no-towns-found", Map.of()));
         } else {
             StringBuilder sb = new StringBuilder();
             int startIndex = (page - 1) * PAGE_SIZE;
@@ -709,13 +802,17 @@ public final class TownySlashCommands extends ListenerAdapter {
         return embed.build();
     }
 
-    public static MessageEmbed buildHelpEmbed(PluginConfig config) {
+    public MessageEmbed buildHelpEmbed(PluginConfig config) {
+        return buildHelpEmbed(config, this.messages);
+    }
+
+    public static MessageEmbed buildHelpEmbed(PluginConfig config, Messages messages) {
         EmbedBuilder embed = new EmbedBuilder();
-        embed.setTitle("DiscordTowny — Help");
+        embed.setTitle(messages != null ? messages.label("embed.help-title", Map.of()) : "DiscordTowny — Help");
         embed.setColor(new Color(0x3498DB));
 
         StringBuilder sb = new StringBuilder();
-        sb.append("Available Discord commands:\n\n");
+        sb.append(messages != null ? messages.label("embed.help-intro", Map.of()) : "Available Discord commands:").append("\n\n");
         if (isEnabled(config, "town")) {
             sb.append("• **/town [name]** — View town card (mayor, residents, bank...)\n");
         }

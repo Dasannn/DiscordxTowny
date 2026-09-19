@@ -11,6 +11,8 @@ general:
   towny-read-failed: "&cTowny could not be read right now. Try again in a moment."
   no-towns-found: "&7There are no towns on this server yet."
   no-permission: "&cYou do not have permission to use this."
+  command-disabled: "&cThis command is disabled on this server."
+  cooldown: "&cWait {seconds} seconds before using this again."
   players-only: "&cThis command only works in-game."
   unknown-command: "&cUnknown command. Use &f/dt help&c."
   working: "&7Working on it, I'll let you know when finished."
