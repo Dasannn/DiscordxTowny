@@ -338,6 +338,17 @@ is sufficient to apply it.
 
 - If the release brings breaking configuration changes or requires migration,
   it is indicated in the notice and additional confirmation is required.
+
+  A release counts as breaking when **either** its major version differs from the
+  running one, **or** its notes contain the line `[breaking]`. The first rule is
+  automatic and cannot be forgotten; the second exists because a change can break
+  a configuration without earning a major bump. The release pipeline emits the
+  marker, so the two are defined together and not inferred by guesswork.
+
+  Such a release is **never staged automatically**, whatever `auto-download`
+  says. It is announced, and it waits for an administrator to confirm. Until
+  then, nothing is downloaded: a jar sitting in `update/` is applied by the next
+  restart, and a restart is not a decision anyone takes deliberately.
 - A network failure or incorrect checksum leaves nothing half-done: the
   download is discarded and reported.
 - Without a connection to GitHub, the plugin functions normally and logs the failure
