@@ -46,6 +46,15 @@ sync:
   started: "&7Sincronizando..."
   finished: "&aSincronizacion terminada."
   player-synced: "&aTus roles de Discord estan al dia."
+  # Modo informe: encontrado y deliberadamente sin tocar.
+  report-found: "&eEncontradas &f{count}&e discrepancias. No se ha cambiado nada."
+  report-pending: "&7Pendiente: &f{granted}&7 roles por conceder, &f{revoked}&7 por retirar."
+  report-clean: "&aSin discrepancias en &f{spaces}&a espacios."
+  # Modo reparacion.
+  repaired: "&aReparadas &f{count}&a inconsistencias (&f{granted}&a concedidos, &f{revoked}&a retirados)."
+  unrepaired: "&c{count} inconsistencias no se pudieron reparar."
+  problems-header: "&cHubo &f{count}&c problemas:"
+  problem-entry: "&7- &f{problem}"
 
 updates:
   available: "&eHay una version nueva de DiscordTowny: &f{latest}&e (tienes &f{current}&e)."

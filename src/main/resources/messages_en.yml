@@ -46,6 +46,15 @@ sync:
   started: "&7Synchronizing..."
   finished: "&aSynchronization finished."
   player-synced: "&aYour Discord roles are up to date."
+  # Report mode: found and deliberately left alone.
+  report-found: "&eFound &f{count}&e discrepancies. Nothing was changed."
+  report-pending: "&7Pending: &f{granted}&7 roles to grant, &f{revoked}&7 to revoke."
+  report-clean: "&aNo discrepancies across &f{spaces}&a spaces."
+  # Repair mode.
+  repaired: "&aRepaired &f{count}&a inconsistencies (&f{granted}&a granted, &f{revoked}&a revoked)."
+  unrepaired: "&c{count} inconsistencies could not be repaired."
+  problems-header: "&cThere were &f{count}&c problems:"
+  problem-entry: "&7- &f{problem}"
 
 updates:
   available: "&eThere is a new version of DiscordTowny: &f{latest}&e (you have &f{current}&e)."
