@@ -34,6 +34,7 @@ public final class PlayerJoinSyncListener implements Listener {
     private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
 
     private final SyncService syncService;
+    private final Supplier<SyncService> syncServiceSupplier;
     private final LinkRepository linkRepository;
     private final Supplier<PluginConfig> configSupplier;
     private final Executor executor;
@@ -56,6 +57,15 @@ public final class PlayerJoinSyncListener implements Listener {
 
     public PlayerJoinSyncListener(SyncService syncService, LinkRepository linkRepository, Supplier<PluginConfig> configSupplier, Executor executor) {
         this.syncService = Objects.requireNonNull(syncService, "syncService cannot be null");
+        this.syncServiceSupplier = () -> this.syncService;
+        this.linkRepository = Objects.requireNonNull(linkRepository, "linkRepository cannot be null");
+        this.configSupplier = configSupplier != null ? configSupplier : () -> null;
+        this.executor = Objects.requireNonNull(executor, "executor cannot be null");
+    }
+
+    public PlayerJoinSyncListener(Supplier<SyncService> syncServiceSupplier, LinkRepository linkRepository, Supplier<PluginConfig> configSupplier, Executor executor) {
+        this.syncServiceSupplier = Objects.requireNonNull(syncServiceSupplier, "syncServiceSupplier cannot be null");
+        this.syncService = null;
         this.linkRepository = Objects.requireNonNull(linkRepository, "linkRepository cannot be null");
         this.configSupplier = configSupplier != null ? configSupplier : () -> null;
         this.executor = Objects.requireNonNull(executor, "executor cannot be null");
@@ -78,8 +88,16 @@ public final class PlayerJoinSyncListener implements Listener {
     }
 
     public static void register(Plugin plugin, SyncService syncService, LinkRepository linkRepository, Supplier<PluginConfig> configSupplier, Executor executor) {
+        register(plugin, () -> syncService, linkRepository, configSupplier, executor);
+    }
+
+    public static void register(Plugin plugin, Supplier<SyncService> syncServiceSupplier, LinkRepository linkRepository, Supplier<PluginConfig> configSupplier, Executor executor) {
         Objects.requireNonNull(plugin, "plugin cannot be null");
-        Bukkit.getPluginManager().registerEvents(new PlayerJoinSyncListener(syncService, linkRepository, configSupplier, executor), plugin);
+        Bukkit.getPluginManager().registerEvents(new PlayerJoinSyncListener(syncServiceSupplier, linkRepository, configSupplier, executor), plugin);
+    }
+
+    public static void register(Plugin plugin, Supplier<SyncService> syncServiceSupplier, LinkRepository linkRepository, Supplier<PluginConfig> configSupplier) {
+        register(plugin, syncServiceSupplier, linkRepository, configSupplier, task -> Bukkit.getScheduler().runTaskAsynchronously(plugin, task));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -92,6 +110,11 @@ public final class PlayerJoinSyncListener implements Listener {
         UUID playerUuid = player.getUniqueId();
         String playerName = player.getName();
 
+        SyncService service = syncServiceSupplier != null ? syncServiceSupplier.get() : syncService;
+        if (service == null) {
+            return;
+        }
+
         CompletableFuture.runAsync(() -> {
             if (!isReportMode()) {
                 try {
@@ -100,7 +123,7 @@ public final class PlayerJoinSyncListener implements Listener {
                     LOGGER.log(Level.WARNING, "[PlayerJoinSync] Failed to update last known name for " + playerUuid, ex);
                 }
             }
-        }, executor).thenCompose(v -> syncService.syncPlayer(playerUuid))
+        }, executor).thenCompose(v -> service.syncPlayer(playerUuid))
         .exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[PlayerJoinSync] Failed to sync player " + playerUuid + " on join", ex);
             return null;
