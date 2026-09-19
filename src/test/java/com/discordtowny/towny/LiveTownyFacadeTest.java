@@ -151,6 +151,7 @@ class LiveTownyFacadeTest {
         }
     }
 
+    /** Towny is confirmed absent: an empty answer is the truth, not a failure. */
     private void verifyEmpty(LiveTownyFacade object) {
         assertFalse(object.isAvailable());
         assertTrue(object.town(townId).isEmpty());
@@ -162,13 +163,29 @@ class LiveTownyFacadeTest {
         assertEquals(0, object.townCount());
     }
 
+    /** The read blew up: every method says so instead of answering empty. */
+    private void verifyReadFails(LiveTownyFacade object) {
+        assertFalse(object.isAvailable(), "The probe answers, it never throws");
+        assertThrows(TownyReadException.class, () -> object.town(townId));
+        assertThrows(TownyReadException.class, () -> object.townByName("Roma"));
+        assertThrows(TownyReadException.class, () -> object.townOf(residentId));
+        assertThrows(TownyReadException.class, () -> object.resident(residentId));
+        assertThrows(TownyReadException.class, () -> object.residentByName("Ana"));
+        assertThrows(TownyReadException.class, object::allTowns);
+        assertThrows(TownyReadException.class, object::townCount);
+    }
+
     @Test
-    void missingDisabledOrFailedDependencyReturnsEmpty() {
+    void absentTownyAnswersEmptyWhileABrokenOneSaysTheReadFailed() {
+        // Disabled or not installed: the absence is confirmed.
         verifyEmpty(new LiveTownyFacade(() -> api, () -> false, () -> true, warnings::add));
         verifyEmpty(new LiveTownyFacade(() -> null, () -> true, () -> true, warnings::add));
-        verifyEmpty(new LiveTownyFacade(() -> { throw new NoClassDefFoundError("Towny"); },
+
+        // The supplier itself blows up: that is not an answer, and pretending it
+        // is would let reconciliation read "this town was deleted" out of it.
+        verifyReadFails(new LiveTownyFacade(() -> { throw new NoClassDefFoundError("Towny"); },
                 () -> true, () -> true, warnings::add));
-        verifyEmpty(new LiveTownyFacade(() -> { throw new IllegalStateException("fallo"); },
+        verifyReadFails(new LiveTownyFacade(() -> { throw new IllegalStateException("fallo"); },
                 () -> true, () -> true, warnings::add));
         verifyNoInteractions(api);
         assertEquals(2, warnings.size());
@@ -177,12 +194,14 @@ class LiveTownyFacadeTest {
     @Test
     void visibleApiFailuresAndRecoveryWithoutCache() {
         when(api.getTown(townId)).thenThrow(new IllegalStateException("fallo"));
-        assertTrue(facade.town(townId).isEmpty());
-        assertTrue(facade.town(townId).isEmpty());
-        assertEquals(1, warnings.size());
+        assertThrows(TownyReadException.class, () -> facade.town(townId));
+        assertThrows(TownyReadException.class, () -> facade.town(townId));
+        assertEquals(1, warnings.size(), "The warning is not repeated on every failure");
         when(api.getTowns()).thenThrow(new IllegalStateException("fallo"));
-        assertTrue(facade.allTowns().isEmpty());
-        assertEquals(0, facade.townCount());
+        assertThrows(TownyReadException.class, facade::allTowns);
+        assertThrows(TownyReadException.class, facade::townCount);
+
+        // Recovered: now the town really is absent, and that answer is empty.
         doReturn(null).when(api).getTown(townId);
         assertTrue(facade.town(townId).isEmpty());
         assertTrue(facade.isAvailable());
@@ -194,7 +213,8 @@ class LiveTownyFacadeTest {
             Town broken = mock(Town.class);
             when(broken.getMayor()).thenThrow(new IllegalStateException("fallo"));
             when(api.getTowns()).thenReturn(List.of(town, broken));
-            assertTrue(facade.allTowns().isEmpty());
+            assertThrows(TownyReadException.class, facade::allTowns,
+                    "Half a list is worse than none: the caller cannot tell it is half");
             assertEquals(1, warnings.size());
             assertTrue(facade.isAvailable());
         }
@@ -203,7 +223,7 @@ class LiveTownyFacadeTest {
     @Test
     void availabilityRecoversAfterTransientReadFailure() {
         when(api.getTown(townId)).thenThrow(new IllegalStateException("fallo pasajero"));
-        assertTrue(facade.town(townId).isEmpty());
+        assertThrows(TownyReadException.class, () -> facade.town(townId));
         doReturn(town).when(api).getTown(townId);
 
         assertTrue(facade.isAvailable());

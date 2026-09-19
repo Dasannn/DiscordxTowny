@@ -68,15 +68,24 @@ public final class LiveTownyFacade implements TownyFacade {
         } catch (RuntimeException | LinkageError failure) {
             if (!warned) {
                 warned = true;
-                warning.accept("Towny: read could not be completed; returning empty result");
+                warning.accept("Towny: read could not be completed");
             }
-            return empty;
+            // Never answer a failed read with an empty result: the caller cannot
+            // tell that apart from a confirmed absence, and acting on it removes
+            // access from a town that is alive.
+            throw new TownyReadException("Towny: read could not be completed", failure);
         }
     }
 
     @Override
     public boolean isAvailable() {
-        return read(current -> current.getDataSource() != null, false);
+        // The probe itself must never throw: answering "not available" is the
+        // whole point of asking.
+        try {
+            return read(current -> current.getDataSource() != null, false);
+        } catch (TownyReadException failure) {
+            return false;
+        }
     }
 
     @Override
