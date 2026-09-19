@@ -51,13 +51,8 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         this.guild = guild;
         this.config = config;
         this.spaces = spaces;
-        this.settings = settings;
+        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
         this.logger = logger;
-    }
-
-    JdaGuildOperationExecutor(Guild guild, PluginConfig config,
-                              SpaceRepository spaces, Logger logger) {
-        this(guild, config, spaces, null, logger);
     }
 
     @Override
@@ -426,24 +421,11 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         if (managedRoleIds.contains(role.getId())) {
             return true;
         }
-        if (settings != null) {
-            Optional<String> mayorId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
-            if (mayorId.isPresent()) {
-                return role.getId().equals(mayorId.get());
-            }
+        Optional<String> mayorId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
+        if (mayorId.isPresent()) {
+            return role.getId().equals(mayorId.get());
         }
-        if (role.getName().equalsIgnoreCase(config.roles().mayorRoleName())) {
-            if (settings != null) {
-                try {
-                    settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, role.getId());
-                } catch (Exception e) {
-                    logger.warning("[Ejecutor] No se pudo persistir el ID del rol de alcalde: "
-                            + sanitizeMessage(e.getMessage()));
-                }
-            }
-            return true;
-        }
-        return false;
+        return role.getName().equalsIgnoreCase(config.roles().mayorRoleName());
     }
 
     // -- Utilidades --
@@ -486,11 +468,12 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         }
     }
 
-    /** Asegura que el rol de alcalde existe; si no, lo crea. */
-    private Role ensureMayorRole() {
-        Optional<String> persistedId = settings != null
-                ? settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)
-                : Optional.empty();
+    /**
+     * Asegura que el rol de alcalde existe y persiste su identidad.
+     * Es el unico punto autorizado para adoptar o escribir mayor_role_id.
+     */
+    Role ensureMayorRole() {
+        Optional<String> persistedId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
         if (persistedId.isPresent()) {
             Role role = guild.getRoleById(persistedId.get());
             if (role != null) {
@@ -501,21 +484,24 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         String mayorRoleName = config.roles().mayorRoleName();
         List<Role> existing = guild.getRolesByName(mayorRoleName, true);
         Role role;
-        if (!existing.isEmpty()) {
+        if (existing.size() > 1) {
+            throw new IllegalStateException("Existen multiples roles con el nombre '" + mayorRoleName
+                    + "'. Un administrador debe dejar uno solo o borrar los sobrantes.");
+        } else if (existing.size() == 1) {
             role = existing.getFirst();
         } else {
             var action = guild.createRole();
-            role = action != null ? action.setName(mayorRoleName).complete() : null;
+            if (action == null) {
+                throw new IllegalStateException("No se pudo crear el rol de alcalde '" + mayorRoleName + "' en Discord");
+            }
+            role = action.setName(mayorRoleName).complete();
         }
 
-        if (role != null && settings != null) {
-            try {
-                settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, role.getId());
-            } catch (Exception e) {
-                logger.warning("[Ejecutor] No se pudo persistir el ID del rol de alcalde: "
-                        + sanitizeMessage(e.getMessage()));
-            }
+        if (role == null) {
+            throw new IllegalStateException("No se pudo obtener ni crear el rol de alcalde '" + mayorRoleName + "'");
         }
+
+        settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, role.getId());
         return role;
     }
 

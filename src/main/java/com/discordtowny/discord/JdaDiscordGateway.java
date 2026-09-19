@@ -56,12 +56,8 @@ public final class JdaDiscordGateway implements DiscordGateway {
                              SettingsRepository settings, Logger logger) {
         this.config = config;
         this.spaces = spaces;
-        this.settings = settings;
+        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
         this.logger = logger;
-    }
-
-    public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces, Logger logger) {
-        this(config, spaces, null, logger);
     }
 
     /** Constructor de prueba con conexion simulada. */
@@ -70,7 +66,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
                       JDA jda, Guild guild) {
         this.config = config;
         this.spaces = spaces;
-        this.settings = settings;
+        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
         this.logger = logger;
         this.jdaRef.set(jda);
         this.guild = guild;
@@ -203,9 +199,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
                 .toList());
 
         guild().ifPresent(g -> {
-            Optional<String> persisted = settings != null
-                    ? settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)
-                    : Optional.empty();
+            Optional<String> persisted = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
             if (persisted.isPresent()) {
                 net.dv8tion.jda.api.entities.Role r = g.getRoleById(persisted.get());
                 if (r != null) {
@@ -215,9 +209,6 @@ public final class JdaDiscordGateway implements DiscordGateway {
             }
             for (net.dv8tion.jda.api.entities.Role r : g.getRolesByName(config.roles().mayorRoleName(), true)) {
                 managedRoleIds.add(r.getId());
-                if (settings != null) {
-                    settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, r.getId());
-                }
             }
         });
 
@@ -236,9 +227,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
         }
 
         // 1. Identidad estable persistida
-        Optional<String> persistedId = settings != null
-                ? settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)
-                : Optional.empty();
+        Optional<String> persistedId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
         if (persistedId.isPresent()) {
             net.dv8tion.jda.api.entities.Role role = guild.getRoleById(persistedId.get());
             if (role != null) {
@@ -248,14 +237,10 @@ public final class JdaDiscordGateway implements DiscordGateway {
             return Optional.empty();
         }
 
-        // 2. Si no hay ID persistido aun, buscar por nombre inicial en el guild y persistir
+        // 2. Si no hay ID persistido aun, consultar por nombre sin adoptar ni persistir
         List<net.dv8tion.jda.api.entities.Role> roles = guild.getRolesByName(config.roles().mayorRoleName(), true);
         if (!roles.isEmpty()) {
-            String id = roles.getFirst().getId();
-            if (settings != null) {
-                settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, id);
-            }
-            return Optional.of(id);
+            return Optional.of(roles.getFirst().getId());
         }
 
         // 3. Comprobado que no existe en el guild

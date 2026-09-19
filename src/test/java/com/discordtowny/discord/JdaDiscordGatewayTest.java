@@ -140,8 +140,8 @@ class JdaDiscordGatewayTest {
     }
 
     @Test
-    @DisplayName("mayorRoleId() busca por nombre la primera vez y lo persiste si no habia ID previo")
-    void mayorRoleIdResolvesByNameAndPersistsWhenNoPriorIdExists() {
+    @DisplayName("mayorRoleId() consulta por nombre si no habia ID previo sin adoptar ni persistir")
+    void mayorRoleIdResolvesByNameWithoutPersistingWhenNoPriorIdExists() {
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);
         var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
@@ -156,7 +156,31 @@ class JdaDiscordGatewayTest {
 
         assertTrue(result.isPresent());
         assertEquals("new-mayor-id", result.get());
-        verify(settings).put(SettingsRepository.KEY_MAYOR_ROLE_ID, "new-mayor-id");
+        verify(settings, never()).put(any(), any());
+    }
+
+    @Test
+    @DisplayName("verifyPermissions() solo lee y no persiste la identidad del rol de alcalde")
+    void verifyPermissionsDoesNotPersistMayorRoleId() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.empty());
+        when(spaces.findAll()).thenReturn(List.of());
+
+        Role role = mock(Role.class);
+        when(role.getId()).thenReturn("mayor-id-1");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(role));
+        net.dv8tion.jda.api.entities.SelfMember selfMember = mock(net.dv8tion.jda.api.entities.SelfMember.class);
+        when(guild.getSelfMember()).thenReturn(selfMember);
+        when(selfMember.hasPermission(any(net.dv8tion.jda.api.Permission.class))).thenReturn(true);
+        when(guild.getBotRole()).thenReturn(mock(Role.class));
+        when(guild.getPublicRole()).thenReturn(mock(Role.class));
+
+        gateway.verifyPermissions();
+
+        verify(settings, never()).put(any(), any());
     }
 
     @Test
