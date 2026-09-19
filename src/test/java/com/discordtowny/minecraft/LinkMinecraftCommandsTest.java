@@ -145,4 +145,106 @@ class LinkMinecraftCommandsTest {
 
         assertTrue(scheduled.get(), "Error handler must be scheduled on the scheduler");
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void consoleSenderRepliesInEnglishForLinkAndUnlink() throws Exception {
+        Messages consoleMessages = mock(Messages.class);
+        net.kyori.adventure.text.Component englishPlayersOnly = net.kyori.adventure.text.Component.text("This command only works in-game.");
+        when(consoleMessages.get("general.players-only")).thenReturn(englishPlayersOnly);
+
+        net.kyori.adventure.text.Component spanishPlayersOnly = net.kyori.adventure.text.Component.text("Este comando solo funciona dentro del juego.");
+        when(messages.get("general.players-only")).thenReturn(spanishPlayersOnly);
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, consoleMessages, townyFacade, Runnable::run);
+
+        org.bukkit.command.CommandSender console = mock(org.bukkit.command.ConsoleCommandSender.class);
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        when(source.getSender()).thenReturn(console);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        // /dt link as console
+        root.getChild("link").getCommand().run(ctx);
+        verify(console, times(1)).sendMessage(englishPlayersOnly);
+        verify(console, never()).sendMessage(spanishPlayersOnly);
+
+        // /dt unlink as console
+        root.getChild("unlink").getCommand().run(ctx);
+        verify(console, times(2)).sendMessage(englishPlayersOnly);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void consoleSenderRepliesInEnglishForAdminUnlink() throws Exception {
+        Messages consoleMessages = mock(Messages.class);
+        net.kyori.adventure.text.Component englishWorking = net.kyori.adventure.text.Component.text("Working on it...");
+        net.kyori.adventure.text.Component englishUnlinked = net.kyori.adventure.text.Component.text("Steve no longer has a linked account.");
+        when(consoleMessages.get("general.working")).thenReturn(englishWorking);
+        when(consoleMessages.get(eq("admin.unlinked"), any())).thenReturn(englishUnlinked);
+
+        UUID targetUuid = UUID.randomUUID();
+        com.discordtowny.model.ResidentSnapshot resident = mock(com.discordtowny.model.ResidentSnapshot.class);
+        when(resident.uuid()).thenReturn(targetUuid);
+        when(townyFacade.isAvailable()).thenReturn(true);
+        when(townyFacade.residentByName("Steve")).thenReturn(Optional.of(resident));
+        when(linkService.unlink(targetUuid)).thenReturn(CompletableFuture.completedFuture(true));
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, consoleMessages, townyFacade, Runnable::run,
+                name -> "Steve".equals(name) ? targetUuid : null);
+
+        org.bukkit.command.CommandSender console = mock(org.bukkit.command.ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(true);
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        when(source.getSender()).thenReturn(console);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+        when(ctx.getArgument("jugador", String.class)).thenReturn("Steve");
+
+        root.getChild("admin").getChild("unlink").getChild("jugador").getCommand().run(ctx);
+
+        verify(console, times(1)).sendMessage(englishWorking);
+        verify(console, times(1)).sendMessage(englishUnlinked);
+        verify(messages, never()).get(eq("admin.unlinked"), any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void playerSenderRepliesInConfiguredLanguageForAdminUnlink() throws Exception {
+        Messages consoleMessages = mock(Messages.class);
+        net.kyori.adventure.text.Component spanishWorking = net.kyori.adventure.text.Component.text("Trabajando en ello...");
+        net.kyori.adventure.text.Component spanishUnlinked = net.kyori.adventure.text.Component.text("Steve ya no tiene cuenta vinculada.");
+        when(messages.get("general.working")).thenReturn(spanishWorking);
+        when(messages.get(eq("admin.unlinked"), any())).thenReturn(spanishUnlinked);
+
+        UUID targetUuid = UUID.randomUUID();
+        com.discordtowny.model.ResidentSnapshot resident = mock(com.discordtowny.model.ResidentSnapshot.class);
+        when(resident.uuid()).thenReturn(targetUuid);
+        when(townyFacade.isAvailable()).thenReturn(true);
+        when(townyFacade.residentByName("Steve")).thenReturn(Optional.of(resident));
+        when(linkService.unlink(targetUuid)).thenReturn(CompletableFuture.completedFuture(true));
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, consoleMessages, townyFacade, Runnable::run,
+                name -> "Steve".equals(name) ? targetUuid : null);
+
+        org.bukkit.entity.Player adminPlayer = mock(org.bukkit.entity.Player.class);
+        when(adminPlayer.hasPermission("discordtowny.admin")).thenReturn(true);
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        when(source.getSender()).thenReturn(adminPlayer);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+        when(ctx.getArgument("jugador", String.class)).thenReturn("Steve");
+
+        root.getChild("admin").getChild("unlink").getChild("jugador").getCommand().run(ctx);
+
+        verify(adminPlayer, times(1)).sendMessage(spanishWorking);
+        verify(adminPlayer, times(1)).sendMessage(spanishUnlinked);
+        verify(consoleMessages, never()).get(eq("admin.unlinked"), any());
+    }
 }

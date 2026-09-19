@@ -78,13 +78,23 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> syncScheduler) {
+        return createCommandNode(syncService, configSupplier, messages, null, townyFacade, syncScheduler);
+    }
+
+    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
+            Messages messages,
+            Messages consoleMessages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> syncScheduler) {
         Objects.requireNonNull(syncService, "syncService cannot be null");
         Objects.requireNonNull(messages, "messages cannot be null");
         Consumer<Runnable> scheduler = syncScheduler != null ? syncScheduler : defaultScheduler();
 
         LiteralArgumentBuilder<CommandSourceStack> dt = Commands.literal("dt");
-        dt.then(createSyncSubcommand(syncService, configSupplier, messages, townyFacade, scheduler));
-        dt.then(createAdminNode(syncService, configSupplier, messages, townyFacade, scheduler));
+        dt.then(createSyncSubcommand(syncService, configSupplier, messages, consoleMessages, townyFacade, scheduler));
+        dt.then(createAdminNode(syncService, configSupplier, messages, consoleMessages, townyFacade, scheduler));
         return dt.build();
     }
 
@@ -93,7 +103,7 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
-        return createSyncSubcommand(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, scheduler);
+        return createSyncSubcommand(syncService, (Supplier<PluginConfig>) null, messages, null, townyFacade, scheduler);
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createSyncSubcommand(
@@ -102,7 +112,7 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
-        return createSyncSubcommand(syncService, config != null ? () -> config : null, messages, townyFacade, scheduler);
+        return createSyncSubcommand(syncService, config != null ? () -> config : null, messages, null, townyFacade, scheduler);
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createSyncSubcommand(
@@ -111,34 +121,45 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
+        return createSyncSubcommand(syncService, configSupplier, messages, null, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createSyncSubcommand(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
+            Messages messages,
+            Messages consoleMessages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
         return Commands.literal("sync")
                 .executes(ctx -> {
                     CommandSender sender = ctx.getSource().getSender();
+                    Messages msg = (sender instanceof Player || consoleMessages == null) ? messages : consoleMessages;
                     if (!(sender instanceof Player player)) {
-                        sender.sendMessage(messages.get("general.players-only"));
+                        sender.sendMessage(msg.get("general.players-only"));
                         return 1;
                     }
 
                     Optional<TownSnapshot> townOpt = getPlayerTown(player.getUniqueId(), townyFacade);
                     if (townOpt.isEmpty()) {
-                        player.sendMessage(messages.get("general.not-in-town"));
+                        player.sendMessage(msg.get("general.not-in-town"));
                         return 1;
                     }
 
                     TownSnapshot town = townOpt.get();
                     if (!town.isMayor(player.getUniqueId())) {
-                        player.sendMessage(messages.get("general.not-mayor"));
+                        player.sendMessage(msg.get("general.not-mayor"));
                         return 1;
                     }
 
                     // Respond immediately on the main thread
-                    player.sendMessage(messages.get("sync.started"));
+                    player.sendMessage(msg.get("sync.started"));
 
                     UUID townUuid = town.uuid();
                     syncService.syncTown(townUuid).thenAccept(report -> {
-                        scheduler.accept(() -> replyReport(player, report, isReportMode(configSupplier), messages));
+                        scheduler.accept(() -> replyReport(player, report, isReportMode(configSupplier), msg));
                     }).exceptionally(ex -> {
-                        scheduler.accept(() -> replyError(player, messages, ex));
+                        scheduler.accept(() -> replyError(player, msg, ex));
                         return null;
                     });
 
@@ -151,7 +172,7 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
-        return createAdminNode(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, scheduler);
+        return createAdminNode(syncService, (Supplier<PluginConfig>) null, messages, null, townyFacade, scheduler);
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
@@ -160,18 +181,28 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
-        return createAdminNode(syncService, config != null ? () -> config : null, messages, townyFacade, scheduler);
+        return createAdminNode(syncService, config != null ? () -> config : null, messages, null, townyFacade, scheduler);
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
             SyncService syncService,
             Supplier<PluginConfig> configSupplier,
             Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createAdminNode(syncService, configSupplier, messages, null, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
+            Messages messages,
+            Messages consoleMessages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
         return Commands.literal("admin")
                 .requires(source -> source.getSender().hasPermission("discordtowny.admin"))
-                .then(createAdminSyncSubcommand(syncService, configSupplier, messages, townyFacade, scheduler));
+                .then(createAdminSyncSubcommand(syncService, configSupplier, messages, consoleMessages, townyFacade, scheduler));
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
@@ -179,7 +210,7 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
-        return createAdminSyncSubcommand(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, scheduler);
+        return createAdminSyncSubcommand(syncService, (Supplier<PluginConfig>) null, messages, null, townyFacade, scheduler);
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
@@ -188,7 +219,7 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
-        return createAdminSyncSubcommand(syncService, config != null ? () -> config : null, messages, townyFacade, scheduler);
+        return createAdminSyncSubcommand(syncService, config != null ? () -> config : null, messages, null, townyFacade, scheduler);
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
@@ -197,15 +228,52 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
+        return createAdminSyncSubcommand(syncService, configSupplier, messages, null, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
+            Messages messages,
+            Messages consoleMessages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createAdminSyncSubcommand(
+                () -> syncService,
+                configSupplier,
+                () -> messages,
+                () -> consoleMessages,
+                () -> townyFacade,
+                scheduler
+        );
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
+            Supplier<SyncService> syncServiceSupplier,
+            Supplier<PluginConfig> configSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Supplier<TownyFacade> townyFacadeSupplier,
+            Consumer<Runnable> scheduler) {
         return Commands.literal("sync")
                 .executes(ctx -> {
                     CommandSender sender = ctx.getSource().getSender();
-                    sender.sendMessage(messages.get("sync.started"));
+                    Messages messages = messagesSupplier != null ? messagesSupplier.get() : null;
+                    Messages consoleMessages = consoleMessagesSupplier != null ? consoleMessagesSupplier.get() : null;
+                    Messages msg = (sender instanceof Player || consoleMessages == null) ? messages : consoleMessages;
+
+                    SyncService syncService = syncServiceSupplier != null ? syncServiceSupplier.get() : null;
+                    if (syncService == null) {
+                        sender.sendMessage(msg.get("general.database-unavailable"));
+                        return 1;
+                    }
+
+                    sender.sendMessage(msg.get("sync.started"));
 
                     syncService.reconcileAll().thenAccept(report -> {
-                        scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), messages));
+                        scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), msg));
                     }).exceptionally(ex -> {
-                        scheduler.accept(() -> replyError(sender, messages, ex));
+                        scheduler.accept(() -> replyError(sender, msg, ex));
                         return null;
                     });
 
@@ -215,8 +283,9 @@ public final class SyncMinecraftCommands {
                         .suggests((ctx, builder) -> {
                             String remaining = builder.getRemainingLowerCase();
                             try {
-                                if (Bukkit.getServer() != null && Bukkit.isPrimaryThread() && townyFacade != null && townyFacade.isAvailable()) {
-                                    for (TownSnapshot t : townyFacade.allTowns()) {
+                                TownyFacade tf = townyFacadeSupplier != null ? townyFacadeSupplier.get() : null;
+                                if (Bukkit.getServer() != null && Bukkit.isPrimaryThread() && tf != null && tf.isAvailable()) {
+                                    for (TownSnapshot t : tf.allTowns()) {
                                         if (t.name().toLowerCase().startsWith(remaining)) {
                                             builder.suggest(t.name());
                                         }
@@ -229,21 +298,32 @@ public final class SyncMinecraftCommands {
                         })
                         .executes(ctx -> {
                             CommandSender sender = ctx.getSource().getSender();
+                            Messages messages = messagesSupplier != null ? messagesSupplier.get() : null;
+                            Messages consoleMessages = consoleMessagesSupplier != null ? consoleMessagesSupplier.get() : null;
+                            Messages msg = (sender instanceof Player || consoleMessages == null) ? messages : consoleMessages;
+
+                            SyncService syncService = syncServiceSupplier != null ? syncServiceSupplier.get() : null;
+                            if (syncService == null) {
+                                sender.sendMessage(msg.get("general.database-unavailable"));
+                                return 1;
+                            }
+
+                            TownyFacade tf = townyFacadeSupplier != null ? townyFacadeSupplier.get() : null;
                             String townName = StringArgumentType.getString(ctx, "town");
 
-                            Optional<TownSnapshot> townOpt = getTownByName(townName, townyFacade);
+                            Optional<TownSnapshot> townOpt = getTownByName(townName, tf);
                             if (townOpt.isEmpty()) {
-                                sender.sendMessage(messages.get("general.town-not-found", Map.of("town", townName)));
+                                sender.sendMessage(msg.get("general.town-not-found", Map.of("town", townName)));
                                 return 1;
                             }
 
                             UUID townUuid = townOpt.get().uuid();
-                            sender.sendMessage(messages.get("sync.started"));
+                            sender.sendMessage(msg.get("sync.started"));
 
                             syncService.syncTown(townUuid).thenAccept(report -> {
-                                scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), messages));
+                                scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), msg));
                             }).exceptionally(ex -> {
-                                scheduler.accept(() -> replyError(sender, messages, ex));
+                                scheduler.accept(() -> replyError(sender, msg, ex));
                                 return null;
                             });
 
