@@ -52,6 +52,11 @@ public final class YamlMessages implements Messages {
     public Component get(String key, Map<String, String> placeholders) {
         Component message = LegacyComponentSerializer.legacyAmpersand()
                 .deserialize(text("prefix") + text(key));
+        return resolve(message, placeholders);
+    }
+
+    /** Replaces placeholders without ever interpreting their values as formatting. */
+    private Component resolve(Component message, Map<String, String> placeholders) {
         return message.replaceText(rule -> rule.match(PLACEHOLDER).replacement((match, original) -> {
             String value = placeholders.get(match.group(1));
             return value == null ? original.build() : Component.text(value);
@@ -61,5 +66,11 @@ public final class YamlMessages implements Messages {
     @Override
     public String plain(String key, Map<String, String> placeholders) {
         return PlainTextComponentSerializer.plainText().serialize(get(key, placeholders));
+    }
+
+    @Override
+    public String label(String key, Map<String, String> placeholders) {
+        Component label = LegacyComponentSerializer.legacyAmpersand().deserialize(text(key));
+        return PlainTextComponentSerializer.plainText().serialize(resolve(label, placeholders));
     }
 }

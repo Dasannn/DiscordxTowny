@@ -96,3 +96,4 @@ embed:
   page: "Page {current} of {total}"
   next: "Next"
   previous: "Previous"
+  last-online: "Last online"

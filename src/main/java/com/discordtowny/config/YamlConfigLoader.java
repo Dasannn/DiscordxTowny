@@ -174,6 +174,16 @@ public final class YamlConfigLoader implements ConfigLoader {
         public String plain(String key, Map<String, String> placeholders) {
             return current.plain(key, placeholders);
         }
+
+        @Override
+        public String label(String key, Map<String, String> placeholders) {
+            return current.label(key, placeholders);
+        }
+
+        @Override
+        public String label(String key) {
+            return current.label(key);
+        }
     }
 
     private static final class Values {
