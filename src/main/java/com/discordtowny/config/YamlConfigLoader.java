@@ -14,6 +14,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
+import net.kyori.adventure.text.Component;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 
@@ -31,14 +32,14 @@ public final class YamlConfigLoader implements ConfigLoader {
     private final Path dataFolder;
     private final Consumer<String> warning;
     private final Map<String, String> bundledEnglish;
-    private volatile Messages messages;
+    private final ReloadableMessages messages;
 
     public YamlConfigLoader(Path dataFolder, Consumer<String> warning) {
         this.dataFolder = dataFolder;
         this.warning = warning;
         this.bundledEnglish = loadBundledEnglish();
         saveDefaultMessages();
-        this.messages = new YamlMessages(Map.of(), bundledEnglish, "messages_en.yml", warning);
+        this.messages = new ReloadableMessages(new YamlMessages(Map.of(), bundledEnglish, "messages_en.yml", warning));
     }
 
     public void saveDefaultMessages() {
@@ -86,7 +87,7 @@ public final class YamlConfigLoader implements ConfigLoader {
         if (!readResult.problems.isEmpty()) {
             throw new ConfigException(String.join("; ", readResult.problems));
         }
-        messages = new YamlMessages(readResult.texts, bundledEnglish, readResult.fileName, warning);
+        messages.swap(new YamlMessages(readResult.texts, bundledEnglish, readResult.fileName, warning));
         return readResult.config;
     }
 
@@ -116,13 +117,23 @@ public final class YamlConfigLoader implements ConfigLoader {
         }
 
         String messageFileName = "messages_" + language + ".yml";
-        YamlConfiguration texts = file(messageFileName, problems);
-        Map<String, String> map = new HashMap<>();
-        for (String key : texts.getKeys(true)) {
-            if (texts.isString(key)) map.put(key, texts.getString(key));
-        }
+        Map<String, String> map = loadMessageFile(messageFileName);
         PluginConfig config = new Values(yaml, problems, language).config();
         return new ReadResult(config, map, messageFileName, problems);
+    }
+
+    private Map<String, String> loadMessageFile(String name) {
+        YamlConfiguration texts = new YamlConfiguration();
+        Map<String, String> map = new HashMap<>();
+        try (var reader = Files.newBufferedReader(dataFolder.resolve(name), StandardCharsets.UTF_8)) {
+            texts.load(reader);
+            for (String key : texts.getKeys(true)) {
+                if (texts.isString(key)) map.put(key, texts.getString(key));
+            }
+        } catch (IOException | InvalidConfigurationException | RuntimeException failure) {
+            warning.accept(name + ": expected a readable file with valid YAML syntax; falling back to bundled English");
+        }
+        return Map.copyOf(map);
     }
 
     private YamlConfiguration file(String name, List<String> problems) {
@@ -137,6 +148,33 @@ public final class YamlConfigLoader implements ConfigLoader {
     }
 
     private record ReadResult(PluginConfig config, Map<String, String> texts, String fileName, List<String> problems) {}
+
+    private static final class ReloadableMessages implements Messages {
+        private volatile Messages current;
+
+        private ReloadableMessages(Messages initial) {
+            this.current = initial;
+        }
+
+        private void swap(Messages next) {
+            this.current = next;
+        }
+
+        @Override
+        public Component get(String key, Map<String, String> placeholders) {
+            return current.get(key, placeholders);
+        }
+
+        @Override
+        public Component get(String key) {
+            return current.get(key);
+        }
+
+        @Override
+        public String plain(String key, Map<String, String> placeholders) {
+            return current.plain(key, placeholders);
+        }
+    }
 
     private static final class Values {
         private final YamlConfiguration yaml;

@@ -31,11 +31,21 @@ public final class YamlMessages implements Messages {
 
     private String text(String key) {
         String value = texts.get(key);
-        if (value != null) return value;
+        if (isUsable(key, value)) return value;
         if (missing.add(key)) warning.accept(fileName + ": missing message " + key);
         String fallback = fallbackTexts.get(key);
-        if (fallback != null) return fallback;
+        if (isUsable(key, fallback)) return fallback;
         return "[missing message: " + key + "]";
+    }
+
+    private static boolean isUsable(String key, String value) {
+        if (value == null) {
+            return false;
+        }
+        if ("prefix".equals(key)) {
+            return true;
+        }
+        return !value.isBlank();
     }
 
     @Override

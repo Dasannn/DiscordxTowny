@@ -237,13 +237,40 @@ class YamlConfigLoaderTest {
     }
 
     @Test
-    void missingFilesOrMalformedTextsAreRejected() throws Exception {
+    void missingConfigFileIsRejected() throws Exception {
         Files.delete(folder.resolve("config.yml"));
-        Files.writeString(folder.resolve("messages_en.yml"), "prefix: [sin cerrar");
         List<String> problems = loader.validate();
         assertTrue(problems.stream().anyMatch(p -> p.startsWith("config.yml:")));
-        assertTrue(problems.stream().anyMatch(p -> p.startsWith("messages_en.yml:")));
         assertThrows(ConfigException.class, loader::load);
+    }
+
+    @Test
+    void malformedMessageFileWarnsAndFallsBackToBundledEnglishWithoutStoppingServer() throws Exception {
+        Files.writeString(folder.resolve("messages_en.yml"), "prefix: [sin cerrar\n");
+        List<String> problems = loader.validate();
+        assertTrue(problems.isEmpty(), "Malformed message file must not add fatal configuration problems");
+
+        PluginConfig config = assertDoesNotThrow(loader::load);
+        assertNotNull(config);
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("messages_en.yml")));
+        String text = loader.messages().plain("general.working", Map.of());
+        assertTrue(text.contains("Working on it"));
+    }
+
+    @Test
+    void malformedSpanishMessageFileFallsBackToBundledEnglishAndWarns() throws Exception {
+        yaml.set("language", "es");
+        save();
+        Files.writeString(folder.resolve("messages_es.yml"), "prefix: [corrupto\n");
+
+        assertTrue(loader.validate().isEmpty());
+        PluginConfig config = assertDoesNotThrow(loader::load);
+        assertEquals("es", config.language());
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("messages_es.yml")));
+        String text = loader.messages().plain("general.working", Map.of());
+        assertTrue(text.contains("Working on it"));
     }
 
     @Test
@@ -376,18 +403,49 @@ class YamlConfigLoaderTest {
         yaml.set("language", "en");
         save();
         loader.load();
-        assertTrue(loader.messages().plain("general.working", Map.of()).contains("Working on it"));
+        Messages retained = loader.messages();
+        assertTrue(retained.plain("general.working", Map.of()).contains("Working on it"));
 
-        // Change to es and reload
+        // Change to es and reload - retained reference must see Spanish without asking loader for a fresh one
         yaml.set("language", "es");
         save();
         loader.load();
-        assertTrue(loader.messages().plain("general.working", Map.of()).contains("Trabajando en ello"));
+        assertTrue(retained.plain("general.working", Map.of()).contains("Trabajando en ello"));
+        assertSame(retained, loader.messages());
 
-        // Change back to en and reload
+        // Change back to en and reload - retained reference must see English again
         yaml.set("language", "en");
         save();
         loader.load();
-        assertTrue(loader.messages().plain("general.working", Map.of()).contains("Working on it"));
+        assertTrue(retained.plain("general.working", Map.of()).contains("Working on it"));
+        assertSame(retained, loader.messages());
+    }
+
+    @Test
+    void consumerHoldingMessagesSeesLanguageSwapOnReload() throws Exception {
+        yaml.set("language", "en");
+        save();
+        loader.load();
+
+        class CommandHandler {
+            private final Messages messages;
+
+            CommandHandler(Messages messages) {
+                this.messages = messages;
+            }
+
+            String reply() {
+                return messages.plain("general.working", Map.of());
+            }
+        }
+
+        CommandHandler handler = new CommandHandler(loader.messages());
+        assertTrue(handler.reply().contains("Working on it"));
+
+        yaml.set("language", "es");
+        save();
+        loader.load();
+
+        assertTrue(handler.reply().contains("Trabajando en ello"));
     }
 }
