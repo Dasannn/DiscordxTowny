@@ -205,7 +205,7 @@ reconciling leaves the space complete, without duplicates.
 ## T7 — Synchronization and Reconciliation
 
 - **Branch**: `feat/sincronizacion` · **Phase** 4 · **Depends on**: T6
-- **Status**: pending · **Zone**: `sync/`, listeners in `minecraft/`
+- **Status**: integrated · **Zone**: `sync/`, listeners in `minecraft/`
 
 **Builds**
 
@@ -239,6 +239,16 @@ next pass. A manually deleted channel is detected and repaired.
 - Admin block: `list`, `info <town>`, `purge` with confirmation, `reload`.
 - Full permission tree and argument autocompletion.
 - Immediate response on asynchronous operations, with subsequent confirmation.
+
+**Inherited from T7, and not optional**
+
+- `DefaultSyncService` needs a main-thread executor supplied at construction:
+  `runnable -> Bukkit.getScheduler().runTask(plugin, runnable)`. `LiveTownyFacade`
+  throws on any read off the main thread, so wiring it without one is a crash,
+  not a slow path.
+- `PeriodicSyncJob` needs to be started on enable and stopped on disable. Nothing
+  starts it today, so the configured `sync.interval-minutes` does nothing until
+  this card wires it.
 
 **Inherited from T14, and not optional**
 
