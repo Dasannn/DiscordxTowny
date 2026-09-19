@@ -17,8 +17,10 @@ import net.dv8tion.jda.api.exceptions.ErrorResponseException;
 import net.dv8tion.jda.api.exceptions.PermissionException;
 import net.dv8tion.jda.api.requests.ErrorResponse;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -81,6 +83,13 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                 onOperationFailed(operation, outcome);
             }
             return outcome;
+        } catch (IllegalStateException e) {
+            String safeMsg = sanitizeMessage(e.getMessage());
+            logger.warning("[Executor] Conflict or unrecoverable state in '"
+                    + operation.describe() + "': " + safeMsg);
+            OperationOutcome outcome = OperationOutcome.permanentFailure(safeMsg);
+            onOperationFailed(operation, outcome);
+            return outcome;
         } catch (Exception e) {
             String safeMsg = sanitizeMessage(e.getMessage());
             logger.warning("[Executor] Unexpected error in '" + operation.describe()
@@ -95,40 +104,84 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         Optional<TownSpace> existing = spaces.findByTownUuid(req.townUuid());
         TownSpace space = existing.orElse(newEmptySpace(req));
 
-        int channelsNeeded = (config.structure().createTextChannel() ? 1 : 0)
-                + (config.structure().createVoiceChannel() ? 1 : 0);
-
-        // 1. Container category (shared with 50-channel limit)
-        Category category = ensureCategory(space, config.structure().categoryName(), channelsNeeded);
-        space = withCategory(space, category.getId());
-        spaces.save(space);
-
-        // 2. Town role
+        // 1. Town role first: role has no category dependency and channels need it for permissions.
+        // If a role already exists with this name and is not owned by this town,
+        // ensureRole throws IllegalStateException (F2) rather than adopting an unowned role.
         Role role = ensureRole(space, applyTemplate(config.roles().townRoleName(), req.townName()));
+        if (role == null) {
+            throw new IllegalStateException("Could not ensure town role for " + req.townName());
+        }
         space = withRole(space, role.getId());
         spaces.save(space);
 
-        // 3. Text channel (if requested by config)
-        if (config.structure().createTextChannel()) {
-            TextChannel textCh = ensureTextChannel(space, category, role,
-                    applyTemplate(config.structure().textChannelName(), req.townName()));
-            if (textCh != null) {
+        // 2. Reclaim already-created channels across all managed categories (F1).
+        // This covers the return-to-write crash window without duplicating channels.
+        space = reclaimExistingChannels(space, role, req.townName());
+
+        // 3. Determine genuinely missing channels
+        boolean wantsText = config.structure().createTextChannel();
+        boolean wantsVoice = config.structure().createVoiceChannel();
+
+        boolean textMissing = wantsText && (space.textChannelId().isEmpty()
+                || guild.getTextChannelById(space.textChannelId().get()) == null);
+        boolean voiceMissing = wantsVoice && (space.voiceChannelId().isEmpty()
+                || guild.getVoiceChannelById(space.voiceChannelId().get()) == null);
+
+        int channelsNeeded = (textMissing ? 1 : 0) + (voiceMissing ? 1 : 0);
+
+        // 4. Ensure container category with capacity for genuinely missing channels
+        Category category = ensureCategory(space, config.structure().categoryName(), channelsNeeded);
+        if (category == null) {
+            throw new IllegalStateException("Could not ensure category for town " + req.townName());
+        }
+        space = withCategory(space, category.getId());
+        spaces.save(space);
+
+        // 5. Text channel (if requested)
+        if (wantsText) {
+            TextChannel textCh;
+            if (space.textChannelId().isPresent()) {
+                textCh = guild.getTextChannelById(space.textChannelId().get());
+                if (textCh != null) {
+                    // Reapply permissions to ensure postconditions are met (F2)
+                    applyChannelPermissions(textCh, role);
+                } else {
+                    textCh = createTextChannel(category, role,
+                            applyTemplate(config.structure().textChannelName(), req.townName()));
+                    space = withTextChannel(space, textCh.getId());
+                    spaces.save(space);
+                }
+            } else {
+                textCh = createTextChannel(category, role,
+                        applyTemplate(config.structure().textChannelName(), req.townName()));
                 space = withTextChannel(space, textCh.getId());
                 spaces.save(space);
             }
         }
 
-        // 4. Voice channel (if requested by config)
-        if (config.structure().createVoiceChannel()) {
-            VoiceChannel voiceCh = ensureVoiceChannel(space, category, role,
-                    applyTemplate(config.structure().voiceChannelName(), req.townName()));
-            if (voiceCh != null) {
+        // 6. Voice channel (if requested)
+        if (wantsVoice) {
+            VoiceChannel voiceCh;
+            if (space.voiceChannelId().isPresent()) {
+                voiceCh = guild.getVoiceChannelById(space.voiceChannelId().get());
+                if (voiceCh != null) {
+                    // Reapply permissions to ensure postconditions are met (F2)
+                    applyVoiceChannelPermissions(voiceCh, role);
+                } else {
+                    voiceCh = createVoiceChannel(category, role,
+                            applyTemplate(config.structure().voiceChannelName(), req.townName()));
+                    space = withVoiceChannel(space, voiceCh.getId());
+                    spaces.save(space);
+                }
+            } else {
+                voiceCh = createVoiceChannel(category, role,
+                        applyTemplate(config.structure().voiceChannelName(), req.townName()));
                 space = withVoiceChannel(space, voiceCh.getId());
                 spaces.save(space);
             }
         }
 
-        // 5. Assign roles to linked residents and to the mayor (spec 4.1)
+        // 7. Assign roles to linked residents and mayor (spec 4.1)
         assignRolesToMembers(role, req.linkedResidentDiscordIds());
         if (req.mayorDiscordId() != null && !req.mayorDiscordId().isBlank()) {
             Role mayorRole = ensureMayorRole();
@@ -136,7 +189,7 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
             assignRoleToMember(role, req.mayorDiscordId());
         }
 
-        // 6. Space completed successfully: mark as ACTIVE
+        // 8. Space completed successfully: mark as ACTIVE
         space = withState(space, SpaceState.ACTIVE);
         spaces.save(space);
 
@@ -155,34 +208,63 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         TownSpace space = opt.get();
         String newName = op.newName();
 
-        // Rename role
-        space.roleId().ifPresent(roleId -> {
-            Role role = guild.getRoleById(roleId);
-            if (role != null) {
-                role.getManager()
-                        .setName(applyTemplate(config.roles().townRoleName(), newName))
-                        .complete();
+        // 1. Verify required role exists (F5)
+        Role role = null;
+        if (space.roleId().isPresent()) {
+            String roleId = space.roleId().get();
+            role = guild.getRoleById(roleId);
+            if (role == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required role " + roleId + " not found in Discord for town " + op.townUuid());
+                onOperationFailed(op, outcome);
+                return outcome;
             }
-        });
+        }
+
+        // 2. Verify required channels exist (F5)
+        TextChannel textCh = null;
+        if (space.textChannelId().isPresent()) {
+            String chId = space.textChannelId().get();
+            textCh = guild.getTextChannelById(chId);
+            if (textCh == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required text channel " + chId + " not found in Discord for town " + op.townUuid());
+                onOperationFailed(op, outcome);
+                return outcome;
+            }
+        }
+
+        VoiceChannel voiceCh = null;
+        if (space.voiceChannelId().isPresent()) {
+            String chId = space.voiceChannelId().get();
+            voiceCh = guild.getVoiceChannelById(chId);
+            if (voiceCh == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required voice channel " + chId + " not found in Discord for town " + op.townUuid());
+                onOperationFailed(op, outcome);
+                return outcome;
+            }
+        }
+
+        // Rename role
+        if (role != null) {
+            role.getManager()
+                    .setName(applyTemplate(config.roles().townRoleName(), newName))
+                    .complete();
+        }
 
         // Rename channels
-        space.textChannelId().ifPresent(chId -> {
-            TextChannel ch = guild.getTextChannelById(chId);
-            if (ch != null) {
-                ch.getManager()
-                        .setName(applyTemplate(config.structure().textChannelName(), newName))
-                        .complete();
-            }
-        });
+        if (textCh != null) {
+            textCh.getManager()
+                    .setName(applyTemplate(config.structure().textChannelName(), newName))
+                    .complete();
+        }
 
-        space.voiceChannelId().ifPresent(chId -> {
-            VoiceChannel ch = guild.getVoiceChannelById(chId);
-            if (ch != null) {
-                ch.getManager()
-                        .setName(applyTemplate(config.structure().voiceChannelName(), newName))
-                        .complete();
-            }
-        });
+        if (voiceCh != null) {
+            voiceCh.getManager()
+                    .setName(applyTemplate(config.structure().voiceChannelName(), newName))
+                    .complete();
+        }
 
         // Update name in DB
         TownSpace updated = new TownSpace(
@@ -205,6 +287,31 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         }
         TownSpace space = opt.get();
 
+        // Verify required channels exist before archiving (F5)
+        TextChannel textCh = null;
+        if (space.textChannelId().isPresent()) {
+            String chId = space.textChannelId().get();
+            textCh = guild.getTextChannelById(chId);
+            if (textCh == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required text channel " + chId + " not found in Discord for town " + op.townUuid());
+                onOperationFailed(op, outcome);
+                return outcome;
+            }
+        }
+
+        VoiceChannel voiceCh = null;
+        if (space.voiceChannelId().isPresent()) {
+            String chId = space.voiceChannelId().get();
+            voiceCh = guild.getVoiceChannelById(chId);
+            if (voiceCh == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required voice channel " + chId + " not found in Discord for town " + op.townUuid());
+                onOperationFailed(op, outcome);
+                return outcome;
+            }
+        }
+
         // 1. Delete role (revokes access for everyone)
         space.roleId().ifPresent(roleId -> {
             Role role = guild.getRoleById(roleId);
@@ -218,33 +325,35 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                 + (space.voiceChannelId().isPresent() ? 1 : 0);
         Category archive = ensureCategoryWithCapacity(config.structure().archiveCategoryName(), channelsNeeded);
 
-        space.textChannelId().ifPresent(chId -> {
-            TextChannel ch = guild.getTextChannelById(chId);
-            if (ch != null) {
-                ch.getManager().setParent(archive).complete();
-                // Visible only for administrators in read-only: @everyone cannot see the channel
-                ch.upsertPermissionOverride(guild.getPublicRole())
-                        .deny(Permission.MESSAGE_SEND, Permission.VIEW_CHANNEL)
-                        .complete();
-                ch.upsertPermissionOverride(guild.getSelfMember())
-                        .grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL)
-                        .complete();
+        if (textCh != null) {
+            textCh.getManager().setParent(archive).complete();
+            // Visible only for administrators in read-only: @everyone cannot see the channel
+            var p1 = textCh.upsertPermissionOverride(guild.getPublicRole());
+            if (p1 != null) {
+                p1.deny(Permission.MESSAGE_SEND, Permission.VIEW_CHANNEL).complete();
             }
-        });
+            if (guild.getSelfMember() != null) {
+                var p2 = textCh.upsertPermissionOverride(guild.getSelfMember());
+                if (p2 != null) {
+                    p2.grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL).complete();
+                }
+            }
+        }
 
-        space.voiceChannelId().ifPresent(chId -> {
-            VoiceChannel ch = guild.getVoiceChannelById(chId);
-            if (ch != null) {
-                ch.getManager().setParent(archive).complete();
-                // Visible only for administrators in read-only: @everyone cannot see the channel
-                ch.upsertPermissionOverride(guild.getPublicRole())
-                        .deny(Permission.VOICE_CONNECT, Permission.VIEW_CHANNEL)
-                        .complete();
-                ch.upsertPermissionOverride(guild.getSelfMember())
-                        .grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL)
-                        .complete();
+        if (voiceCh != null) {
+            voiceCh.getManager().setParent(archive).complete();
+            // Visible only for administrators in read-only: @everyone cannot see the channel
+            var p1 = voiceCh.upsertPermissionOverride(guild.getPublicRole());
+            if (p1 != null) {
+                p1.deny(Permission.VOICE_CONNECT, Permission.VIEW_CHANNEL).complete();
             }
-        });
+            if (guild.getSelfMember() != null) {
+                var p2 = voiceCh.upsertPermissionOverride(guild.getSelfMember());
+                if (p2 != null) {
+                    p2.grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL).complete();
+                }
+            }
+        }
 
         // 3. Update state in DB
         TownSpace archived = new TownSpace(
@@ -272,34 +381,59 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         space = withState(space, SpaceState.INCONSISTENT);
         spaces.save(space);
 
+        // Verify required channels exist in Discord before restoring (F5)
+        TextChannel textCh = null;
+        if (space.textChannelId().isPresent()) {
+            String chId = space.textChannelId().get();
+            textCh = guild.getTextChannelById(chId);
+            if (textCh == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required text channel " + chId + " not found in Discord for town " + req.townUuid());
+                onOperationFailed(new GuildOperation.RestoreSpace(req), outcome);
+                return outcome;
+            }
+        }
+
+        VoiceChannel voiceCh = null;
+        if (space.voiceChannelId().isPresent()) {
+            String chId = space.voiceChannelId().get();
+            voiceCh = guild.getVoiceChannelById(chId);
+            if (voiceCh == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Required voice channel " + chId + " not found in Discord for town " + req.townUuid());
+                onOperationFailed(new GuildOperation.RestoreSpace(req), outcome);
+                return outcome;
+            }
+        }
+
         // 1. Active category
         int channelsNeeded = (space.textChannelId().isPresent() ? 1 : 0)
                 + (space.voiceChannelId().isPresent() ? 1 : 0);
         Category category = ensureCategory(space, config.structure().categoryName(), channelsNeeded);
+        if (category == null) {
+            throw new IllegalStateException("Could not obtain active category for town " + req.townName());
+        }
         space = withCategory(space, category.getId());
         spaces.save(space);
 
         // 2. Create new role (the archived one was deleted) and persist immediately
         Role role = ensureRole(space, applyTemplate(config.roles().townRoleName(), req.townName()));
+        if (role == null) {
+            throw new IllegalStateException("Could not create town role for town " + req.townName());
+        }
         space = withRole(space, role.getId());
         spaces.save(space);
 
         // 3. Move channels back and apply permissions (with bot permissions)
-        space.textChannelId().ifPresent(chId -> {
-            TextChannel ch = guild.getTextChannelById(chId);
-            if (ch != null) {
-                ch.getManager().setParent(category).complete();
-                applyChannelPermissions(ch, role);
-            }
-        });
+        if (textCh != null) {
+            textCh.getManager().setParent(category).complete();
+            applyChannelPermissions(textCh, role);
+        }
 
-        space.voiceChannelId().ifPresent(chId -> {
-            VoiceChannel ch = guild.getVoiceChannelById(chId);
-            if (ch != null) {
-                ch.getManager().setParent(category).complete();
-                applyVoiceChannelPermissions(ch, role);
-            }
-        });
+        if (voiceCh != null) {
+            voiceCh.getManager().setParent(category).complete();
+            applyVoiceChannelPermissions(voiceCh, role);
+        }
 
         // 4. Assign roles to linked residents and the mayor (spec 4.1)
         assignRolesToMembers(role, req.linkedResidentDiscordIds());
@@ -388,7 +522,7 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
             return OperationOutcome.success();
         }
 
-        // Obtain the set of managed role IDs once (finding 10)
+        // Obtain the set of managed role IDs once
         Set<String> managedRoleIds = spaces.findAll().stream()
                 .flatMap(s -> s.roleId().stream())
                 .collect(Collectors.toSet());
@@ -437,6 +571,138 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
     }
 
     /**
+     * Reclaims already created channels across all managed categories (F1).
+     * Proves ownership via town role permission overrides and claimed channel sets (F2).
+     */
+    private TownSpace reclaimExistingChannels(TownSpace space, Role townRole, String townName) {
+        // The templates are read inside each branch: a disabled channel type has
+        // no configured name, and reading it here would fail before we know
+        // whether we even need it.
+
+        UUID thisTown = space.townUuid();
+        Set<String> claimedChannelIds = spaces.findAll().stream()
+                .filter(s -> !s.townUuid().equals(thisTown))
+                .flatMap(s -> java.util.stream.Stream.of(s.textChannelId(), s.voiceChannelId()))
+                .flatMap(Optional::stream)
+                .collect(Collectors.toSet());
+
+        List<Category> managedCategories = getManagedCategories();
+
+        // 1. Reclaim unrecorded text channel
+        if (config.structure().createTextChannel() && space.textChannelId().isEmpty()) {
+            String expectedTextName = applyTemplate(config.structure().textChannelName(), townName);
+            List<TextChannel> candidates = new ArrayList<>();
+            for (Category cat : managedCategories) {
+                if (cat.getTextChannels() == null) continue;
+                for (TextChannel ch : cat.getTextChannels()) {
+                    if (ch.getName().equalsIgnoreCase(expectedTextName)) {
+                        if (claimedChannelIds.contains(ch.getId())) {
+                            continue;
+                        }
+                        if (ch.getPermissionOverride(townRole) != null) {
+                            candidates.add(ch);
+                        } else {
+                            throw new IllegalStateException("Text channel name collision: channel '"
+                                    + expectedTextName + "' exists in category '" + cat.getName()
+                                    + "' but ownership by role " + townRole.getId() + " cannot be proven");
+                        }
+                    }
+                }
+            }
+
+            if (candidates.size() > 1) {
+                throw new IllegalStateException("Ambiguous text channel: multiple channels match name '"
+                        + expectedTextName + "' with town role permissions");
+            } else if (candidates.size() == 1) {
+                TextChannel reclaimed = candidates.getFirst();
+                space = withTextChannel(space, reclaimed.getId());
+                if (reclaimed.getParentCategory() != null) {
+                    space = withCategory(space, reclaimed.getParentCategory().getId());
+                }
+                spaces.save(space);
+                logger.info("[Executor] Reclaimed unrecorded text channel " + reclaimed.getId()
+                        + " for town '" + townName + "'");
+            }
+        }
+
+        // 2. Reclaim unrecorded voice channel
+        if (config.structure().createVoiceChannel() && space.voiceChannelId().isEmpty()) {
+            String expectedVoiceName = applyTemplate(config.structure().voiceChannelName(), townName);
+            List<VoiceChannel> candidates = new ArrayList<>();
+            for (Category cat : managedCategories) {
+                if (cat.getVoiceChannels() == null) continue;
+                for (VoiceChannel ch : cat.getVoiceChannels()) {
+                    if (ch.getName().equalsIgnoreCase(expectedVoiceName)) {
+                        if (claimedChannelIds.contains(ch.getId())) {
+                            continue;
+                        }
+                        if (ch.getPermissionOverride(townRole) != null) {
+                            candidates.add(ch);
+                        } else {
+                            throw new IllegalStateException("Voice channel name collision: channel '"
+                                    + expectedVoiceName + "' exists in category '" + cat.getName()
+                                    + "' but ownership by role " + townRole.getId() + " cannot be proven");
+                        }
+                    }
+                }
+            }
+
+            if (candidates.size() > 1) {
+                throw new IllegalStateException("Ambiguous voice channel: multiple channels match name '"
+                        + expectedVoiceName + "' with town role permissions");
+            } else if (candidates.size() == 1) {
+                VoiceChannel reclaimed = candidates.getFirst();
+                space = withVoiceChannel(space, reclaimed.getId());
+                if (reclaimed.getParentCategory() != null) {
+                    space = withCategory(space, reclaimed.getParentCategory().getId());
+                }
+                spaces.save(space);
+                logger.info("[Executor] Reclaimed unrecorded voice channel " + reclaimed.getId()
+                        + " for town '" + townName + "'");
+            }
+        }
+
+        return space;
+    }
+
+    /** Returns all categories managed by the plugin (active categories and archive categories). */
+    private List<Category> getManagedCategories() {
+        String baseName = config.structure().categoryName();
+        String archiveName = config.structure().archiveCategoryName();
+        Set<Category> result = new LinkedHashSet<>();
+
+        if (guild.getCategories() != null) {
+            for (Category cat : guild.getCategories()) {
+                if (isManagedCategory(cat, baseName, archiveName)) {
+                    result.add(cat);
+                }
+            }
+        }
+        if (baseName != null) {
+            List<Category> byBase = guild.getCategoriesByName(baseName, true);
+            if (byBase != null) {
+                result.addAll(byBase);
+            }
+        }
+        if (archiveName != null) {
+            List<Category> byArchive = guild.getCategoriesByName(archiveName, true);
+            if (byArchive != null) {
+                result.addAll(byArchive);
+            }
+        }
+        return new ArrayList<>(result);
+    }
+
+    private boolean isManagedCategory(Category cat, String baseName, String archiveName) {
+        if (cat == null || cat.getName() == null) return false;
+        String name = cat.getName();
+        return (baseName != null && (name.equalsIgnoreCase(baseName)
+                || name.toLowerCase().startsWith(baseName.toLowerCase() + " ")))
+                || (archiveName != null && (name.equalsIgnoreCase(archiveName)
+                || name.toLowerCase().startsWith(archiveName.toLowerCase() + " ")));
+    }
+
+    /**
      * Ensures that the category exists and has available capacity. Idempotent.
      * Discord limits categories to 50 channels each. If the category fills up, numbered
      * categories are created (Communities, Communities 2, Communities 3...).
@@ -444,7 +710,7 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
     private Category ensureCategory(TownSpace space, String baseName, int channelsNeeded) {
         if (space.categoryId().isPresent()) {
             Category cat = guild.getCategoryById(space.categoryId().get());
-            if (cat != null && cat.getChannels().size() + channelsNeeded <= 50) {
+            if (cat != null && (cat.getChannels() == null || cat.getChannels().size() + channelsNeeded <= 50)) {
                 return cat;
             }
         }
@@ -506,7 +772,12 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         return role;
     }
 
-    /** Ensures that the role exists; creates it if it does not. Idempotent. */
+    /**
+     * Ensures that the town role exists. Idempotent.
+     * Identity is a persisted ID, never a name (F2). If there is no stored ID and a role
+     * with matching name already exists in Discord, ownership cannot be proven and
+     * adopting it would grant strangers access to private channels: it must fail visibly (P9).
+     */
     private Role ensureRole(TownSpace space, String name) {
         if (space.roleId().isPresent()) {
             Role role = guild.getRoleById(space.roleId().get());
@@ -514,14 +785,17 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                 return role;
             }
         }
-        // Search by name to avoid duplicates
+        // If no stored ID (or stored role was deleted), check for collisions.
+        // An existing unmanaged role cannot be adopted by name.
         List<Role> existing = guild.getRolesByName(name, true);
         if (!existing.isEmpty()) {
-            return existing.getFirst();
+            throw new IllegalStateException("Role name collision: a role named '" + name
+                    + "' already exists in Discord but is not owned by town space " + space.townUuid()
+                    + ". Identity must be a persisted ID; refusing to adopt unowned role.");
         }
         var action = guild.createRole();
         if (action == null) {
-            return null;
+            throw new IllegalStateException("Could not create role '" + name + "' in Discord");
         }
         action.setName(name);
         config.roles().townRoleColor().ifPresent(color -> {
@@ -534,31 +808,33 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         if (config.roles().townRoleHoisted()) {
             action.setHoisted(true);
         }
-        return action.complete();
+        Role role = action.complete();
+        if (role == null) {
+            throw new IllegalStateException("Failed to complete creation of role '" + name + "' in Discord");
+        }
+        return role;
     }
 
-    /** Creates a text channel with spec 3.3 permissions. Idempotent. */
-    private TextChannel ensureTextChannel(TownSpace space, Category category,
-                                          Role townRole, String name) {
-        if (space.textChannelId().isPresent()) {
-            TextChannel ch = guild.getTextChannelById(space.textChannelId().get());
-            if (ch != null) {
-                return ch;
-            }
+    /**
+     * Creates a text channel in the given category with spec 3.3 permissions.
+     * Rejects creation if an unowned channel with that name already exists in the category (F2).
+     */
+    private TextChannel createTextChannel(Category category, Role townRole, String name) {
+        if (category == null) {
+            throw new IllegalStateException("Category cannot be null when creating text channel '" + name + "'");
         }
-        if (category != null && category.getTextChannels() != null) {
+        if (category.getTextChannels() != null) {
             for (TextChannel existing : category.getTextChannels()) {
                 if (existing.getName().equalsIgnoreCase(name)) {
-                    return existing;
+                    throw new IllegalStateException("Text channel name collision: channel '" + name
+                            + "' already exists in category '" + category.getName()
+                            + "' without proven ownership");
                 }
             }
         }
-        if (category == null) {
-            return null;
-        }
         var action = category.createTextChannel(name);
         if (action == null) {
-            return null;
+            throw new IllegalStateException("Could not create text channel '" + name + "' in Discord");
         }
         // Create with permissions: @everyone denied view, town role with access, bot with manage
         action.addPermissionOverride(guild.getPublicRole(),
@@ -575,31 +851,33 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                             Permission.MESSAGE_SEND),
                     null);
         }
-        return action.complete();
+        TextChannel created = action.complete();
+        if (created == null) {
+            throw new IllegalStateException("Failed to complete creation of text channel '" + name + "'");
+        }
+        return created;
     }
 
-    /** Creates a voice channel with spec 3.3 permissions. Idempotent. */
-    private VoiceChannel ensureVoiceChannel(TownSpace space, Category category,
-                                            Role townRole, String name) {
-        if (space.voiceChannelId().isPresent()) {
-            VoiceChannel ch = guild.getVoiceChannelById(space.voiceChannelId().get());
-            if (ch != null) {
-                return ch;
-            }
+    /**
+     * Creates a voice channel in the given category with spec 3.3 permissions.
+     * Rejects creation if an unowned channel with that name already exists in the category (F2).
+     */
+    private VoiceChannel createVoiceChannel(Category category, Role townRole, String name) {
+        if (category == null) {
+            throw new IllegalStateException("Category cannot be null when creating voice channel '" + name + "'");
         }
-        if (category != null && category.getVoiceChannels() != null) {
+        if (category.getVoiceChannels() != null) {
             for (VoiceChannel existing : category.getVoiceChannels()) {
                 if (existing.getName().equalsIgnoreCase(name)) {
-                    return existing;
+                    throw new IllegalStateException("Voice channel name collision: channel '" + name
+                            + "' already exists in category '" + category.getName()
+                            + "' without proven ownership");
                 }
             }
         }
-        if (category == null) {
-            return null;
-        }
         var action = category.createVoiceChannel(name);
         if (action == null) {
-            return null;
+            throw new IllegalStateException("Could not create voice channel '" + name + "' in Discord");
         }
         action.addPermissionOverride(guild.getPublicRole(),
                 null,
@@ -616,7 +894,11 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                             Permission.VOICE_CONNECT),
                     null);
         }
-        return action.complete();
+        VoiceChannel created = action.complete();
+        if (created == null) {
+            throw new IllegalStateException("Failed to complete creation of voice channel '" + name + "'");
+        }
+        return created;
     }
 
     /** Applies spec 3.3 permissions to an existing text channel (including bot). */
