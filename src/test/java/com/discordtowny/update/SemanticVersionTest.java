@@ -101,4 +101,58 @@ class SemanticVersionTest {
 
         assertFalse(nullVer.isNewerThan(blankVer));
     }
+
+    @Test
+    @DisplayName("Pre-release with numeric identifiers compared numerically: 1.0.0-beta.10 is newer than 1.0.0-beta.2 (F11)")
+    void prereleaseWithNumericIdentifiersComparedNumerically() {
+        SemanticVersion beta10 = SemanticVersion.parse("1.0.0-beta.10");
+        SemanticVersion beta2 = SemanticVersion.parse("1.0.0-beta.2");
+
+        assertTrue(beta10.isNewerThan(beta2), "1.0.0-beta.10 must be newer than 1.0.0-beta.2");
+        assertFalse(beta2.isNewerThan(beta10), "1.0.0-beta.2 must not be newer than 1.0.0-beta.10");
+        assertTrue(beta10.compareTo(beta2) > 0);
+        assertTrue(beta2.compareTo(beta10) < 0);
+    }
+
+    @Test
+    @DisplayName("Pre-release ordering follows SemVer specification item 11 (F11)")
+    void prereleaseOrderingFollowsSemverSpecification() {
+        // SemVer 2.0.0 spec example: 1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta < 1.0.0-beta < 1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0
+        String[] chain = {
+                "1.0.0-alpha",
+                "1.0.0-alpha.1",
+                "1.0.0-alpha.beta",
+                "1.0.0-beta",
+                "1.0.0-beta.2",
+                "1.0.0-beta.11",
+                "1.0.0-rc.1",
+                "1.0.0"
+        };
+
+        for (int i = 0; i < chain.length - 1; i++) {
+            String earlier = chain[i];
+            String later = chain[i + 1];
+            SemanticVersion vEarlier = SemanticVersion.parse(earlier);
+            SemanticVersion vLater = SemanticVersion.parse(later);
+
+            assertTrue(vLater.isNewerThan(vEarlier),
+                    () -> later + " must be newer than " + earlier);
+            assertFalse(vEarlier.isNewerThan(vLater),
+                    () -> earlier + " must not be newer than " + later);
+            assertTrue(vLater.compareTo(vEarlier) > 0);
+            assertTrue(vEarlier.compareTo(vLater) < 0);
+        }
+    }
+
+    @Test
+    @DisplayName("Pre-release identifiers are compared with case-sensitive ASCII ordering (F11)")
+    void prereleaseIdentifiersComparedWithCaseSensitiveAscii() {
+        SemanticVersion uppercase = SemanticVersion.parse("1.0.0-Alpha");
+        SemanticVersion lowercase = SemanticVersion.parse("1.0.0-alpha");
+
+        // In ASCII, 'A' (65) < 'a' (97), so 'alpha' is newer than 'Alpha'
+        assertTrue(lowercase.isNewerThan(uppercase), "1.0.0-alpha must be newer than 1.0.0-Alpha in ASCII order");
+        assertFalse(uppercase.isNewerThan(lowercase), "1.0.0-Alpha must not be newer than 1.0.0-alpha");
+        assertNotEquals(0, lowercase.compareTo(uppercase), "Case-differing identifiers must not compare as equal");
+    }
 }

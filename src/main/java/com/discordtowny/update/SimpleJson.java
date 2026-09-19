@@ -158,9 +158,12 @@ public final class SimpleJson {
         throw new IllegalArgumentException("Expected JSON object but got " + val.getClass().getSimpleName());
     }
 
+    public static final int MAX_DEPTH = 64;
+
     private static final class Parser {
         private final String src;
         private int pos = 0;
+        private int depth = 0;
 
         Parser(String src) {
             this.src = src;
@@ -213,51 +216,65 @@ public final class SimpleJson {
         }
 
         JsonObject parseObject() {
-            expect('{');
-            Map<String, JsonValue> map = new LinkedHashMap<>();
-            skipWhitespace();
-            if (peek() == '}') {
-                next();
-                return new JsonObject(map);
+            if (++depth > MAX_DEPTH) {
+                throw new IllegalArgumentException("JSON nesting depth limit exceeded (maximum " + MAX_DEPTH + ") at position " + pos);
             }
-            while (true) {
+            try {
+                expect('{');
+                Map<String, JsonValue> map = new LinkedHashMap<>();
                 skipWhitespace();
-                String key = parseString();
-                skipWhitespace();
-                expect(':');
-                JsonValue val = parseValue();
-                map.put(key, val);
-                skipWhitespace();
-                char c = peek();
-                if (c == '}') {
+                if (peek() == '}') {
                     next();
-                    break;
+                    return new JsonObject(map);
                 }
-                expect(',');
+                while (true) {
+                    skipWhitespace();
+                    String key = parseString();
+                    skipWhitespace();
+                    expect(':');
+                    JsonValue val = parseValue();
+                    map.put(key, val);
+                    skipWhitespace();
+                    char c = peek();
+                    if (c == '}') {
+                        next();
+                        break;
+                    }
+                    expect(',');
+                }
+                return new JsonObject(map);
+            } finally {
+                depth--;
             }
-            return new JsonObject(map);
         }
 
         JsonArray parseArray() {
-            expect('[');
-            List<JsonValue> list = new ArrayList<>();
-            skipWhitespace();
-            if (peek() == ']') {
-                next();
-                return new JsonArray(list);
+            if (++depth > MAX_DEPTH) {
+                throw new IllegalArgumentException("JSON nesting depth limit exceeded (maximum " + MAX_DEPTH + ") at position " + pos);
             }
-            while (true) {
-                JsonValue val = parseValue();
-                list.add(val);
+            try {
+                expect('[');
+                List<JsonValue> list = new ArrayList<>();
                 skipWhitespace();
-                char c = peek();
-                if (c == ']') {
+                if (peek() == ']') {
                     next();
-                    break;
+                    return new JsonArray(list);
                 }
-                expect(',');
+                while (true) {
+                    JsonValue val = parseValue();
+                    list.add(val);
+                    skipWhitespace();
+                    char c = peek();
+                    if (c == ']') {
+                        next();
+                        break;
+                    }
+                    expect(',');
+                }
+                return new JsonArray(list);
+            } finally {
+                depth--;
             }
-            return new JsonArray(list);
         }
 
         String parseString() {

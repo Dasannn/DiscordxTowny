@@ -74,4 +74,28 @@ class SimpleJsonTest {
     void throwsWhenExpectedObjectIsArray() {
         assertThrows(IllegalArgumentException.class, () -> SimpleJson.parseObject("[1, 2, 3]"));
     }
+
+    @Test
+    @DisplayName("Rejects deeply nested arrays and objects exceeding depth limit")
+    void rejectsDeeplyNestedArraysAndObjects() {
+        StringBuilder nestedObj = new StringBuilder();
+        for (int i = 0; i < 70; i++) {
+            nestedObj.append("{\"a\":");
+        }
+        nestedObj.append("1");
+        for (int i = 0; i < 70; i++) {
+            nestedObj.append("}");
+        }
+        assertThrows(IllegalArgumentException.class, () -> SimpleJson.parse(nestedObj.toString()));
+
+        StringBuilder nestedArr = new StringBuilder();
+        for (int i = 0; i < 70; i++) {
+            nestedArr.append("[");
+        }
+        nestedArr.append("1");
+        for (int i = 0; i < 70; i++) {
+            nestedArr.append("]");
+        }
+        assertThrows(IllegalArgumentException.class, () -> SimpleJson.parse(nestedArr.toString()));
+    }
 }

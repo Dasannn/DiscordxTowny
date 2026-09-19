@@ -112,10 +112,74 @@ public final class SemanticVersion implements Comparable<SemanticVersion> {
             return -1; // 1.0.0-SNAPSHOT < 1.0.0
         }
         if (thisHasPre && otherHasPre) {
-            return this.preRelease.compareToIgnoreCase(other.preRelease);
+            return comparePreRelease(this.preRelease, other.preRelease);
         }
 
         return 0;
+    }
+
+    private static int comparePreRelease(String preA, String preB) {
+        if (Objects.equals(preA, preB)) {
+            return 0;
+        }
+        String[] partsA = preA.split("\\.");
+        String[] partsB = preB.split("\\.");
+        int minLen = Math.min(partsA.length, partsB.length);
+
+        for (int i = 0; i < minLen; i++) {
+            String a = partsA[i];
+            String b = partsB[i];
+            if (a.equals(b)) {
+                continue;
+            }
+
+            boolean aIsNumeric = isNumeric(a);
+            boolean bIsNumeric = isNumeric(b);
+
+            if (aIsNumeric && bIsNumeric) {
+                try {
+                    int numA = Integer.parseInt(a);
+                    int numB = Integer.parseInt(b);
+                    int cmp = Integer.compare(numA, numB);
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                } catch (NumberFormatException e) {
+                    java.math.BigInteger bigA = new java.math.BigInteger(a);
+                    java.math.BigInteger bigB = new java.math.BigInteger(b);
+                    int cmp = bigA.compareTo(bigB);
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                }
+            } else if (aIsNumeric) {
+                // Numeric identifiers always have lower precedence than non-numeric identifiers
+                return -1;
+            } else if (bIsNumeric) {
+                return 1;
+            } else {
+                // Non-numeric compared lexically in ASCII sort order
+                int cmp = a.compareTo(b);
+                if (cmp != 0) {
+                    return cmp;
+                }
+            }
+        }
+
+        // A larger set of pre-release fields has a higher precedence than a smaller set
+        return Integer.compare(partsA.length, partsB.length);
+    }
+
+    private static boolean isNumeric(String s) {
+        if (s == null || s.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            if (!Character.isDigit(s.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public int major() {

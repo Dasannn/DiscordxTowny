@@ -34,6 +34,25 @@ public interface UpdateService {
 
     String currentVersion();
 
+    /**
+     * Returns the latest available release detected, if any.
+     */
+    Optional<Release> getAvailableUpdate();
+
+    /**
+     * Returns true if the release contains breaking configuration changes or requires migration.
+     *
+     * <p>A release counts as breaking when either its major version differs from the
+     * running version, or its release notes contain the line {@code [breaking]}.
+     */
+    boolean isBreaking(Release release);
+
+    /**
+     * Returns true if there is an available update that is breaking and requires administrator
+     * confirmation before it can be staged.
+     */
+    boolean isAwaitingConfirmation();
+
     record Release(String version, String downloadUrl, String sha256, String notes) {}
 
     enum DownloadResult {

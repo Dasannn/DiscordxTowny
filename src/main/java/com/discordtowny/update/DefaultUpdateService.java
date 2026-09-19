@@ -1,6 +1,8 @@
 package com.discordtowny.update;
 
+import com.discordtowny.config.Messages;
 import com.discordtowny.config.PluginConfig;
+import com.discordtowny.minecraft.EnglishMessages;
 import com.discordtowny.model.AuditEvent;
 
 import java.io.IOException;
@@ -18,6 +20,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
@@ -52,8 +55,47 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     /** Default request timeout. */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(15);
 
-    private static final Pattern SHA256_LABEL_PATTERN = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)([a-f0-9]{64})");
-    private static final Pattern STANDALONE_HEX_PATTERN = Pattern.compile("(?i)\\b([a-f0-9]{64})\\b");
+    private static final Pattern SHA256_LABEL_PATTERN = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)([a-f0-9]{64})(?![a-f0-9])");
+    private static final Pattern STANDALONE_HEX_PATTERN = Pattern.compile("(?i)\\b([a-f0-9]{64})\\b(?![a-f0-9])");
+    private static final Pattern STRICT_HEX_64 = Pattern.compile("^[a-fA-F0-9]{64}$");
+
+    private static final ScheduledExecutorService TIMEOUT_WATCHDOG = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "dt-update-watchdog");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private static boolean isValidSha256(String hex) {
+        return hex != null && STRICT_HEX_64.matcher(hex.trim()).matches();
+    }
+
+    private static final class ActiveTransfer {
+        final Thread workerThread;
+        final AtomicReference<AutoCloseable> resource = new AtomicReference<>(null);
+        final AtomicReference<Path> tempFile = new AtomicReference<>(null);
+
+        ActiveTransfer(Thread workerThread) {
+            this.workerThread = workerThread;
+        }
+
+        void abort() {
+            AutoCloseable res = resource.getAndSet(null);
+            if (res != null) {
+                try {
+                    res.close();
+                } catch (Exception ignored) {}
+            }
+            if (workerThread != null) {
+                workerThread.interrupt();
+            }
+            Path tmp = tempFile.getAndSet(null);
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {}
+            }
+        }
+    }
 
     private final String currentVersion;
     private final PluginConfig.Updates config;
@@ -63,11 +105,16 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private final HttpTransport httpTransport;
     private final Logger logger;
     private final Consumer<AuditEvent> auditLogger;
+    private final Supplier<Messages> messagesSupplier;
     private final Executor executor;
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
     private final long maxDownloadBytes;
     private final Duration requestTimeout;
+
+    // Lifecycle & active I/O tracking
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private final Set<ActiveTransfer> activeTransfers = ConcurrentHashMap.newKeySet();
 
     // Rate limiting & caching
     private final AtomicReference<Instant> rateLimitResetTime = new AtomicReference<>(null);
@@ -97,10 +144,30 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 config,
                 updateFolder,
                 activeJarPath,
+                logger,
+                auditLogger,
+                EnglishMessages::bundled
+        );
+    }
+
+    public DefaultUpdateService(
+            String currentVersion,
+            PluginConfig.Updates config,
+            Path updateFolder,
+            Path activeJarPath,
+            Logger logger,
+            Consumer<AuditEvent> auditLogger,
+            Supplier<Messages> messagesSupplier) {
+        this(
+                currentVersion,
+                config,
+                updateFolder,
+                activeJarPath,
                 "DiscordTowny.jar",
                 new JdkHttpTransport(),
                 logger,
                 auditLogger,
+                messagesSupplier,
                 ForkJoinPool.commonPool(),
                 Executors.newSingleThreadScheduledExecutor(r -> {
                     Thread t = new Thread(r, "dt-update-scheduler");
@@ -127,19 +194,102 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             boolean ownsScheduler,
             long maxDownloadBytes,
             Duration requestTimeout) {
+        this(
+                currentVersion,
+                config,
+                updateFolder,
+                activeJarPath,
+                targetJarName,
+                httpTransport,
+                logger,
+                auditLogger,
+                EnglishMessages::bundled,
+                executor,
+                scheduler,
+                ownsScheduler,
+                maxDownloadBytes,
+                requestTimeout
+        );
+    }
+
+    public DefaultUpdateService(
+            String currentVersion,
+            PluginConfig.Updates config,
+            Path updateFolder,
+            Path activeJarPath,
+            String targetJarName,
+            HttpTransport httpTransport,
+            Logger logger,
+            Consumer<AuditEvent> auditLogger,
+            Supplier<Messages> messagesSupplier,
+            Executor executor,
+            ScheduledExecutorService scheduler,
+            boolean ownsScheduler,
+            long maxDownloadBytes,
+            Duration requestTimeout) {
         this.currentVersion = currentVersion != null ? currentVersion.trim() : "0.0.0";
         this.config = config != null ? config : new PluginConfig.Updates(true, Duration.ofHours(12), true, true);
-        this.updateFolder = updateFolder != null ? updateFolder : Path.of("update");
-        this.activeJarPath = activeJarPath;
-        this.targetJarName = targetJarName != null ? targetJarName : "DiscordTowny.jar";
+        this.updateFolder = updateFolder != null ? updateFolder.toAbsolutePath().normalize() : Path.of("update").toAbsolutePath().normalize();
+        this.activeJarPath = activeJarPath != null ? activeJarPath.toAbsolutePath().normalize() : null;
+
+        String target = targetJarName != null && !targetJarName.isBlank() ? targetJarName : "DiscordTowny.jar";
+        Path targetPath = Path.of(target);
+        if (targetPath.isAbsolute() || targetPath.getNameCount() != 1 || target.contains("/") || target.contains("\\") || "..".equals(target) || ".".equals(target)) {
+            throw new IllegalArgumentException("targetJarName must be a simple filename within the update folder, got: " + targetJarName);
+        }
+        this.targetJarName = target;
+
         this.httpTransport = httpTransport != null ? httpTransport : new JdkHttpTransport();
         this.logger = logger != null ? logger : Logger.getLogger("DiscordTowny");
         this.auditLogger = auditLogger;
+        this.messagesSupplier = messagesSupplier != null ? messagesSupplier : EnglishMessages::bundled;
         this.executor = executor != null ? executor : ForkJoinPool.commonPool();
         this.scheduler = scheduler;
         this.ownsScheduler = ownsScheduler;
         this.maxDownloadBytes = maxDownloadBytes > 0 ? maxDownloadBytes : DEFAULT_MAX_DOWNLOAD_BYTES;
         this.requestTimeout = requestTimeout != null ? requestTimeout : DEFAULT_TIMEOUT;
+    }
+
+    private boolean isDestinationActiveJar(Path destination) {
+        Path normalizedFolder = updateFolder.toAbsolutePath().normalize();
+        Path normalizedDest = destination.toAbsolutePath().normalize();
+
+        // 1. Destination must be directly inside updateFolder
+        if (!normalizedFolder.equals(normalizedDest.getParent())) {
+            return true;
+        }
+
+        if (activeJarPath == null) {
+            return false;
+        }
+
+        Path normalizedActive = activeJarPath.toAbsolutePath().normalize();
+
+        // 2. Normalized path comparison
+        if (normalizedActive.equals(normalizedDest)) {
+            return true;
+        }
+
+        // 3. Same file check if both exist
+        try {
+            if (Files.exists(activeJarPath) && Files.exists(destination) && Files.isSameFile(activeJarPath, destination)) {
+                return true;
+            }
+        } catch (IOException ignored) {}
+
+        // 4. Real path / symlink resolution against active jar
+        try {
+            if (Files.exists(activeJarPath) && Files.exists(normalizedFolder)) {
+                Path realFolder = normalizedFolder.toRealPath();
+                Path realDest = realFolder.resolve(targetJarName);
+                Path realActive = activeJarPath.toRealPath();
+                if (realActive.equals(realDest)) {
+                    return true;
+                }
+            }
+        } catch (IOException ignored) {}
+
+        return false;
     }
 
     /**
@@ -169,10 +319,15 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
      * Stops background periodic checks and cleans up resources.
      */
     public synchronized void stop() {
+        stopped.set(true);
         if (periodicTask != null) {
             periodicTask.cancel(true);
             periodicTask = null;
         }
+        for (ActiveTransfer transfer : activeTransfers) {
+            transfer.abort();
+        }
+        activeTransfers.clear();
         if (ownsScheduler && scheduler != null) {
             scheduler.shutdownNow();
         }
@@ -198,8 +353,59 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
+    @Override
     public Optional<Release> getAvailableUpdate() {
         return Optional.ofNullable(latestAvailableUpdate);
+    }
+
+    @Override
+    public boolean isBreaking(Release release) {
+        if (release == null) {
+            return false;
+        }
+        SemanticVersion latestSemVer = SemanticVersion.parse(release.version());
+        SemanticVersion currentSemVer = SemanticVersion.parse(currentVersion);
+        if (latestSemVer.major() != currentSemVer.major()) {
+            return true;
+        }
+        if (release.notes() != null) {
+            for (String rawLine : release.notes().split("\\r?\\n")) {
+                if ("[breaking]".equalsIgnoreCase(rawLine.trim())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isAwaitingConfirmation() {
+        Release available = latestAvailableUpdate;
+        return available != null && !isUpdatePending() && isBreaking(available);
+    }
+
+    public static String extractSummary(String notes) {
+        if (notes == null || notes.isBlank()) {
+            return "";
+        }
+        List<String> lines = new ArrayList<>();
+        for (String rawLine : notes.split("\\r?\\n")) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || "[breaking]".equalsIgnoreCase(line)
+                    || SHA256_LABEL_PATTERN.matcher(line).matches()
+                    || STRICT_HEX_64.matcher(line).matches()) {
+                continue;
+            }
+            lines.add(line);
+        }
+        if (lines.isEmpty()) {
+            return "";
+        }
+        String joined = String.join(" ", lines);
+        if (joined.length() > 200) {
+            return joined.substring(0, 197) + "...";
+        }
+        return joined;
     }
 
     public boolean shouldNotifyAdminsOnJoin() {
@@ -215,15 +421,25 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         if (!config.notifyAdminsOnJoin() || messageSender == null) {
             return;
         }
+        Messages msgs = messagesSupplier.get();
         if (isUpdatePending()) {
             Release available = latestAvailableUpdate;
             String ver = available != null ? available.version() : "new";
-            messageSender.accept("Version " + ver + " is downloaded. Restart the server to apply it.");
+            messageSender.accept(msgs.plain("updates.downloaded", Map.of("latest", ver)));
             return;
         }
         Release available = latestAvailableUpdate;
         if (available != null) {
-            messageSender.accept("There is a new version of DiscordTowny: " + available.version() + " (you have " + currentVersion + ").");
+            StringBuilder sb = new StringBuilder();
+            sb.append(msgs.plain("updates.available", Map.of("latest", available.version(), "current", currentVersion)));
+            if (isBreaking(available)) {
+                sb.append("\n").append(msgs.plain("updates.breaking", Map.of("latest", available.version())));
+            }
+            String summary = extractSummary(available.notes());
+            if (!summary.isBlank()) {
+                sb.append("\n").append(msgs.plain("updates.summary", Map.of("summary", summary)));
+            }
+            messageSender.accept(sb.toString());
         }
     }
 
@@ -249,17 +465,23 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
 
         try (HttpTransport.HttpResponse response = httpTransport.executeGet(URI.create(GITHUB_RELEASES_API), headers, requestTimeout)) {
-            // Restore network logging flag on successful response
-            networkErrorLogged.set(false);
-
             int status = response.statusCode();
 
-            // Handle GitHub Rate Limiting headers
+            // Handle GitHub Rate Limiting headers (including secondary limits 429/403 and Retry-After)
             updateRateLimit(response);
 
             // 304 Not Modified: release has not changed, use cache
             if (status == 304) {
-                return Optional.ofNullable(cachedRelease.get());
+                networkErrorLogged.set(false);
+                Release release = cachedRelease.get();
+                if (release != null) {
+                    latestAvailableUpdate = release;
+                    // Unchanged metadata still drives unfinished auto-download to completion (F8)
+                    if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
+                        triggerAutoDownload(release);
+                    }
+                }
+                return Optional.ofNullable(release);
             }
 
             // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
@@ -272,14 +494,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 return Optional.empty();
             }
 
-            // Read ETag for future caching
             String newEtag = response.getHeader("ETag");
-            if (newEtag != null) {
-                cachedEtag.set(newEtag);
-            }
 
-            // Read JSON body (capped to 1 MB for metadata)
-            String json = readStringCapped(response.body(), 1024 * 1024);
+            // Read JSON body (capped to 1 MB for metadata, with timeout watchdog)
+            String json = readStringCapped(response.body(), 1024 * 1024, requestTimeout);
             Optional<Release> releaseOpt = parseRelease(json);
 
             if (releaseOpt.isEmpty()) {
@@ -294,19 +512,44 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 // Not newer: running current or newer version
                 cachedRelease.set(null);
                 latestAvailableUpdate = null;
+                if (newEtag != null) {
+                    cachedEtag.set(newEtag);
+                }
+                networkErrorLogged.set(false);
                 return Optional.empty();
             }
 
+            // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9)
+            networkErrorLogged.set(false);
+            if (newEtag != null) {
+                cachedEtag.set(newEtag);
+            }
             cachedRelease.set(release);
             latestAvailableUpdate = release;
 
-            // Notice in console on startup (once per version)
+            // Notice in console on startup (once per version, stays English)
             if (consoleNotifiedVersions.add(release.version())) {
                 logger.info("There is a new version of DiscordTowny: " + release.version() + " (you have " + currentVersion + ").");
+                if (isBreaking(release)) {
+                    logger.warning("Release " + release.version() + " contains breaking changes. Automatic download is suppressed; confirmation is required.");
+                }
+                String summary = extractSummary(release.notes());
+                if (!summary.isBlank()) {
+                    logger.info("Changes summary: " + summary);
+                }
             }
 
-            // Notice in Discord log channel (once per version)
+            // Notice in Discord log channel (once per version, localized via catalog)
             if (logChannelNotifiedVersions.add(release.version()) && auditLogger != null) {
+                Messages msgs = messagesSupplier.get();
+                StringBuilder detail = new StringBuilder(msgs.label("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
+                if (isBreaking(release)) {
+                    detail.append(" ").append(msgs.label("updates.breaking", Map.of("latest", release.version())));
+                }
+                String summary = extractSummary(release.notes());
+                if (!summary.isBlank()) {
+                    detail.append(" ").append(msgs.label("updates.summary", Map.of("summary", summary)));
+                }
                 auditLogger.accept(new AuditEvent(
                         Instant.now(),
                         AuditEvent.Severity.INFO,
@@ -314,17 +557,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         "update_available",
                         release.version(),
                         true,
-                        Optional.of("New version " + release.version() + " is available (current: " + currentVersion + ").")
+                        Optional.of(detail.toString())
                 ));
             }
 
-            // Auto-download if enabled and not already pending
-            if (config.autoDownload() && !isUpdatePending()) {
-                download(release).whenComplete((res, err) -> {
-                    if (err != null) {
-                        logger.log(Level.WARNING, "Auto-download failed: " + err.getMessage());
-                    }
-                });
+            // Auto-download if enabled, not already pending, and NOT breaking (F6)
+            if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
+                triggerAutoDownload(release);
             }
 
             return Optional.of(release);
@@ -342,14 +581,50 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
+    private void triggerAutoDownload(Release release) {
+        download(release).whenComplete((res, err) -> {
+            if (err != null) {
+                logger.log(Level.WARNING, "Auto-download failed: " + err.getMessage(), err);
+            } else if (res != DownloadResult.SUCCESS) {
+                logger.warning("Auto-download failed for release " + release.version() + ": " + res);
+            }
+        });
+    }
+
     private void updateRateLimit(HttpTransport.HttpResponse response) {
+        int status = response.statusCode();
+        String retryAfter = response.getHeader("Retry-After");
+        if (retryAfter != null && !retryAfter.isBlank()) {
+            try {
+                long seconds = Long.parseLong(retryAfter.trim());
+                recordRateLimitDelay(Instant.now().plusSeconds(seconds));
+                return;
+            } catch (NumberFormatException e) {
+                try {
+                    Instant parsed = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+                            .parse(retryAfter.trim(), Instant::from);
+                    recordRateLimitDelay(parsed);
+                    return;
+                } catch (Exception ignored) {}
+            }
+        }
+
         String remaining = response.getHeader("X-RateLimit-Remaining");
         String reset = response.getHeader("X-RateLimit-Reset");
-        if ("0".equals(remaining) && reset != null) {
-            try {
-                long epochSec = Long.parseLong(reset.trim());
-                rateLimitResetTime.set(Instant.ofEpochSecond(epochSec));
-            } catch (NumberFormatException ignored) {}
+        if (reset != null && !reset.isBlank()) {
+            if ("0".equals(remaining) || status == 429 || status == 403) {
+                try {
+                    long epochSec = Long.parseLong(reset.trim());
+                    recordRateLimitDelay(Instant.ofEpochSecond(epochSec));
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+    }
+
+    private void recordRateLimitDelay(Instant target) {
+        if (target != null) {
+            rateLimitResetTime.accumulateAndGet(target, (cur, next) ->
+                    cur == null || next.isAfter(cur) ? next : cur);
         }
     }
 
@@ -359,7 +634,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
-    private Optional<Release> parseRelease(String json) {
+    private Optional<Release> parseRelease(String json) throws IOException {
         try {
             SimpleJson.JsonObject obj = SimpleJson.parseObject(json);
             String tag = obj.getString("tag_name");
@@ -381,8 +656,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 return Optional.empty();
             }
 
-            String jarDownloadUrl = null;
-            String checksumAssetUrl = null;
+            // F1 & F2: Find all eligible runnable jar assets and checksum assets
+            List<SimpleJson.JsonObject> eligibleJars = new ArrayList<>();
+            List<SimpleJson.JsonObject> checksumAssets = new ArrayList<>();
 
             for (SimpleJson.JsonValue val : assets) {
                 if (val instanceof SimpleJson.JsonObject asset) {
@@ -392,54 +668,235 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         continue;
                     }
 
+                    // Enforce official source policy on asset URL
+                    URI assetUri;
+                    try {
+                        assetUri = URI.create(downloadUrl);
+                    } catch (Exception e) {
+                        continue;
+                    }
+                    if (!UpdateSourcePolicy.isAllowedAssetUri(assetUri)) {
+                        continue;
+                    }
+
                     String lowerName = name.toLowerCase(Locale.ROOT);
-                    if (lowerName.endsWith(".jar") && !lowerName.endsWith("-sources.jar") && !lowerName.endsWith("-javadoc.jar")) {
-                        jarDownloadUrl = downloadUrl;
-                    } else if (lowerName.endsWith(".sha256") || lowerName.endsWith(".sha256.txt") || lowerName.equals("checksums.txt") || lowerName.equals("sha256sums")) {
-                        checksumAssetUrl = downloadUrl;
+                    if (lowerName.endsWith(".jar") && !lowerName.endsWith("-sources.jar") && !lowerName.endsWith("-javadoc.jar") && !lowerName.endsWith("-dev.jar")) {
+                        eligibleJars.add(asset);
+                    } else if (lowerName.endsWith(".sha256") || lowerName.endsWith(".sha256.txt") || lowerName.equals("checksums.txt") || lowerName.equals("sha256sums") || lowerName.equals("sha256sums.txt")) {
+                        checksumAssets.add(asset);
                     }
                 }
             }
 
-            if (jarDownloadUrl == null) {
+            if (eligibleJars.isEmpty()) {
                 return Optional.empty();
             }
 
-            // Extract SHA-256: first from body, second from checksum asset
-            String sha256 = extractSha256FromBody(notes);
-            if (sha256 == null && checksumAssetUrl != null) {
-                sha256 = fetchChecksumFromAsset(checksumAssetUrl);
+            // Unambiguous jar selection: exactly one eligible runnable jar
+            SimpleJson.JsonObject selectedJar = null;
+            if (eligibleJars.size() == 1) {
+                selectedJar = eligibleJars.getFirst();
+            } else {
+                // If multiple jars, match against DiscordTowny canonical pattern
+                List<SimpleJson.JsonObject> matches = eligibleJars.stream()
+                        .filter(a -> {
+                            String n = a.getString("name");
+                            return n != null && n.matches("(?i)DiscordTowny(-.*)?\\.jar");
+                        })
+                        .toList();
+                if (matches.size() == 1) {
+                    selectedJar = matches.getFirst();
+                } else {
+                    logger.warning("Ambiguous jar assets in release: multiple candidates found, refusing without staging.");
+                    return Optional.empty();
+                }
             }
 
-            return Optional.of(new Release(version, jarDownloadUrl, sha256, notes));
+            String selectedJarName = selectedJar.getString("name");
+            String jarDownloadUrl = selectedJar.getString("browser_download_url");
+
+            // Extract SHA-256 bound to selected jar
+            String checksumFromAsset = extractChecksumFromAssets(checksumAssets, selectedJarName);
+            String checksumFromBody = extractSha256FromBody(notes, selectedJarName);
+
+            // Refuse ambiguous or conflicting checksums
+            String finalSha256;
+            if (checksumFromAsset != null && checksumFromBody != null) {
+                if (!checksumFromAsset.equalsIgnoreCase(checksumFromBody)) {
+                    logger.warning("Conflicting checksums in release body and checksum asset for " + selectedJarName + "; refusing.");
+                    return Optional.empty();
+                }
+                finalSha256 = checksumFromAsset;
+            } else if (checksumFromAsset != null) {
+                finalSha256 = checksumFromAsset;
+            } else if (checksumFromBody != null) {
+                finalSha256 = checksumFromBody;
+            } else {
+                // Missing checksum: refuse without staging
+                return Optional.empty();
+            }
+
+            if (!isValidSha256(finalSha256)) {
+                logger.warning("Malformed published SHA-256 checksum for " + selectedJarName + "; refusing.");
+                return Optional.empty();
+            }
+
+            return Optional.of(new Release(version, jarDownloadUrl, finalSha256.toLowerCase(Locale.ROOT), notes));
+        } catch (IOException e) {
+            throw e;
         } catch (Exception e) {
             logger.log(Level.FINE, "Failed to parse release JSON", e);
             return Optional.empty();
         }
     }
 
-    private String extractSha256FromBody(String body) {
+    private String extractChecksumFromAssets(List<SimpleJson.JsonObject> checksumAssets, String targetJarName) throws IOException {
+        String dedicatedCandidate = null;
+        String multiFileCandidate = null;
+
+        for (SimpleJson.JsonObject asset : checksumAssets) {
+            String name = asset.getString("name");
+            String downloadUrl = asset.getString("browser_download_url");
+            if (name == null || downloadUrl == null) {
+                continue;
+            }
+            String lowerName = name.toLowerCase(Locale.ROOT);
+            String lowerTarget = targetJarName.toLowerCase(Locale.ROOT);
+
+            // Dedicated asset: e.g. DiscordTowny-1.10.0.jar.sha256
+            if (lowerName.equals(lowerTarget + ".sha256") || lowerName.equals(lowerTarget + ".sha256.txt")) {
+                String sha = fetchChecksumFromAsset(downloadUrl, targetJarName, true);
+                if (sha != null) {
+                    if (dedicatedCandidate != null && !dedicatedCandidate.equalsIgnoreCase(sha)) {
+                        return null; // Ambiguous conflicting hashes
+                    }
+                    dedicatedCandidate = sha;
+                }
+            } else if (lowerName.equals("checksums.txt") || lowerName.equals("sha256sums") || lowerName.equals("sha256sums.txt")) {
+                String sha = fetchChecksumFromAsset(downloadUrl, targetJarName, false);
+                if (sha != null) {
+                    if (multiFileCandidate != null && !multiFileCandidate.equalsIgnoreCase(sha)) {
+                        return null; // Ambiguous conflicting hashes
+                    }
+                    multiFileCandidate = sha;
+                }
+            }
+        }
+
+        if (dedicatedCandidate != null && multiFileCandidate != null) {
+            if (!dedicatedCandidate.equalsIgnoreCase(multiFileCandidate)) {
+                return null; // Conflicting checksum assets
+            }
+            return dedicatedCandidate;
+        }
+        return dedicatedCandidate != null ? dedicatedCandidate : multiFileCandidate;
+    }
+
+    private String fetchChecksumFromAsset(String assetUrl, String targetJarName, boolean isDedicated) throws IOException {
+        URI uri = URI.create(assetUrl);
+        if (!UpdateSourcePolicy.isAllowedAssetUri(uri)) {
+            return null;
+        }
+        try (HttpTransport.HttpResponse response = httpTransport.executeGet(uri, Map.of("User-Agent", "DiscordTowny-Updater"), requestTimeout)) {
+            if (response.statusCode() == 200) {
+                String content = readStringCapped(response.body(), 65536, requestTimeout);
+                return parseChecksumFileContent(content, targetJarName, isDedicated);
+            } else if (response.statusCode() == 404) {
+                return null;
+            } else {
+                throw new IOException("HTTP error fetching checksum asset from " + uri + ": status " + response.statusCode());
+            }
+        } catch (InterruptedException e) {
+            // The flag belongs to whoever owns this thread, not to us.
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while fetching the checksum asset from " + uri, e);
+        }
+    }
+
+    private String parseChecksumFileContent(String content, String targetJarName, boolean isDedicated) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+
+        String[] lines = content.split("\\r?\\n");
+        String matchedSha = null;
+
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) {
+                continue;
+            }
+
+            // Pattern 1: standard sha256sum: "<64hex> [* ]<filename>"
+            Matcher m1 = Pattern.compile("^([a-fA-F0-9]{64})\\s+[*]?(.+)$").matcher(line);
+            if (m1.matches()) {
+                String hex = m1.group(1);
+                String file = m1.group(2).trim();
+                Path p = Path.of(file);
+                String filename = p.getFileName() != null ? p.getFileName().toString() : file;
+                if (filename.equalsIgnoreCase(targetJarName)) {
+                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(hex)) {
+                        return null; // Ambiguous multiple hashes for same target
+                    }
+                    matchedSha = hex;
+                }
+                continue;
+            }
+
+            // Pattern 2: BSD style: "SHA256 (filename) = <64hex>"
+            Matcher m2 = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*([a-fA-F0-9]{64})$").matcher(line);
+            if (m2.matches()) {
+                String file = m2.group(1).trim();
+                String hex = m2.group(2);
+                Path p = Path.of(file);
+                String filename = p.getFileName() != null ? p.getFileName().toString() : file;
+                if (filename.equalsIgnoreCase(targetJarName)) {
+                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(hex)) {
+                        return null;
+                    }
+                    matchedSha = hex;
+                }
+                continue;
+            }
+
+            // Pattern 3: dedicated single-checksum file containing standalone 64-hex string
+            if (isDedicated && isValidSha256(line)) {
+                if (matchedSha != null && !matchedSha.equalsIgnoreCase(line)) {
+                    return null;
+                }
+                matchedSha = line;
+            }
+        }
+
+        return matchedSha != null ? matchedSha.toLowerCase(Locale.ROOT) : null;
+    }
+
+    private String extractSha256FromBody(String body, String targetJarName) {
         if (body == null || body.isBlank()) {
             return null;
         }
-        Matcher labeled = SHA256_LABEL_PATTERN.matcher(body);
-        if (labeled.find()) {
-            return labeled.group(1).toLowerCase(Locale.ROOT);
-        }
-        return null;
-    }
 
-    private String fetchChecksumFromAsset(String assetUrl) {
-        try (HttpTransport.HttpResponse response = httpTransport.executeGet(URI.create(assetUrl), Map.of("User-Agent", "DiscordTowny-Updater"), requestTimeout)) {
-            if (response.statusCode() == 200) {
-                String content = readStringCapped(response.body(), 8192);
-                Matcher matcher = STANDALONE_HEX_PATTERN.matcher(content);
-                if (matcher.find()) {
-                    return matcher.group(1).toLowerCase(Locale.ROOT);
-                }
+        // Check if there is any malformed "SHA-256: <hex>" that is not 64 hex characters
+        Matcher malformedCheck = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)([a-f0-9]+)").matcher(body);
+        while (malformedCheck.find()) {
+            String candidate = malformedCheck.group(1);
+            if (candidate.length() != 64) {
+                return null;
             }
-        } catch (Exception ignored) {}
-        return null;
+        }
+
+        // Look for exact 64-hex labeled hash
+        Matcher labeled = SHA256_LABEL_PATTERN.matcher(body);
+        String found = null;
+        while (labeled.find()) {
+            String hex = labeled.group(1).toLowerCase(Locale.ROOT);
+            if (found != null && !found.equals(hex)) {
+                return null; // Ambiguous multiple different labeled hashes
+            }
+            found = hex;
+        }
+
+        return found;
     }
 
     @Override
@@ -448,29 +905,66 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             return CompletableFuture.completedFuture(DownloadResult.IO_ERROR);
         }
 
-        // A release with no checksum is refused immediately
-        if (release.sha256() == null || release.sha256().isBlank()) {
-            logger.warning("Update download refused: release " + release.version() + " has no published SHA-256 checksum.");
+        // Mandatory checksum: refuse immediately if null, blank, or invalid length/format
+        if (release.sha256() == null || !isValidSha256(release.sha256())) {
+            logger.warning("Update download refused: release " + release.version() + " has no valid published SHA-256 checksum.");
             return CompletableFuture.completedFuture(DownloadResult.CHECKSUM_MISMATCH);
+        }
+
+        // F1: Official repository source policy check before contacting
+        URI downloadUri;
+        try {
+            downloadUri = URI.create(release.downloadUrl());
+        } catch (Exception e) {
+            logger.severe("Refusing download: invalid download URL syntax: " + release.downloadUrl());
+            return CompletableFuture.completedFuture(DownloadResult.IO_ERROR);
+        }
+        if (!UpdateSourcePolicy.isAllowedDownloadDestination(downloadUri)) {
+            logger.severe("Refusing download: destination outside official repository source policy: " + release.downloadUrl());
+            return CompletableFuture.completedFuture(DownloadResult.IO_ERROR);
+        }
+
+        // F4: Ensure destination is inside updateFolder and not the active running jar
+        Path destination = updateFolder.resolve(targetJarName).normalize();
+        if (isDestinationActiveJar(destination)) {
+            logger.severe("Refusing download: destination resolves to active jar or escapes update folder: " + destination);
+            return CompletableFuture.completedFuture(DownloadResult.IO_ERROR);
         }
 
         return CompletableFuture.supplyAsync(() -> performDownload(release), executor);
     }
 
     private DownloadResult performDownload(Release release) {
+        if (stopped.get()) {
+            return DownloadResult.IO_ERROR;
+        }
+
         Path tempFile = null;
+        ActiveTransfer activeTransfer = new ActiveTransfer(Thread.currentThread());
+        activeTransfers.add(activeTransfer);
+
         try {
             Files.createDirectories(updateFolder);
             tempFile = Files.createTempFile(updateFolder, "dt-update-", ".tmp");
+            activeTransfer.tempFile.set(tempFile);
 
             Map<String, String> headers = Map.of("User-Agent", "DiscordTowny-Updater");
-            try (HttpTransport.HttpResponse response = httpTransport.executeGet(URI.create(release.downloadUrl()), headers, requestTimeout)) {
+            URI downloadUri = URI.create(release.downloadUrl());
+
+            try (HttpTransport.HttpResponse response = httpTransport.executeGet(downloadUri, headers, requestTimeout)) {
+                activeTransfer.resource.set(response);
+
+                if (stopped.get()) {
+                    cleanupTemp(tempFile);
+                    return DownloadResult.IO_ERROR;
+                }
+
                 if (response.statusCode() != 200) {
                     cleanupTemp(tempFile);
                     return DownloadResult.NETWORK_ERROR;
                 }
 
-                // Check Content-Length header upfront if present
+                // Check Content-Length header upfront if present (F13: zero body bytes read)
                 String clHeader = response.getHeader("Content-Length");
                 if (clHeader != null) {
                     try {
@@ -482,23 +976,45 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     } catch (NumberFormatException ignored) {}
                 }
 
-                // Stream body with streaming size cap & SHA-256 calculation
+                // Setup watchdog on requestTimeout to abort if body stalls (F5)
+                AtomicBoolean timedOut = new AtomicBoolean(false);
+                ScheduledFuture<?> watchdog = TIMEOUT_WATCHDOG.schedule(() -> {
+                    timedOut.set(true);
+                    activeTransfer.abort();
+                }, requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+
                 MessageDigest digest;
                 try {
                     digest = MessageDigest.getInstance("SHA-256");
                 } catch (NoSuchAlgorithmException e) {
+                    watchdog.cancel(false);
                     cleanupTemp(tempFile);
                     return DownloadResult.IO_ERROR;
                 }
 
                 long totalBytes = 0;
                 byte[] buffer = new byte[8192];
+                Instant deadline = Instant.now().plus(requestTimeout);
+
                 try (InputStream in = response.body();
                      OutputStream out = Files.newOutputStream(tempFile, StandardOpenOption.WRITE)) {
                     int read;
                     while ((read = in.read(buffer)) != -1) {
+                        if (stopped.get()) {
+                            watchdog.cancel(false);
+                            cleanupTemp(tempFile);
+                            return DownloadResult.IO_ERROR;
+                        }
+                        if (timedOut.get() || Instant.now().isAfter(deadline)) {
+                            watchdog.cancel(false);
+                            cleanupTemp(tempFile);
+                            logger.warning("Download body read timed out after " + requestTimeout);
+                            return DownloadResult.NETWORK_ERROR;
+                        }
+
                         totalBytes += read;
                         if (totalBytes > maxDownloadBytes) {
+                            watchdog.cancel(false);
                             out.close();
                             cleanupTemp(tempFile);
                             return DownloadResult.TOO_LARGE;
@@ -506,6 +1022,28 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         digest.update(buffer, 0, read);
                         out.write(buffer, 0, read);
                     }
+                } catch (IOException e) {
+                    watchdog.cancel(false);
+                    if (timedOut.get() || Thread.interrupted()) {
+                        cleanupTemp(tempFile);
+                        logger.warning("Download body read timed out: " + e.getMessage());
+                        return DownloadResult.NETWORK_ERROR;
+                    }
+                    throw e;
+                } finally {
+                    watchdog.cancel(false);
+                    if (timedOut.get()) {
+                        Thread.interrupted();
+                    }
+                }
+
+                if (stopped.get()) {
+                    cleanupTemp(tempFile);
+                    return DownloadResult.IO_ERROR;
+                }
+                if (timedOut.get()) {
+                    cleanupTemp(tempFile);
+                    return DownloadResult.NETWORK_ERROR;
                 }
 
                 // Verify SHA-256
@@ -513,39 +1051,52 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 String expectedSha256 = release.sha256().trim().toLowerCase(Locale.ROOT);
 
                 if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
-                    cleanupTemp(tempFile);
-                    logger.warning("Checksum mismatch for downloaded update! Expected: " + expectedSha256 + ", actual: " + actualSha256 + ". Download discarded.");
+                    boolean deleted = cleanupTemp(tempFile);
+                    tempFile = null;
+                    if (deleted) {
+                        logger.warning("Checksum mismatch for downloaded update! Expected: " + expectedSha256 + ", actual: " + actualSha256 + ". Download discarded.");
+                    } else {
+                        logger.warning("Checksum mismatch for downloaded update! Expected: " + expectedSha256 + ", actual: " + actualSha256 + ". Download discarded, but temporary file could not be removed: " + tempFile);
+                    }
                     return DownloadResult.CHECKSUM_MISMATCH;
                 }
 
-                // Verified: move into server update folder. Active jar in use is never touched!
-                Path destination = updateFolder.resolve(targetJarName);
-                if (activeJarPath != null && activeJarPath.toAbsolutePath().equals(destination.toAbsolutePath())) {
+                // F4: Establish destination is inside updateFolder and not the active running jar
+                Path destination = updateFolder.resolve(targetJarName).normalize();
+                if (isDestinationActiveJar(destination)) {
                     cleanupTemp(tempFile);
-                    logger.severe("Refusing to overwrite active jar directly!");
+                    logger.severe("Refusing to overwrite active jar directly: " + destination);
                     return DownloadResult.IO_ERROR;
                 }
 
-                try {
-                    Files.move(tempFile, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-                } catch (AtomicMoveNotSupportedException e) {
-                    Files.move(tempFile, destination, StandardCopyOption.REPLACE_EXISTING);
+                if (stopped.get()) {
+                    cleanupTemp(tempFile);
+                    logger.warning("Download completed after service stopped; publication discarded.");
+                    return DownloadResult.IO_ERROR;
                 }
-                tempFile = null; // Moved successfully
+
+                // F3: Safe publication - atomic move with safe backup/rollback fallback
+                publishExecutable(tempFile, destination);
+                tempFile = null; // Successfully published
 
                 logger.info("Version " + release.version() + " is downloaded. Restart the server to apply it.");
 
-                // Log channel notification once on download completion
-                if (downloadNotifiedVersions.add(release.version()) && auditLogger != null) {
-                    auditLogger.accept(new AuditEvent(
-                            Instant.now(),
-                            AuditEvent.Severity.INFO,
-                            "Updater",
-                            "update_downloaded",
-                            release.version(),
-                            true,
-                            Optional.of("Version " + release.version() + " is downloaded. Restart the server to apply it.")
-                    ));
+                // Log channel notification once on download completion (F7, F9: notification failure must not misreport committed download)
+                try {
+                    if (downloadNotifiedVersions.add(release.version()) && auditLogger != null) {
+                        Messages msgs = messagesSupplier.get();
+                        auditLogger.accept(new AuditEvent(
+                                Instant.now(),
+                                AuditEvent.Severity.INFO,
+                                "Updater",
+                                "update_downloaded",
+                                release.version(),
+                                true,
+                                Optional.of(msgs.label("updates.downloaded", Map.of("latest", release.version())))
+                        ));
+                    }
+                } catch (Exception e) {
+                    logger.log(Level.WARNING, "Failed to emit audit notification after successful update download", e);
                 }
 
                 return DownloadResult.SUCCESS;
@@ -561,33 +1112,110 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             cleanupTemp(tempFile);
             return DownloadResult.NETWORK_ERROR;
         } finally {
+            activeTransfers.remove(activeTransfer);
             cleanupTemp(tempFile);
         }
     }
 
-    private void cleanupTemp(Path tempFile) {
-        if (tempFile != null) {
-            try {
-                Files.deleteIfExists(tempFile);
-            } catch (IOException ignored) {}
+    private void publishExecutable(Path source, Path destination) throws IOException {
+        try {
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            publishExecutableNonAtomic(source, destination);
         }
     }
 
+    private void publishExecutableNonAtomic(Path source, Path destination) throws IOException {
+        Path backup = null;
+        if (Files.exists(destination)) {
+            backup = destination.resolveSibling(targetJarName + ".backup-" + UUID.randomUUID());
+            Files.move(destination, backup, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        try {
+            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+            if (backup != null) {
+                cleanupTemp(backup);
+            }
+        } catch (Exception moveError) {
+            // Failed move: ensure no partial file remains at destination
+            cleanupTemp(destination);
+            // Restore previous verified update if present
+            if (backup != null && Files.exists(backup)) {
+                try {
+                    Files.move(backup, destination, StandardCopyOption.REPLACE_EXISTING);
+                } catch (Exception restoreError) {
+                    logger.log(Level.SEVERE, "Failed to restore backup update jar after move failure", restoreError);
+                }
+            }
+            throw (moveError instanceof IOException ioe ? ioe : new IOException(moveError));
+        }
+    }
+
+    private boolean cleanupTemp(Path file) {
+        if (file != null) {
+            boolean interrupted = Thread.interrupted();
+            try {
+                return Files.deleteIfExists(file);
+            } catch (IOException e) {
+                logger.log(Level.WARNING, "Failed to delete file: " + file, e);
+                return false;
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        return true;
+    }
+
     private static String readStringCapped(InputStream in, int maxBytes) throws IOException {
+        return readStringCapped(in, maxBytes, null);
+    }
+
+    private static String readStringCapped(InputStream in, int maxBytes, Duration timeout) throws IOException {
         if (in == null) {
             return "";
         }
+        Instant deadline = timeout != null ? Instant.now().plus(timeout) : null;
+        Thread callerThread = Thread.currentThread();
+        AtomicBoolean timedOut = new AtomicBoolean(false);
+        ScheduledFuture<?> watchdog = timeout != null ? TIMEOUT_WATCHDOG.schedule(() -> {
+            timedOut.set(true);
+            try {
+                in.close();
+            } catch (Exception ignored) {}
+            callerThread.interrupt();
+        }, timeout.toMillis(), TimeUnit.MILLISECONDS) : null;
+
         byte[] buffer = new byte[Math.min(8192, maxBytes)];
         int total = 0;
         StringBuilder sb = new StringBuilder();
-        int read;
-        while ((read = in.read(buffer)) != -1) {
-            total += read;
-            if (total > maxBytes) {
-                throw new IOException("Response exceeded limit of " + maxBytes + " bytes");
+        try {
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                if (timedOut.get() || (deadline != null && Instant.now().isAfter(deadline))) {
+                    throw new java.net.SocketTimeoutException("Read timed out after " + timeout);
+                }
+                total += read;
+                if (total > maxBytes) {
+                    throw new IOException("Response exceeded limit of " + maxBytes + " bytes");
+                }
+                sb.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
             }
-            sb.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+            return sb.toString();
+        } catch (IOException e) {
+            if (timedOut.get()) {
+                throw new java.net.SocketTimeoutException("Read timed out after " + timeout);
+            }
+            throw e;
+        } finally {
+            if (watchdog != null) {
+                watchdog.cancel(false);
+            }
+            if (timedOut.get()) {
+                Thread.interrupted();
+            }
         }
-        return sb.toString();
     }
 }
