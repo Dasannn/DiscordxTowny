@@ -2,6 +2,7 @@ package com.discordtowny.discord;
 
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.AuditEvent;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
@@ -42,6 +43,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
     private final PluginConfig config;
     private final SpaceRepository spaces;
+    private final SettingsRepository settings;
     private final Logger logger;
 
     private final AtomicReference<JDA> jdaRef = new AtomicReference<>();
@@ -50,10 +52,25 @@ public final class JdaDiscordGateway implements DiscordGateway {
     private volatile LogQueue logQueue;
     private volatile boolean available = false;
 
-    public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces, Logger logger) {
+    public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces,
+                             SettingsRepository settings, Logger logger) {
         this.config = config;
         this.spaces = spaces;
+        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
         this.logger = logger;
+    }
+
+    /** Constructor de prueba con conexion simulada. */
+    JdaDiscordGateway(PluginConfig config, SpaceRepository spaces,
+                      SettingsRepository settings, Logger logger,
+                      JDA jda, Guild guild) {
+        this.config = config;
+        this.spaces = spaces;
+        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
+        this.logger = logger;
+        this.jdaRef.set(jda);
+        this.guild = guild;
+        this.available = true;
     }
 
     // -- Arranque y apagado --
@@ -102,7 +119,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
             this.guild = g;
 
             // Cola de operaciones con sanitizador
-            var executor = new JdaGuildOperationExecutor(g, config, spaces, logger);
+            var executor = new JdaGuildOperationExecutor(g, config, spaces, settings, logger);
             this.operationQueue = new GuildOperationQueue(executor, logger, this::sanitizeMessage);
             operationQueue.start();
 
@@ -182,6 +199,14 @@ public final class JdaDiscordGateway implements DiscordGateway {
                 .toList());
 
         guild().ifPresent(g -> {
+            Optional<String> persisted = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
+            if (persisted.isPresent()) {
+                net.dv8tion.jda.api.entities.Role r = g.getRoleById(persisted.get());
+                if (r != null) {
+                    managedRoleIds.add(r.getId());
+                }
+                return;
+            }
             for (net.dv8tion.jda.api.entities.Role r : g.getRolesByName(config.roles().mayorRoleName(), true)) {
                 managedRoleIds.add(r.getId());
             }
@@ -193,6 +218,33 @@ public final class JdaDiscordGateway implements DiscordGateway {
     @Override
     public CompletableFuture<Optional<String>> verifyPermissionsAsync() {
         return CompletableFuture.supplyAsync(this::verifyPermissions);
+    }
+
+    @Override
+    public Optional<String> mayorRoleId() {
+        if (!isAvailable() || guild == null) {
+            throw new IllegalStateException("Discord no esta disponible");
+        }
+
+        // 1. Identidad estable persistida
+        Optional<String> persistedId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
+        if (persistedId.isPresent()) {
+            net.dv8tion.jda.api.entities.Role role = guild.getRoleById(persistedId.get());
+            if (role != null) {
+                return Optional.of(role.getId());
+            }
+            // Comprobado que el rol con ID persistido ya no existe en el guild
+            return Optional.empty();
+        }
+
+        // 2. Si no hay ID persistido aun, consultar por nombre sin adoptar ni persistir
+        List<net.dv8tion.jda.api.entities.Role> roles = guild.getRolesByName(config.roles().mayorRoleName(), true);
+        if (!roles.isEmpty()) {
+            return Optional.of(roles.getFirst().getId());
+        }
+
+        // 3. Comprobado que no existe en el guild
+        return Optional.empty();
     }
 
     /** Devuelve el guild conectado, si lo hay. Para uso interno del paquete. */

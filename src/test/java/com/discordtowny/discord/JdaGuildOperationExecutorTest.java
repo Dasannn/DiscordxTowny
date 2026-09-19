@@ -4,6 +4,7 @@ import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.SpaceRequest;
 import com.discordtowny.model.SpaceState;
 import com.discordtowny.model.TownSpace;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
@@ -51,6 +52,7 @@ class JdaGuildOperationExecutorTest {
     private Guild guild;
     private PluginConfig config;
     private SpaceRepository spaces;
+    private SettingsRepository settings;
     private PluginConfig.Roles rolesConfig;
     private PluginConfig.Structure structureConfig;
     private PluginConfig.Discord discordConfig;
@@ -60,6 +62,7 @@ class JdaGuildOperationExecutorTest {
         guild = mock(Guild.class);
         config = mock(PluginConfig.class);
         spaces = mock(SpaceRepository.class);
+        settings = mock(SettingsRepository.class);
 
         rolesConfig = mock(PluginConfig.Roles.class);
         structureConfig = mock(PluginConfig.Structure.class);
@@ -116,7 +119,7 @@ class JdaGuildOperationExecutorTest {
         AuditableRestAction<Void> addAction = mock(AuditableRestAction.class);
         when(guild.addRoleToMember(any(), any())).thenReturn(addAction);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
 
         // Operacion: intentar asignar el rol de town, el de alcalde y el de admin
         var op = new GuildOperation.ApplyMemberRoles(
@@ -167,7 +170,7 @@ class JdaGuildOperationExecutorTest {
         AuditableRestAction<Void> removeAction = mock(AuditableRestAction.class);
         when(guild.removeRoleFromMember(any(), any())).thenReturn(removeAction);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
 
         // Solicitar revocar el rol de town y tambien un rol ajeno (VIP)
         var op = new GuildOperation.ApplyMemberRoles(
@@ -182,6 +185,80 @@ class JdaGuildOperationExecutorTest {
         verify(guild).removeRoleFromMember(member, townRole);
         // NO retira el rol no gestionado (VIP)
         verify(guild, never()).removeRoleFromMember(member, vipRole);
+    }
+
+    @Test
+    @DisplayName("ApplyMemberRoles reconoce el rol de alcalde por ID persistido aunque haya sido renombrado")
+    @SuppressWarnings("unchecked")
+    void applyMemberRolesRecognizesMayorRoleByStableIdEvenIfRenamed() {
+        String memberId = "111222333";
+        Member member = mock(Member.class);
+        when(guild.getMemberById(memberId)).thenReturn(member);
+
+        String mayorRoleId = "role-mayor-renamed";
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn(mayorRoleId);
+        // Renombrado en Discord: nombre distinto del configurado
+        when(mayorRole.getName()).thenReturn("Burgomaestre");
+        when(guild.getRoleById(mayorRoleId)).thenReturn(mayorRole);
+
+        when(member.getRoles()).thenReturn(List.of(mayorRole));
+        when(spaces.findAll()).thenReturn(List.of());
+
+        // Identidad estable persistida previamente en SettingsRepository
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.of(mayorRoleId));
+
+        AuditableRestAction<Void> removeAction = mock(AuditableRestAction.class);
+        when(guild.removeRoleFromMember(any(), any())).thenReturn(removeAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+
+        var op = new GuildOperation.ApplyMemberRoles(
+                memberId,
+                Collections.emptyList(),
+                List.of(mayorRoleId));
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertTrue(outcome.succeeded());
+        verify(guild).removeRoleFromMember(member, mayorRole);
+    }
+
+    @Test
+    @DisplayName("ApplyMemberRoles no retira rol de alcalde renombrado si no esta persistido su ID")
+    @SuppressWarnings("unchecked")
+    void applyMemberRolesDoesNotRevokeRenamedMayorRoleWithoutPersistedId() {
+        String memberId = "111222333";
+        Member member = mock(Member.class);
+        when(guild.getMemberById(memberId)).thenReturn(member);
+
+        String mayorRoleId = "role-mayor-renamed";
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn(mayorRoleId);
+        when(mayorRole.getName()).thenReturn("Burgomaestre");
+        when(guild.getRoleById(mayorRoleId)).thenReturn(mayorRole);
+
+        when(member.getRoles()).thenReturn(List.of(mayorRole));
+        when(spaces.findAll()).thenReturn(List.of());
+
+        // No hay ID persistido previo
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.empty());
+
+        AuditableRestAction<Void> removeAction = mock(AuditableRestAction.class);
+        when(guild.removeRoleFromMember(any(), any())).thenReturn(removeAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+
+        var op = new GuildOperation.ApplyMemberRoles(
+                memberId,
+                Collections.emptyList(),
+                List.of(mayorRoleId));
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertTrue(outcome.succeeded());
+        // Al no reconocerse como gestionado, se omite y no se retira
+        verify(guild, never()).removeRoleFromMember(member, mayorRole);
     }
 
     @Test
@@ -217,7 +294,7 @@ class JdaGuildOperationExecutorTest {
         when(structureConfig.createTextChannel()).thenReturn(false);
         when(structureConfig.createVoiceChannel()).thenReturn(false);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -233,7 +310,7 @@ class JdaGuildOperationExecutorTest {
         when(spaces.findByTownUuid(any())).thenThrow(
                 new RuntimeException("Conexion fallida con token token-secreto-12345 en el host"));
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         var op = new GuildOperation.CreateSpace(new SpaceRequest(
                 UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor"));
 
@@ -265,6 +342,10 @@ class JdaGuildOperationExecutorTest {
         when(townRole.getId()).thenReturn("role-id");
         when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
 
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
         Role publicRole = mock(Role.class);
         when(guild.getPublicRole()).thenReturn(publicRole);
 
@@ -288,7 +369,7 @@ class JdaGuildOperationExecutorTest {
         when(structureConfig.createVoiceChannel()).thenReturn(false);
         when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -349,7 +430,7 @@ class JdaGuildOperationExecutorTest {
         when(structureConfig.createTextChannel()).thenReturn(true);
         when(structureConfig.createVoiceChannel()).thenReturn(true);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -392,7 +473,7 @@ class JdaGuildOperationExecutorTest {
         when(structureConfig.createVoiceChannel()).thenReturn(false);
         when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -430,7 +511,7 @@ class JdaGuildOperationExecutorTest {
         AuditableRestAction<Void> addAction = mock(AuditableRestAction.class);
         when(guild.addRoleToMember(any(), any())).thenReturn(addAction);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         var op = new GuildOperation.ApplyMemberRoles(memberId, List.of(townRoleId), List.of());
 
         OperationOutcome outcome = executor.execute(op);
@@ -448,7 +529,7 @@ class JdaGuildOperationExecutorTest {
         when(permEx.getMessage()).thenReturn("Missing permission MANAGE_CHANNEL");
         doThrow(permEx).when(guild).getCategoriesByName("Comunidades", true);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         var op = new GuildOperation.CreateSpace(new SpaceRequest(
                 UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor"));
 
@@ -490,6 +571,7 @@ class JdaGuildOperationExecutorTest {
         when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
 
         Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
         when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
 
         when(structureConfig.categoryName()).thenReturn("Comunidades");
@@ -506,7 +588,7 @@ class JdaGuildOperationExecutorTest {
         when(createdText.getId()).thenReturn("text-num-2");
         when(textChAction.complete()).thenReturn(createdText);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -549,7 +631,7 @@ class JdaGuildOperationExecutorTest {
         when(voiceCh.delete()).thenReturn(voiceDelete);
         when(voiceDelete.complete()).thenThrow(unknownChannelEx);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.DeleteSpace(townUuid, "OldTown"));
 
         assertTrue(outcome.succeeded());
@@ -581,6 +663,7 @@ class JdaGuildOperationExecutorTest {
         when(guild.getRolesByName(townName, true)).thenReturn(List.of(newRole));
 
         Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
         when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
 
         TextChannel textCh = mock(TextChannel.class);
@@ -591,7 +674,7 @@ class JdaGuildOperationExecutorTest {
 
         when(structureConfig.categoryName()).thenReturn("Comunidades");
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.RestoreSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -617,13 +700,14 @@ class JdaGuildOperationExecutorTest {
         when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
 
         Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
         when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
 
         when(structureConfig.categoryName()).thenReturn("Comunidades");
         when(structureConfig.createTextChannel()).thenReturn(false);
         when(structureConfig.createVoiceChannel()).thenReturn(false);
 
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, LOGGER);
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
@@ -631,5 +715,111 @@ class JdaGuildOperationExecutorTest {
         verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
         // El ultimo save guardo el espacio con estado ACTIVE
         verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.ACTIVE));
+    }
+
+    @Test
+    @DisplayName("Arranque de extremo a extremo: ensureMayorRole adopta y persiste con tabla vacia y resolucion posterior funciona tras renombrado")
+    void arranqueExtremoAExtremoAdoptaYPersisteRolYResuelvePorIdTrasRenombrado() {
+        java.util.Map<String, String> tablaAjustes = new java.util.HashMap<>();
+        SettingsRepository settingsDoble = new SettingsRepository() {
+            @Override
+            public Optional<String> get(String key) {
+                return Optional.ofNullable(tablaAjustes.get(key));
+            }
+
+            @Override
+            public void put(String key, String value) {
+                tablaAjustes.put(key, value);
+            }
+
+            @Override
+            public void delete(String key) {
+                tablaAjustes.remove(key);
+            }
+        };
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settingsDoble, LOGGER);
+
+        // 1. Con la tabla de ajustes vacia
+        assertTrue(settingsDoble.get(SettingsRepository.KEY_MAYOR_ROLE_ID).isEmpty());
+
+        // 2. Existe exactamente un rol con el nombre configurado ("Alcalde")
+        String mayorRoleId = "role-mayor-estable-123";
+        Role role = mock(Role.class);
+        when(role.getId()).thenReturn(mayorRoleId);
+        when(role.getName()).thenReturn("Alcalde");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(role));
+        when(guild.getRoleById(mayorRoleId)).thenReturn(role);
+
+        // 3. ensureMayorRole adopta el rol y lo deja persistido
+        Role adoptado = executor.ensureMayorRole();
+        assertEquals(mayorRoleId, adoptado.getId());
+        assertEquals(Optional.of(mayorRoleId), settingsDoble.get(SettingsRepository.KEY_MAYOR_ROLE_ID));
+
+        // 4. El rol se renombra en Discord
+        when(role.getName()).thenReturn("Burgomaestre");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(Collections.emptyList());
+
+        // 5. Una llamada posterior lo resuelve por ese ID persistido aunque se haya renombrado
+        Role resueltoPosterior = executor.ensureMayorRole();
+        assertEquals(mayorRoleId, resueltoPosterior.getId());
+        verify(guild, never()).createRole();
+
+        // Tambien el gateway lo resuelve por ese ID persistido sin buscar por nombre
+        net.dv8tion.jda.api.JDA jda = mock(net.dv8tion.jda.api.JDA.class);
+        var gateway = new JdaDiscordGateway(config, spaces, settingsDoble, LOGGER, jda, guild);
+        assertEquals(Optional.of(mayorRoleId), gateway.mayorRoleId());
+    }
+
+    @Test
+    @DisplayName("ensureMayorRole con multiples roles homonimos y sin ID previo falla de forma visible")
+    void ensureMayorRoleFallaVisiblementeConHomonimosAmbiguosSinIdPersistido() {
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.empty());
+
+        Role rol1 = mock(Role.class);
+        Role rol2 = mock(Role.class);
+        when(rol1.getId()).thenReturn("rol-1");
+        when(rol2.getId()).thenReturn("rol-2");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(rol1, rol2));
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, executor::ensureMayorRole);
+        assertTrue(ex.getMessage().contains("multiples roles con el nombre 'Alcalde'"));
+        verify(settings, never()).put(any(), any());
+    }
+
+    @Test
+    @DisplayName("ensureMayorRole propaga fallo de persistencia sin conceder rol")
+    void ensureMayorRolePropagaFalloDePersistenciaSinConfirmarOperacion() {
+        when(settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID)).thenReturn(Optional.empty());
+
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("rol-alcalde-id");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        doThrow(new RuntimeException("Fallo de conexion a base de datos"))
+                .when(settings).put(eq(SettingsRepository.KEY_MAYOR_ROLE_ID), any());
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+
+        assertThrows(RuntimeException.class, executor::ensureMayorRole);
+
+        // En createSpace, el fallo impide conceder el rol al alcalde y la operacion no se confirma
+        UUID townUuid = UUID.randomUUID();
+        SpaceRequest req = new SpaceRequest(townUuid, "MiTown", UUID.randomUUID(), List.of(), "mayor-discord-id");
+        Category category = mock(Category.class);
+        when(category.getId()).thenReturn("cat-1");
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn("role-town-id");
+        when(guild.getRolesByName("MiTown", true)).thenReturn(List.of(townRole));
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.createTextChannel()).thenReturn(false);
+        when(structureConfig.createVoiceChannel()).thenReturn(false);
+
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+        assertFalse(outcome.succeeded());
+        verify(guild, never()).addRoleToMember(any(), eq(mayorRole));
     }
 }

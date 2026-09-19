@@ -4,6 +4,7 @@ import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.SpaceRequest;
 import com.discordtowny.model.SpaceState;
 import com.discordtowny.model.TownSpace;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
@@ -42,13 +43,15 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
     private final Guild guild;
     private final PluginConfig config;
     private final SpaceRepository spaces;
+    private final SettingsRepository settings;
     private final Logger logger;
 
     JdaGuildOperationExecutor(Guild guild, PluginConfig config,
-                              SpaceRepository spaces, Logger logger) {
+                              SpaceRepository spaces, SettingsRepository settings, Logger logger) {
         this.guild = guild;
         this.config = config;
         this.spaces = spaces;
+        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
         this.logger = logger;
     }
 
@@ -415,10 +418,14 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         if (role == null) {
             return false;
         }
-        if (role.getName().equalsIgnoreCase(config.roles().mayorRoleName())) {
+        if (managedRoleIds.contains(role.getId())) {
             return true;
         }
-        return managedRoleIds.contains(role.getId());
+        Optional<String> mayorId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
+        if (mayorId.isPresent()) {
+            return role.getId().equals(mayorId.get());
+        }
+        return role.getName().equalsIgnoreCase(config.roles().mayorRoleName());
     }
 
     // -- Utilidades --
@@ -461,15 +468,41 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         }
     }
 
-    /** Asegura que el rol de alcalde existe; si no, lo crea. */
-    private Role ensureMayorRole() {
+    /**
+     * Asegura que el rol de alcalde existe y persiste su identidad.
+     * Es el unico punto autorizado para adoptar o escribir mayor_role_id.
+     */
+    Role ensureMayorRole() {
+        Optional<String> persistedId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
+        if (persistedId.isPresent()) {
+            Role role = guild.getRoleById(persistedId.get());
+            if (role != null) {
+                return role;
+            }
+        }
+
         String mayorRoleName = config.roles().mayorRoleName();
         List<Role> existing = guild.getRolesByName(mayorRoleName, true);
-        if (!existing.isEmpty()) {
-            return existing.getFirst();
+        Role role;
+        if (existing.size() > 1) {
+            throw new IllegalStateException("Existen multiples roles con el nombre '" + mayorRoleName
+                    + "'. Un administrador debe dejar uno solo o borrar los sobrantes.");
+        } else if (existing.size() == 1) {
+            role = existing.getFirst();
+        } else {
+            var action = guild.createRole();
+            if (action == null) {
+                throw new IllegalStateException("No se pudo crear el rol de alcalde '" + mayorRoleName + "' en Discord");
+            }
+            role = action.setName(mayorRoleName).complete();
         }
-        var action = guild.createRole();
-        return action != null ? action.setName(mayorRoleName).complete() : null;
+
+        if (role == null) {
+            throw new IllegalStateException("No se pudo obtener ni crear el rol de alcalde '" + mayorRoleName + "'");
+        }
+
+        settings.put(SettingsRepository.KEY_MAYOR_ROLE_ID, role.getId());
+        return role;
     }
 
     /** Asegura que el rol existe; si no, lo crea. Idempotente. */

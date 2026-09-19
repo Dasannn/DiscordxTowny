@@ -21,7 +21,19 @@ public interface LinkService {
      *
      * @return el codigo, o vacio si el jugador ya esta vinculado
      */
-    CompletableFuture<Optional<String>> generateCode(UUID uuid);
+    default CompletableFuture<Optional<String>> generateCode(UUID uuid) {
+        return generateCode(uuid, "");
+    }
+
+    /**
+     * Genera un codigo para el jugador guardando su ultimo nombre conocido,
+     * invalidando el anterior si lo tenia.
+     *
+     * @param uuid identificador del jugador
+     * @param lastKnownName ultimo nombre conocido del jugador para mostrar
+     * @return el codigo, o vacio si el jugador ya esta vinculado
+     */
+    CompletableFuture<Optional<String>> generateCode(UUID uuid, String lastKnownName);
 
     /** Consume el codigo y crea el vinculo. */
     CompletableFuture<LinkResult> redeem(String code, String discordId);
@@ -36,6 +48,25 @@ public interface LinkService {
      * @return cierto si habia un vinculo que romper
      */
     CompletableFuture<Boolean> unlink(UUID uuid);
+
+    /**
+     * Rompe el vinculo condicionado al Discord ID esperado y retira los roles.
+     *
+     * @param uuid identificador del jugador
+     * @param expectedDiscordId cuenta de Discord esperada, o null si no se condiciona
+     * @return cierto si habia un vinculo coincidente que romper
+     */
+    CompletableFuture<Boolean> unlink(UUID uuid, String expectedDiscordId);
+
+    /**
+     * Rompe el vinculo condicionado al Discord ID y fecha de vinculacion esperados y retira los roles.
+     *
+     * @param uuid identificador del jugador
+     * @param expectedDiscordId cuenta de Discord esperada, o null si no se condiciona
+     * @param expectedLinkedAt fecha de vinculacion esperada, o null si no se condiciona
+     * @return cierto si habia un vinculo coincidente que romper
+     */
+    CompletableFuture<Boolean> unlink(UUID uuid, String expectedDiscordId, java.time.Instant expectedLinkedAt);
 
     /** Resultado de canjear un codigo. */
     enum LinkResult {
