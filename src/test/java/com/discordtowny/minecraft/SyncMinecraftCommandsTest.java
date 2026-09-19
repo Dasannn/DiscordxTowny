@@ -30,6 +30,7 @@ import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -472,7 +473,11 @@ class SyncMinecraftCommandsTest {
         // CRITICAL: Must NEVER send sync.finished when there are failures!
         verify(player, never()).sendMessage(messages.get("sync.finished"));
 
-        // Must report the failure details to the player
+        // Must report the failure details to the player using message keys
+        verify(messages).get(eq("sync.problems-header"), eq(Map.of("count", "2")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Towny is unavailable")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Discord role could not be assigned")));
+
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(player, atLeastOnce()).sendMessage(captor.capture());
 
@@ -480,10 +485,10 @@ class SyncMinecraftCommandsTest {
                 .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
                 .toList();
 
-        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("failure(s)") || t.contains("Towny is unavailable")),
-                "Must report failures/problems to sender instead of falsely announcing success");
-        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("Discord role could not be assigned")),
-                "Must include individual failure descriptions from the report");
+        assertTrue(plainTexts.contains("sync.problems-header"),
+                "Must report problems header key to sender instead of falsely announcing success");
+        assertTrue(plainTexts.contains("sync.problem-entry"),
+                "Must include problem entry key from the report");
     }
 
     @Test
@@ -522,7 +527,10 @@ class SyncMinecraftCommandsTest {
         // CRITICAL: Must NEVER send sync.finished in report mode with discrepancies!
         verify(sender, never()).sendMessage(messages.get("sync.finished"));
 
-        // Must report what was found and deliberately not touched
+        // Must report what was found and deliberately not touched using message keys
+        verify(messages).get(eq("sync.report-found"), eq(Map.of("count", "3")));
+        verify(messages).get(eq("sync.report-pending"), eq(Map.of("granted", "2", "revoked", "1")));
+
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(sender, atLeastOnce()).sendMessage(captor.capture());
 
@@ -530,10 +538,215 @@ class SyncMinecraftCommandsTest {
                 .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
                 .toList();
 
-        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("[Report Mode]") && t.contains("3 discrepancy(ies)")),
-                "Must report discrepancies found without falsely implying synchronization repaired them");
-        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("deliberately not modified")),
-                "Must indicate findings were deliberately not touched in report mode");
+        assertTrue(plainTexts.contains("sync.report-found"),
+                "Must report sync.report-found key in report mode");
+        assertTrue(plainTexts.contains("sync.report-pending"),
+                "Must report sync.report-pending key in report mode");
+    }
+
+    @Test
+    void dtAdminSyncInReportModeCleanReportsNoDiscrepancies() throws Exception {
+        AtomicBoolean scheduled = new AtomicBoolean(false);
+        Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        PluginConfig reportConfig = createConfig(PluginConfig.Sync.Mode.REPORT);
+
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, reportConfig, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        CommandSender sender = mock(CommandSender.class);
+        when(source.getSender()).thenReturn(sender);
+
+        CompletableFuture<SyncService.SyncReport> asyncFuture = new CompletableFuture<>();
+        when(syncService.reconcileAll()).thenReturn(asyncFuture);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("admin").getChild("sync").getCommand().run(ctx);
+
+        SyncService.SyncReport cleanReport = new SyncService.SyncReport(4, 0, 0, 0, 0, List.of());
+        CompletableFuture.runAsync(() -> asyncFuture.complete(cleanReport)).join();
+
+        assertTrue(scheduled.get());
+
+        verify(sender, never()).sendMessage(messages.get("sync.finished"));
+        verify(messages).get(eq("sync.report-clean"), eq(Map.of("spaces", "4")));
+
+        ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
+        verify(sender, atLeastOnce()).sendMessage(captor.capture());
+
+        List<String> plainTexts = captor.getAllValues().stream()
+                .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                .toList();
+
+        assertTrue(plainTexts.contains("sync.report-clean"),
+                "Must report sync.report-clean key in clean report mode");
+    }
+
+    @Test
+    void dtSyncWithUnrepairedInconsistenciesReportsUnrepairedKey() throws Exception {
+        AtomicBoolean scheduled = new AtomicBoolean(false);
+        Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        Player player = mock(Player.class);
+        UUID playerUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+
+        when(source.getSender()).thenReturn(player);
+        when(player.getUniqueId()).thenReturn(playerUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(playerUuid)).thenReturn(true);
+        when(townyFacade.townOf(playerUuid)).thenReturn(Optional.of(town));
+
+        CompletableFuture<SyncService.SyncReport> asyncFuture = new CompletableFuture<>();
+        when(syncService.syncTown(townUuid)).thenReturn(asyncFuture);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("sync").getCommand().run(ctx);
+
+        SyncService.SyncReport unrepairedReport = new SyncService.SyncReport(1, 0, 0, 3, 0, List.of());
+        CompletableFuture.runAsync(() -> asyncFuture.complete(unrepairedReport)).join();
+
+        assertTrue(scheduled.get());
+
+        verify(player, never()).sendMessage(messages.get("sync.finished"));
+        verify(messages).get(eq("sync.unrepaired"), eq(Map.of("count", "3")));
+
+        ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
+        verify(player, atLeastOnce()).sendMessage(captor.capture());
+
+        List<String> plainTexts = captor.getAllValues().stream()
+                .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                .toList();
+
+        assertTrue(plainTexts.contains("sync.unrepaired"),
+                "Must report sync.unrepaired key when inconsistencies remain unrepaired");
+    }
+
+    @Test
+    void dtSyncWithRepairedInconsistenciesAndFailuresReportsRepairedKey() throws Exception {
+        AtomicBoolean scheduled = new AtomicBoolean(false);
+        Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        Player player = mock(Player.class);
+        UUID playerUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+
+        when(source.getSender()).thenReturn(player);
+        when(player.getUniqueId()).thenReturn(playerUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(playerUuid)).thenReturn(true);
+        when(townyFacade.townOf(playerUuid)).thenReturn(Optional.of(town));
+
+        CompletableFuture<SyncService.SyncReport> asyncFuture = new CompletableFuture<>();
+        when(syncService.syncTown(townUuid)).thenReturn(asyncFuture);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("sync").getCommand().run(ctx);
+
+        SyncService.SyncReport partialReport = new SyncService.SyncReport(
+                1, 2, 1, 3, 2, List.of("Discord role error"));
+        CompletableFuture.runAsync(() -> asyncFuture.complete(partialReport)).join();
+
+        assertTrue(scheduled.get());
+
+        verify(player, never()).sendMessage(messages.get("sync.finished"));
+        verify(messages).get(eq("sync.repaired"), eq(Map.of("count", "2", "granted", "2", "revoked", "1")));
+        verify(messages).get(eq("sync.problems-header"), eq(Map.of("count", "1")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Discord role error")));
+
+        ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
+        verify(player, atLeastOnce()).sendMessage(captor.capture());
+
+        List<String> plainTexts = captor.getAllValues().stream()
+                .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                .toList();
+
+        assertTrue(plainTexts.contains("sync.repaired"),
+                "Must report sync.repaired key when inconsistencies are repaired");
+        assertTrue(plainTexts.contains("sync.problems-header"),
+                "Must report sync.problems-header key on failure");
+        assertTrue(plainTexts.contains("sync.problem-entry"),
+                "Must report sync.problem-entry key for problems");
+    }
+
+    @Test
+    void dtAdminSyncInReportModeWithProblemsReportsProblemKeys() throws Exception {
+        AtomicBoolean scheduled = new AtomicBoolean(false);
+        Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        PluginConfig reportConfig = createConfig(PluginConfig.Sync.Mode.REPORT);
+
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, reportConfig, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        CommandSender sender = mock(CommandSender.class);
+        when(source.getSender()).thenReturn(sender);
+
+        CompletableFuture<SyncService.SyncReport> asyncFuture = new CompletableFuture<>();
+        when(syncService.reconcileAll()).thenReturn(asyncFuture);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("admin").getChild("sync").getCommand().run(ctx);
+
+        SyncService.SyncReport reportWithProblem = new SyncService.SyncReport(
+                2, 0, 0, 0, 0, List.of("Discord rate limit"));
+        CompletableFuture.runAsync(() -> asyncFuture.complete(reportWithProblem)).join();
+
+        assertTrue(scheduled.get());
+
+        verify(sender, never()).sendMessage(messages.get("sync.finished"));
+        verify(messages).get(eq("sync.report-clean"), eq(Map.of("spaces", "2")));
+        verify(messages).get(eq("sync.problems-header"), eq(Map.of("count", "1")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Discord rate limit")));
+
+        ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
+        verify(sender, atLeastOnce()).sendMessage(captor.capture());
+
+        List<String> plainTexts = captor.getAllValues().stream()
+                .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                .toList();
+
+        assertTrue(plainTexts.contains("sync.report-clean"));
+        assertTrue(plainTexts.contains("sync.problems-header"));
+        assertTrue(plainTexts.contains("sync.problem-entry"));
     }
 
     @Test

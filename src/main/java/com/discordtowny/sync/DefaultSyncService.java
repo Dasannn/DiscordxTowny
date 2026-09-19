@@ -20,8 +20,10 @@ import java.time.Instant;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -180,8 +182,9 @@ public final class DefaultSyncService implements SyncService {
                 }
 
                 Set<String> allManagedRoles = getManagedRoleIds();
+                Set<String> memberCurrentRoles = findMemberRoles(discordId, allManagedRoles);
                 PlayerRoleDiff diff = calculatePlayerRoleDiff(
-                        playerUuid, pair.resident(), pair.town(), allManagedRoles);
+                        playerUuid, pair.resident(), pair.town(), allManagedRoles, memberCurrentRoles);
 
                 if (isReportMode) {
                     return CompletableFuture.completedFuture(null);
@@ -211,7 +214,7 @@ public final class DefaultSyncService implements SyncService {
     public CompletableFuture<SyncReport> syncTown(UUID townUuid, PluginConfig.Sync.Mode mode) {
         if (townUuid == null) {
             return CompletableFuture.completedFuture(
-                    new SyncReport(0, 0, 0, 0, 0, List.of("Town UUID must not be null")));
+                    new SyncReport(0, 0, 0, 0, 0, List.of("Town UUID must not be null"), mode, 0, 0));
         }
 
         return CompletableFuture.supplyAsync(() -> {
@@ -227,11 +230,11 @@ public final class DefaultSyncService implements SyncService {
             }).thenComposeAsync(lookup -> {
                 if (lookup.isUnavailable()) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable")));
+                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable"), mode, 0, 0));
                 }
                 if (lookup.isFailedRead()) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny read failed for town " + townUuid + ": " + lookup.errorMessage())));
+                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny read failed for town " + townUuid + ": " + lookup.errorMessage()), mode, 0, 0));
                 }
 
                 Optional<TownSnapshot> townOpt = lookup.town();
@@ -241,7 +244,7 @@ public final class DefaultSyncService implements SyncService {
                 if (townOpt.isEmpty()) {
                     if (spaceOpt.isPresent()) {
                         TownSpace space = spaceOpt.get();
-                        SyncReportAccumulator acc = new SyncReportAccumulator(1);
+                        SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                         acc.inconsistenciesFound.incrementAndGet();
                         acc.problems.add("Town " + space.townName() + " (" + townUuid + ") no longer exists in Towny");
 
@@ -259,13 +262,13 @@ public final class DefaultSyncService implements SyncService {
                         return CompletableFuture.completedFuture(acc.toReport());
                     }
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Town " + townUuid + " not found")));
+                            new SyncReport(0, 0, 0, 1, 0, List.of("Town " + townUuid + " not found"), mode, 0, 0));
                 }
 
                 TownSnapshot town = townOpt.get();
                 if (spaceOpt.isEmpty()) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 0, 0, List.of("Town " + town.name() + " has no registered space")));
+                            new SyncReport(0, 0, 0, 0, 0, List.of("Town " + town.name() + " has no registered space"), mode, 0, 0));
                 }
 
                 TownSpace space = spaceOpt.get();
@@ -281,18 +284,27 @@ public final class DefaultSyncService implements SyncService {
 
     public CompletableFuture<SyncReport> reconcileAll(PluginConfig.Sync.Mode mode) {
         return CompletableFuture.supplyAsync(() -> {
-            return callTowny(() -> townyFacade.isAvailable()).thenComposeAsync(available -> {
+            return callTowny(() -> {
+                if (!townyFacade.isAvailable()) {
+                    return false;
+                }
+                return true;
+            }).handle((available, ex) -> {
+                if (ex != null || !Boolean.TRUE.equals(available)) {
+                    return false;
+                }
+                return true;
+            }).thenComposeAsync(available -> {
                 if (!available) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable")));
+                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable"), mode, 0, 0));
                 }
 
                 List<TownSpace> allSpaces = spaceRepository.findAll();
                 int totalSpaces = allSpaces.size();
 
                 if (totalSpaces == 0) {
-                    return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 0, 0, List.of()));
+                    return auditMayorRole(mode).thenApply(SyncReportAccumulator::toReport);
                 }
 
                 int batchSize = Math.max(1, config.sync().batchSize());
@@ -300,7 +312,7 @@ public final class DefaultSyncService implements SyncService {
                 int totalBatches = (totalSpaces + batchSize - 1) / batchSize;
 
                 CompletableFuture<SyncReportAccumulator> chain = CompletableFuture.completedFuture(
-                        new SyncReportAccumulator(totalSpaces));
+                        new SyncReportAccumulator(totalSpaces, mode));
 
                 for (int b = 0; b < totalBatches; b++) {
                     final int batchIndex = b;
@@ -310,13 +322,37 @@ public final class DefaultSyncService implements SyncService {
 
                     chain = chain.thenComposeAsync(totalAcc -> {
                         if (batchIndex > 0) {
-                            pauseAction.accept(batchPause);
+                            try {
+                                pauseAction.accept(batchPause);
+                            } catch (Exception e) {
+                                totalAcc.problems.add("Batch pause interrupted or failed: " + e.getMessage());
+                            }
                         }
-                        return processBatch(batch, mode).thenApply(totalAcc::merge);
+                        return processBatch(batch, mode).handle((batchAcc, ex) -> {
+                            if (ex != null) {
+                                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                                totalAcc.inconsistenciesFound.incrementAndGet();
+                                totalAcc.problems.add("Batch " + batchIndex + " failed: " + cause.getMessage());
+                            } else if (batchAcc != null) {
+                                totalAcc.merge(batchAcc);
+                            }
+                            return totalAcc;
+                        });
                     }, executor);
                 }
 
-                return chain.thenApply(SyncReportAccumulator::toReport);
+                return chain.thenComposeAsync(totalAcc ->
+                        auditMayorRole(mode).handle((mayorAcc, ex) -> {
+                            if (ex != null) {
+                                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                                totalAcc.inconsistenciesFound.incrementAndGet();
+                                totalAcc.problems.add("Mayor role audit failed: " + cause.getMessage());
+                            } else if (mayorAcc != null) {
+                                totalAcc.merge(mayorAcc);
+                            }
+                            return totalAcc;
+                        })
+                , executor).thenApply(SyncReportAccumulator::toReport);
             }, executor);
         }, executor).thenCompose(f -> f);
     }
@@ -325,17 +361,27 @@ public final class DefaultSyncService implements SyncService {
             List<TownSpace> batch,
             PluginConfig.Sync.Mode mode) {
         if (batch.isEmpty()) {
-            return CompletableFuture.completedFuture(new SyncReportAccumulator(0));
+            return CompletableFuture.completedFuture(new SyncReportAccumulator(0, mode));
         }
 
         List<CompletableFuture<SyncReportAccumulator>> futures = new ArrayList<>(batch.size());
         for (TownSpace space : batch) {
-            futures.add(processSingleSpace(space, mode));
+            futures.add(processSingleSpace(space, mode).handle((acc, ex) -> {
+                if (ex != null) {
+                    SyncReportAccumulator errAcc = new SyncReportAccumulator(1, mode);
+                    errAcc.inconsistenciesFound.incrementAndGet();
+                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                    errAcc.problems.add("Failed to reconcile space " + space.townName()
+                            + " (" + space.townUuid() + "): " + cause.getMessage());
+                    return errAcc;
+                }
+                return acc;
+            }));
         }
 
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                 .thenApply(v -> {
-                    SyncReportAccumulator batchAcc = new SyncReportAccumulator(0);
+                    SyncReportAccumulator batchAcc = new SyncReportAccumulator(0, mode);
                     for (CompletableFuture<SyncReportAccumulator> f : futures) {
                         batchAcc.merge(f.join());
                     }
@@ -355,15 +401,21 @@ public final class DefaultSyncService implements SyncService {
             } catch (TownyReadException e) {
                 return TownyLookupResult.failedRead(e.getMessage() != null ? e.getMessage() : "Read failed against Towny");
             }
+        }).handle((lookup, ex) -> {
+            if (ex != null) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                return TownyLookupResult.failedRead("Towny call threw exception: " + cause.getMessage());
+            }
+            return lookup;
         }).thenComposeAsync(lookup -> {
             if (lookup.isUnavailable()) {
-                SyncReportAccumulator acc = new SyncReportAccumulator(1);
+                SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                 acc.inconsistenciesFound.incrementAndGet();
                 acc.problems.add("Towny is unavailable while checking space " + space.townName());
                 return CompletableFuture.completedFuture(acc);
             }
             if (lookup.isFailedRead()) {
-                SyncReportAccumulator acc = new SyncReportAccumulator(1);
+                SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                 acc.inconsistenciesFound.incrementAndGet();
                 acc.problems.add("Towny read failed for space " + space.townName() + " (" + space.townUuid() + "): " + lookup.errorMessage());
                 return CompletableFuture.completedFuture(acc);
@@ -373,7 +425,7 @@ public final class DefaultSyncService implements SyncService {
             boolean isReportMode = mode == PluginConfig.Sync.Mode.REPORT;
 
             if (townOpt.isEmpty()) {
-                SyncReportAccumulator acc = new SyncReportAccumulator(1);
+                SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                 acc.inconsistenciesFound.incrementAndGet();
                 acc.problems.add("Town " + space.townName() + " (" + space.townUuid() + ") no longer exists in Towny");
 
@@ -392,7 +444,13 @@ public final class DefaultSyncService implements SyncService {
             }
 
             return reconcileSingleSpace(space, townOpt.get(), mode);
-        }, executor);
+        }, executor).exceptionally(ex -> {
+            SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
+            acc.inconsistenciesFound.incrementAndGet();
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            acc.problems.add("Failed to reconcile space " + space.townName() + " (" + space.townUuid() + "): " + cause.getMessage());
+            return acc;
+        });
     }
 
     private CompletableFuture<SyncReportAccumulator> reconcileSingleSpace(
@@ -400,7 +458,7 @@ public final class DefaultSyncService implements SyncService {
             TownSnapshot town,
             PluginConfig.Sync.Mode mode) {
         boolean isReportMode = mode == PluginConfig.Sync.Mode.REPORT;
-        SyncReportAccumulator acc = new SyncReportAccumulator(1);
+        SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
 
         // 1. Ruined town check: ONE decision per space.
         // A ruined town's space must be ARCHIVED. No creation or resident role grants ever.
@@ -571,27 +629,46 @@ public final class DefaultSyncService implements SyncService {
 
         // 4c. Residents role sync
         Set<String> allManagedRoles = getManagedRoleIds();
+        Map<String, Set<String>> roleHoldersMap = fetchRoleHolders(allManagedRoles);
+
         for (UUID residentUuid : town.residentUuids()) {
             Optional<AccountLink> linkOpt = linkRepository.findByUuid(residentUuid);
             if (linkOpt.isPresent()) {
                 AccountLink link = linkOpt.get();
-                PlayerRoleDiff diff = calculatePlayerRoleDiff(
-                        residentUuid, Optional.empty(), Optional.of(town), allManagedRoles);
+                String discordId = link.discordId();
 
-                if (!isReportMode) {
+                Set<String> memberCurrentRoles = findMemberRoles(discordId, roleHoldersMap);
+                PlayerRoleDiff diff = calculatePlayerRoleDiff(
+                        residentUuid, Optional.empty(), Optional.of(town), allManagedRoles, memberCurrentRoles);
+
+                if (isReportMode) {
+                    if (!diff.grantRoles().isEmpty()) {
+                        acc.inconsistenciesFound.addAndGet(diff.grantRoles().size());
+                        acc.proposedGrants.addAndGet(diff.grantRoles().size());
+                        acc.problems.add("Resident " + discordId + " is missing roles for town "
+                                + town.name() + ": " + diff.grantRoles());
+                    }
+                    if (!diff.revokeRoles().isEmpty()) {
+                        acc.inconsistenciesFound.addAndGet(diff.revokeRoles().size());
+                        acc.proposedRevocations.addAndGet(diff.revokeRoles().size());
+                        acc.problems.add("Resident " + discordId + " holds unjustified roles: "
+                                + diff.revokeRoles());
+                    }
+                } else {
                     if (!diff.grantRoles().isEmpty() || !diff.revokeRoles().isEmpty()) {
                         futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
-                                link.discordId(), diff.grantRoles(), diff.revokeRoles()
+                                discordId, diff.grantRoles(), diff.revokeRoles()
                         )).thenAccept(outcome -> {
                             if (outcome != null && outcome.succeeded()) {
                                 acc.rolesGranted.addAndGet(diff.grantRoles().size());
                                 acc.rolesRevoked.addAndGet(diff.revokeRoles().size());
+                                acc.inconsistenciesRepaired.addAndGet(diff.grantRoles().size() + diff.revokeRoles().size());
                             } else {
-                                acc.problems.add("Failed to adjust roles for member " + link.discordId()
+                                acc.problems.add("Failed to adjust roles for member " + discordId
                                         + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
                             }
                         }).exceptionally(ex -> {
-                            acc.problems.add("Failed to adjust roles for member " + link.discordId() + ": " + ex.getMessage());
+                            acc.problems.add("Failed to adjust roles for member " + discordId + ": " + ex.getMessage());
                             return null;
                         }));
                     }
@@ -607,7 +684,10 @@ public final class DefaultSyncService implements SyncService {
         if (roleExistsInDiscord) {
             String townRoleId = space.roleId().get();
             try {
-                Set<String> holders = discordGateway.roleHolders(townRoleId);
+                Set<String> holders = roleHoldersMap.get(townRoleId);
+                if (holders == null) {
+                    holders = discordGateway.roleHolders(townRoleId);
+                }
                 if (holders == null || holders.isEmpty()) {
                     if (!town.residentUuids().isEmpty()) {
                         acc.inconsistenciesFound.incrementAndGet();
@@ -628,7 +708,7 @@ public final class DefaultSyncService implements SyncService {
                                     + town.name() + " (" + townRoleId + ") without being a resident");
 
                             if (isReportMode) {
-                                acc.rolesRevoked.incrementAndGet();
+                                acc.proposedRevocations.incrementAndGet();
                             } else {
                                 futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
                                         holderDiscordId, List.of(), List.of(townRoleId)
@@ -691,7 +771,8 @@ public final class DefaultSyncService implements SyncService {
             UUID playerUuid,
             Optional<ResidentSnapshot> residentOpt,
             Optional<TownSnapshot> townOpt,
-            Set<String> allManagedRoles) {
+            Set<String> allManagedRoles,
+            Set<String> memberCurrentRoles) {
 
         Set<String> shouldHave = new LinkedHashSet<>();
 
@@ -720,10 +801,206 @@ public final class DefaultSyncService implements SyncService {
             }
         }
 
-        Set<String> shouldRevoke = new LinkedHashSet<>(allManagedRoles);
-        shouldRevoke.removeAll(shouldHave);
+        Set<String> toGrant = new LinkedHashSet<>(shouldHave);
+        toGrant.removeAll(memberCurrentRoles);
 
-        return new PlayerRoleDiff(new ArrayList<>(shouldHave), new ArrayList<>(shouldRevoke));
+        Set<String> toRevoke = new LinkedHashSet<>(memberCurrentRoles);
+        toRevoke.removeAll(shouldHave);
+
+        return new PlayerRoleDiff(new ArrayList<>(toGrant), new ArrayList<>(toRevoke));
+    }
+
+    private Map<String, Set<String>> fetchRoleHolders(Set<String> roleIds) {
+        Map<String, Set<String>> map = new HashMap<>();
+        for (String roleId : roleIds) {
+            try {
+                Set<String> holders = discordGateway.roleHolders(roleId);
+                if (holders != null) {
+                    map.put(roleId, holders);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return map;
+    }
+
+    private Set<String> findMemberRoles(String discordId, Map<String, Set<String>> roleHoldersMap) {
+        Set<String> held = new LinkedHashSet<>();
+        for (Map.Entry<String, Set<String>> entry : roleHoldersMap.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().contains(discordId)) {
+                held.add(entry.getKey());
+            }
+        }
+        return held;
+    }
+
+    private Set<String> findMemberRoles(String discordId, Set<String> managedRoleIds) {
+        Set<String> held = new LinkedHashSet<>();
+        for (String roleId : managedRoleIds) {
+            try {
+                Set<String> holders = discordGateway.roleHolders(roleId);
+                if (holders != null && holders.contains(discordId)) {
+                    held.add(roleId);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return held;
+    }
+
+    private CompletableFuture<SyncReportAccumulator> auditMayorRole(PluginConfig.Sync.Mode mode) {
+        boolean isReportMode = mode == PluginConfig.Sync.Mode.REPORT;
+        SyncReportAccumulator acc = new SyncReportAccumulator(0, mode);
+
+        Optional<String> mayorRoleIdOpt;
+        try {
+            mayorRoleIdOpt = discordGateway.mayorRoleId();
+        } catch (Exception e) {
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Failed to retrieve mayor role ID: " + e.getMessage());
+            return CompletableFuture.completedFuture(acc);
+        }
+
+        if (mayorRoleIdOpt == null || mayorRoleIdOpt.isEmpty()) {
+            return CompletableFuture.completedFuture(acc);
+        }
+
+        String mayorRoleId = mayorRoleIdOpt.get();
+        Set<String> holders;
+        try {
+            holders = discordGateway.roleHolders(mayorRoleId);
+        } catch (Exception e) {
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Failed to lookup mayor role holders (" + mayorRoleId + "): " + e.getMessage());
+            return CompletableFuture.completedFuture(acc);
+        }
+
+        if (holders == null) {
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Role holders lookup returned null for mayor role (" + mayorRoleId + ")");
+            return CompletableFuture.completedFuture(acc);
+        }
+
+        return callTowny(() -> {
+            if (!townyFacade.isAvailable()) {
+                return TownyTownsResult.unavailable();
+            }
+            try {
+                return TownyTownsResult.ok(townyFacade.allTowns());
+            } catch (TownyReadException e) {
+                return TownyTownsResult.failedRead(e.getMessage() != null ? e.getMessage() : "Read failed against Towny");
+            }
+        }).handle((lookup, ex) -> {
+            if (ex != null) {
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                return TownyTownsResult.failedRead("Towny call threw exception: " + cause.getMessage());
+            }
+            return lookup;
+        }).thenComposeAsync(lookup -> {
+            if (lookup.isUnavailable() || lookup.isFailedRead()) {
+                acc.inconsistenciesFound.incrementAndGet();
+                acc.problems.add("Towny read failed during mayor role audit: " + lookup.errorMessage());
+                return CompletableFuture.completedFuture(acc);
+            }
+
+            List<TownSnapshot> allTowns = lookup.towns();
+            Set<String> justifiedMayorDiscordIds = new LinkedHashSet<>();
+            for (TownSnapshot town : allTowns) {
+                if (!town.ruined() && town.mayorUuid() != null) {
+                    linkRepository.findByUuid(town.mayorUuid())
+                            .ifPresent(link -> justifiedMayorDiscordIds.add(link.discordId()));
+                }
+            }
+
+            if (holders.isEmpty()) {
+                if (!justifiedMayorDiscordIds.isEmpty()) {
+                    acc.inconsistenciesFound.incrementAndGet();
+                    acc.problems.add("Role holders lookup returned empty for mayor role (" + mayorRoleId
+                            + "): member cache may be cold or GUILD_MEMBERS intent disabled");
+                }
+                return CompletableFuture.completedFuture(acc);
+            }
+
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+            for (String holderDiscordId : holders) {
+                if (!justifiedMayorDiscordIds.contains(holderDiscordId)) {
+                    acc.inconsistenciesFound.incrementAndGet();
+                    acc.problems.add("Member " + holderDiscordId + " holds mayor role ("
+                            + mayorRoleId + ") without being a verified mayor");
+
+                    if (isReportMode) {
+                        acc.proposedRevocations.incrementAndGet();
+                    } else {
+                        futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
+                                holderDiscordId, List.of(), List.of(mayorRoleId)
+                        )).thenAccept(outcome -> {
+                            if (outcome != null && outcome.succeeded()) {
+                                acc.rolesRevoked.incrementAndGet();
+                                acc.inconsistenciesRepaired.incrementAndGet();
+                            } else {
+                                acc.problems.add("Failed to revoke unjustified mayor role " + mayorRoleId
+                                        + " from member " + holderDiscordId + ": "
+                                        + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                            }
+                        }).exceptionally(ex -> {
+                            acc.problems.add("Failed to revoke unjustified mayor role " + mayorRoleId
+                                    + " from member " + holderDiscordId + ": " + ex.getMessage());
+                            return null;
+                        }));
+                    }
+                }
+            }
+
+            for (TownSnapshot town : allTowns) {
+                if (!town.ruined() && town.mayorUuid() != null) {
+                    Optional<TownSpace> spaceOpt = spaceRepository.findByTownUuid(town.uuid());
+                    if (spaceOpt.isEmpty()) {
+                        Optional<AccountLink> linkOpt = linkRepository.findByUuid(town.mayorUuid());
+                        if (linkOpt.isPresent()) {
+                            String mayorDiscordId = linkOpt.get().discordId();
+                            if (!holders.contains(mayorDiscordId)) {
+                                acc.inconsistenciesFound.incrementAndGet();
+                                acc.problems.add("Verified mayor " + mayorDiscordId + " of town without space "
+                                        + town.name() + " is missing mayor role (" + mayorRoleId + ")");
+
+                                if (isReportMode) {
+                                    acc.proposedGrants.incrementAndGet();
+                                } else {
+                                    futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
+                                            mayorDiscordId, List.of(mayorRoleId), List.of()
+                                    )).thenAccept(outcome -> {
+                                        if (outcome != null && outcome.succeeded()) {
+                                            acc.rolesGranted.incrementAndGet();
+                                            acc.inconsistenciesRepaired.incrementAndGet();
+                                        } else {
+                                            acc.problems.add("Failed to grant mayor role " + mayorRoleId
+                                                    + " to verified mayor " + mayorDiscordId + ": "
+                                                    + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                        }
+                                    }).exceptionally(ex -> {
+                                        acc.problems.add("Failed to grant mayor role " + mayorRoleId
+                                                + " to verified mayor " + mayorDiscordId + ": " + ex.getMessage());
+                                        return null;
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (futures.isEmpty()) {
+                return CompletableFuture.completedFuture(acc);
+            }
+
+            return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .thenApply(v -> acc);
+        }, executor).exceptionally(ex -> {
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Failed to audit mayor role: " + ex.getMessage());
+            return acc;
+        });
     }
 
     private CompletableFuture<Boolean> executeArchive(TownSpace space, String reason) {
@@ -868,16 +1145,50 @@ public final class DefaultSyncService implements SyncService {
             List<String> revokeRoles
     ) {}
 
+    private record TownyTownsResult(
+            TownyStatus status,
+            List<TownSnapshot> towns,
+            String errorMessage
+    ) {
+        static TownyTownsResult ok(List<TownSnapshot> towns) {
+            return new TownyTownsResult(TownyStatus.OK, towns != null ? towns : List.of(), null);
+        }
+
+        static TownyTownsResult failedRead(String message) {
+            return new TownyTownsResult(TownyStatus.FAILED_READ, List.of(), message);
+        }
+
+        static TownyTownsResult unavailable() {
+            return new TownyTownsResult(TownyStatus.UNAVAILABLE, List.of(), "Towny is unavailable");
+        }
+
+        boolean isUnavailable() {
+            return status == TownyStatus.UNAVAILABLE;
+        }
+
+        boolean isFailedRead() {
+            return status == TownyStatus.FAILED_READ;
+        }
+    }
+
     private static final class SyncReportAccumulator {
         final int spacesChecked;
+        final PluginConfig.Sync.Mode mode;
         final AtomicInteger rolesGranted = new AtomicInteger(0);
         final AtomicInteger rolesRevoked = new AtomicInteger(0);
         final AtomicInteger inconsistenciesFound = new AtomicInteger(0);
         final AtomicInteger inconsistenciesRepaired = new AtomicInteger(0);
+        final AtomicInteger proposedGrants = new AtomicInteger(0);
+        final AtomicInteger proposedRevocations = new AtomicInteger(0);
         final List<String> problems = Collections.synchronizedList(new ArrayList<>());
 
-        SyncReportAccumulator(int spacesChecked) {
+        SyncReportAccumulator(int spacesChecked, PluginConfig.Sync.Mode mode) {
             this.spacesChecked = spacesChecked;
+            this.mode = mode != null ? mode : PluginConfig.Sync.Mode.REPAIR;
+        }
+
+        SyncReportAccumulator(int spacesChecked) {
+            this(spacesChecked, PluginConfig.Sync.Mode.REPAIR);
         }
 
         SyncReportAccumulator merge(SyncReportAccumulator other) {
@@ -885,6 +1196,8 @@ public final class DefaultSyncService implements SyncService {
             this.rolesRevoked.addAndGet(other.rolesRevoked.get());
             this.inconsistenciesFound.addAndGet(other.inconsistenciesFound.get());
             this.inconsistenciesRepaired.addAndGet(other.inconsistenciesRepaired.get());
+            this.proposedGrants.addAndGet(other.proposedGrants.get());
+            this.proposedRevocations.addAndGet(other.proposedRevocations.get());
             this.problems.addAll(other.problems);
             return this;
         }
@@ -896,7 +1209,10 @@ public final class DefaultSyncService implements SyncService {
                     rolesRevoked.get(),
                     inconsistenciesFound.get(),
                     inconsistenciesRepaired.get(),
-                    List.copyOf(problems)
+                    List.copyOf(problems),
+                    mode,
+                    proposedGrants.get(),
+                    proposedRevocations.get()
             );
         }
     }

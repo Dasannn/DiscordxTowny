@@ -18,4 +18,9 @@ public class TownyReadException extends RuntimeException {
     public TownyReadException(String message, Throwable cause) {
         super(message, cause);
     }
+
+    /** For a failure with no underlying exception to attach. */
+    public TownyReadException(String message) {
+        super(message);
+    }
 }

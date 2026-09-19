@@ -30,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -38,6 +39,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
@@ -188,9 +190,15 @@ class DefaultSyncServiceTest {
         when(townyFacade.townOf(playerUuid)).thenReturn(Optional.of(townA));
         when(townyFacade.town(townAUuid)).thenReturn(Optional.of(townA));
 
-        // Player currently holds on Discord: roleTownB (unjustified) and unmanaged roles ("role-vip", "role-mod")
+        // Player currently holds on Discord: roleTownB (unjustified) and unmanaged roles ("role-vip", "role-mod").
+        // Player does NOT hold roleTownA or the mayor role.
         String unmanagedRole1 = "role-vip";
         String unmanagedRole2 = "role-mod";
+        when(discordGateway.roleHolders(roleTownB)).thenReturn(Set.of(discordId));
+        when(discordGateway.roleHolders(roleTownA)).thenReturn(Set.of());
+        when(discordGateway.roleHolders("role-mayor-id")).thenReturn(Set.of());
+        when(discordGateway.roleHolders(unmanagedRole1)).thenReturn(Set.of(discordId));
+        when(discordGateway.roleHolders(unmanagedRole2)).thenReturn(Set.of(discordId));
 
         // Execute sync
         service.syncPlayer(playerUuid).join();
@@ -205,18 +213,12 @@ class DefaultSyncServiceTest {
         assertEquals(discordId, op.discordId());
 
         // The unjustified town role (roleTownB) MUST be in the revoke list
-        assertTrue(op.revokeRoleIds().contains(roleTownB),
-                "Unjustified town role B must be revoked");
-
-        // The mayor role MUST also be revoked (since player is not mayor)
-        assertTrue(op.revokeRoleIds().contains("role-mayor-id"),
-                "Unjustified mayor role must be revoked");
+        assertEquals(List.of(roleTownB), op.revokeRoleIds(),
+                "Unjustified town role B must be revoked, and no unheld roles should be phantom-revoked");
 
         // The justified town role (roleTownA) MUST be in the grant list
-        assertTrue(op.grantRoleIds().contains(roleTownA),
+        assertEquals(List.of(roleTownA), op.grantRoleIds(),
                 "Justified town role A must be granted");
-        assertFalse(op.grantRoleIds().contains(roleTownB),
-                "Unjustified town role B must not be granted");
 
         // CRUCIAL: Unmanaged roles MUST NEVER be in the revoke list or grant list
         assertFalse(op.revokeRoleIds().contains(unmanagedRole1),
@@ -225,13 +227,6 @@ class DefaultSyncServiceTest {
                 "Unmanaged role 'role-mod' must not be touched");
         assertFalse(op.grantRoleIds().contains(unmanagedRole1));
         assertFalse(op.grantRoleIds().contains(unmanagedRole2));
-
-        // In fact, all roles in revokeRoleIds must belong strictly to the managed roles set
-        Set<String> managedRoles = Set.of(roleTownA, roleTownB, "role-mayor-id");
-        assertTrue(managedRoles.containsAll(op.revokeRoleIds()),
-                "Revoke list must only contain managed roles");
-        assertTrue(managedRoles.containsAll(op.grantRoleIds()),
-                "Grant list must only contain managed roles");
     }
 
     // --- Required Test 2: Resident who links gains exactly their own town's role and no other town's ---
@@ -278,6 +273,14 @@ class DefaultSyncServiceTest {
         when(townyFacade.townOf(residentUuid)).thenReturn(Optional.of(town1));
         when(townyFacade.town(town1Uuid)).thenReturn(Optional.of(town1));
 
+        // Newly linked resident Bob holds NO managed roles on Discord yet, but holds an unmanaged role
+        String unmanagedRole = "role-guest";
+        when(discordGateway.roleHolders(roleTown1)).thenReturn(Set.of());
+        when(discordGateway.roleHolders(roleTown2)).thenReturn(Set.of());
+        when(discordGateway.roleHolders(roleTown3)).thenReturn(Set.of());
+        when(discordGateway.roleHolders("role-mayor-id")).thenReturn(Set.of());
+        when(discordGateway.roleHolders(unmanagedRole)).thenReturn(Set.of(discordId));
+
         // Sync player upon linking
         service.syncPlayer(residentUuid).join();
 
@@ -294,9 +297,13 @@ class DefaultSyncServiceTest {
         assertFalse(op.grantRoleIds().contains(roleTown2));
         assertFalse(op.grantRoleIds().contains(roleTown3));
 
-        // Revoke list must contain other town roles
-        assertTrue(op.revokeRoleIds().contains(roleTown2));
-        assertTrue(op.revokeRoleIds().contains(roleTown3));
+        // Since Bob held no other managed roles, there is nothing to revoke
+        assertTrue(op.revokeRoleIds().isEmpty(),
+                "Newly linked resident holding no other managed roles has nothing to revoke");
+
+        // Unmanaged role must not be touched
+        assertFalse(op.grantRoleIds().contains(unmanagedRole));
+        assertFalse(op.revokeRoleIds().contains(unmanagedRole));
     }
 
     // --- Required Test 3: Report-only mode with broken state asserts zero Discord operations and zero repository writes ---
@@ -451,6 +458,18 @@ class DefaultSyncServiceTest {
             });
         }
 
+        // Town1 has a missing role in Discord so it submits a CreateSpace repair operation
+        when(discordGateway.existingResourceIds(any())).thenAnswer(inv -> {
+            java.util.Collection<String> ids = inv.getArgument(0);
+            Set<String> result = new LinkedHashSet<>(ids != null ? ids : List.of());
+            result.remove("role-1"); // role-1 missing -> triggers repair
+            return result;
+        });
+
+        // Hold the repair operation for BatchTown1 pending to prove Batch 2 waits
+        CompletableFuture<OperationOutcome> pendingDiscordOp = new CompletableFuture<>();
+        when(discordGateway.submit(any(GuildOperation.CreateSpace.class))).thenReturn(pendingDiscordOp);
+
         @SuppressWarnings("unchecked")
         Consumer<Duration> mockPause = mock(Consumer.class);
         doAnswer(inv -> {
@@ -470,31 +489,46 @@ class DefaultSyncServiceTest {
                 null
         );
 
-        SyncReport report = batchService.reconcileAll().join();
+        CompletableFuture<SyncReport> reconcileFuture = batchService.reconcileAll();
+
+        // While pendingDiscordOp in Batch 1 is not completed:
+        // Batch 1 has not finished, so pause must NOT have occurred, and Batch 2 must NOT have started
+        assertFalse(reconcileFuture.isDone(), "Reconcile pass must wait for Batch 1's pending operation");
+        assertFalse(eventLog.contains("pause"), "Pause must not happen while Batch 1 operation is pending");
+        assertFalse(eventLog.contains("process-BatchTown3"), "Batch 2 must not start while Batch 1 is pending");
+        assertFalse(eventLog.contains("process-BatchTown4"), "Batch 2 must not start while Batch 1 is pending");
+
+        // Complete the pending Discord operation for BatchTown1
+        pendingDiscordOp.complete(OperationOutcome.success());
+
+        SyncReport report = reconcileFuture.join();
 
         assertEquals(5, report.spacesChecked());
 
         // For 3 batches, exactly 2 pauses must occur
         verify(mockPause, times(2)).accept(pauseDuration);
 
-        // Prove sequence of execution:
-        // First batch processed (BatchTown1, BatchTown2) -> pause -> second batch -> pause -> third batch
-        assertFalse(eventLog.isEmpty());
-        assertNotEquals("pause", eventLog.getFirst(),
-                "Pause must NOT happen before the first batch");
-        assertNotEquals("pause", eventLog.getLast(),
-                "Pause must NOT happen after the last batch");
+        // Prove exact sequence of batch boundaries:
+        // Batch 1 spaces -> Pause 1 -> Batch 2 spaces -> Pause 2 -> Batch 3 space
+        assertEquals(7, eventLog.size(), "Exact event sequence: 2 spaces + pause + 2 spaces + pause + 1 space");
 
-        // The pause must happen exactly between batches
         int firstPauseIndex = eventLog.indexOf("pause");
         int lastPauseIndex = eventLog.lastIndexOf("pause");
 
-        assertTrue(firstPauseIndex >= 2,
-                "First pause must happen after at least the first batch has processed");
-        assertTrue(lastPauseIndex < eventLog.size() - 1,
-                "Last pause must happen before the final batch finishes processing");
-        assertNotEquals(firstPauseIndex, lastPauseIndex,
-                "There must be distinct pauses between batches");
+        assertEquals(2, firstPauseIndex, "First pause must happen immediately after the 2 spaces of Batch 1");
+        assertEquals(5, lastPauseIndex, "Second pause must happen immediately after the 2 spaces of Batch 2");
+
+        // Batch 1 spaces are before first pause
+        assertTrue(eventLog.subList(0, 2).containsAll(List.of("process-BatchTown1", "process-BatchTown2")),
+                "Batch 1 spaces must finish before the first pause");
+
+        // Batch 2 spaces are between first and second pause
+        assertTrue(eventLog.subList(3, 5).containsAll(List.of("process-BatchTown3", "process-BatchTown4")),
+                "Batch 2 spaces must finish between the first and second pause");
+
+        // Batch 3 space is after second pause
+        assertEquals("process-BatchTown5", eventLog.get(6),
+                "Batch 3 space must process after the second pause");
     }
 
     // --- Additional Tests: syncTown, mayor transfer, kick handling, main-thread hop, error handling ---
@@ -534,21 +568,163 @@ class DefaultSyncServiceTest {
                 Optional.empty(), 10, 1000.0, 5000L);
 
         when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+        // Mayor and Res already hold townRole
         when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(mayorDiscordId, resDiscordId));
+        // Neither holds mayorRole in Discord yet -> Mayor is missing mayorRole (1 actual grant)
+        when(discordGateway.roleHolders(mayorRole)).thenReturn(Set.of());
+        // Resident holds otherTownRole in Discord -> Resident holds unjustified role (1 actual revoke)
+        when(discordGateway.roleHolders(otherTownRole)).thenReturn(Set.of(resDiscordId));
 
         SyncReport report = service.syncTown(townUuid).join();
 
         assertEquals(1, report.spacesChecked());
-        // Mayor gets: townRole + mayorRole = 2 grant, otherTownRole = 1 revoke
-        // Res gets: townRole = 1 grant, mayorRole + otherTownRole = 2 revoke
+        // Mayor gets: 1 grant (mayorRole), 0 revoke
+        // Res gets: 0 grant, 1 revoke (otherTownRole)
         // Unlinked gets: 0 grant, 0 revoke
-        assertEquals(3, report.rolesGranted(),
-                "Real count of roles granted across linked residents");
-        assertEquals(3, report.rolesRevoked(),
-                "Real count of roles revoked across linked residents");
-        assertEquals(0, report.inconsistenciesFound());
-        assertEquals(0, report.inconsistenciesRepaired());
+        assertEquals(1, report.rolesGranted(),
+                "Real count of actual roles granted on Discord");
+        assertEquals(1, report.rolesRevoked(),
+                "Real count of actual roles revoked on Discord");
+        assertEquals(0, report.inconsistenciesFound(),
+                "In repair mode, resident role adjustments increment inconsistenciesRepaired rather than inconsistenciesFound");
+        assertEquals(2, report.inconsistenciesRepaired(),
+                "Real count of repairs performed");
         assertTrue(report.problems().isEmpty());
+
+        // Assert actual operations submitted to Discord
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway, times(2)).submit(captor.capture());
+        List<GuildOperation> ops = captor.getAllValues();
+
+        GuildOperation.ApplyMemberRoles mayorOp = ops.stream()
+                .filter(o -> o instanceof GuildOperation.ApplyMemberRoles)
+                .map(o -> (GuildOperation.ApplyMemberRoles) o)
+                .filter(o -> o.discordId().equals(mayorDiscordId))
+                .findFirst().orElseThrow();
+        assertEquals(List.of(mayorRole), mayorOp.grantRoleIds(),
+                "Mayor must actually receive missing mayor role");
+        assertTrue(mayorOp.revokeRoleIds().isEmpty(),
+                "Mayor holds no unjustified roles to revoke");
+
+        GuildOperation.ApplyMemberRoles resOp = ops.stream()
+                .filter(o -> o instanceof GuildOperation.ApplyMemberRoles)
+                .map(o -> (GuildOperation.ApplyMemberRoles) o)
+                .filter(o -> o.discordId().equals(resDiscordId))
+                .findFirst().orElseThrow();
+        assertTrue(resOp.grantRoleIds().isEmpty(),
+                "Resident is not missing any roles");
+        assertEquals(List.of(otherTownRole), resOp.revokeRoleIds(),
+                "Resident must actually lose unjustified otherTownRole");
+    }
+
+    @Test
+    @DisplayName("An already-correct town produces zero grants and zero revokes on subsequent pass")
+    void alreadyCorrectTownProducesZeroGrantsAndZeroRevokes() {
+        UUID townUuid = UUID.randomUUID();
+        UUID mayorUuid = UUID.randomUUID();
+        UUID resUuid = UUID.randomUUID();
+
+        String mayorDiscordId = "discord-mayor";
+        String resDiscordId = "discord-res";
+
+        spyLinkRepository.save(new AccountLink(mayorUuid, mayorDiscordId, clock.instant(), "MayorPlayer"));
+        spyLinkRepository.save(new AccountLink(resUuid, resDiscordId, clock.instant(), "ResidentPlayer"));
+
+        String townRole = "role-town-x";
+        String mayorRole = "role-mayor-id";
+
+        spySpaceRepository.save(new TownSpace(
+                townUuid, "TownX",
+                Optional.of("cat-1"), Optional.of("txt-x"), Optional.of("vc-x"),
+                Optional.of(townRole), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownX", mayorUuid, List.of(mayorUuid, resUuid), false,
+                Optional.empty(), 10, 1000.0, 5000L);
+
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+        // Both hold townRole
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(mayorDiscordId, resDiscordId));
+        // Mayor holds mayorRole
+        when(discordGateway.roleHolders(mayorRole)).thenReturn(Set.of(mayorDiscordId));
+
+        reset(discordGateway);
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.mayorRoleId()).thenReturn(Optional.of(mayorRole));
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(mayorDiscordId, resDiscordId));
+        when(discordGateway.roleHolders(mayorRole)).thenReturn(Set.of(mayorDiscordId));
+        when(discordGateway.existingResourceIds(any())).thenAnswer(inv -> new LinkedHashSet<>(inv.getArgument(0)));
+
+        SyncReport report = service.syncTown(townUuid).join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(0, report.rolesGranted(), "No-op pass must grant zero roles");
+        assertEquals(0, report.rolesRevoked(), "No-op pass must revoke zero roles");
+        assertEquals(0, report.inconsistenciesFound(), "No discrepancies in fully synchronized town");
+        assertEquals(0, report.inconsistenciesRepaired());
+
+        // Zero operations submitted to Discord
+        verify(discordGateway, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("Report mode detects missing role assignment and reports it without submitting mutations")
+    void reportModeDetectsMissingRoleAssignmentAndReportsItWithoutMutations() {
+        UUID townUuid = UUID.randomUUID();
+        UUID mayorUuid = UUID.randomUUID();
+        UUID resUuid = UUID.randomUUID();
+
+        String mayorDiscordId = "discord-mayor";
+        String resDiscordId = "discord-res";
+
+        spyLinkRepository.save(new AccountLink(mayorUuid, mayorDiscordId, clock.instant(), "MayorPlayer"));
+        spyLinkRepository.save(new AccountLink(resUuid, resDiscordId, clock.instant(), "ResidentPlayer"));
+
+        String townRole = "role-town-x";
+        String mayorRole = "role-mayor-id";
+
+        spySpaceRepository.save(new TownSpace(
+                townUuid, "TownX",
+                Optional.of("cat-1"), Optional.of("txt-x"), Optional.of("vc-x"),
+                Optional.of(townRole), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownX", mayorUuid, List.of(mayorUuid, resUuid), false,
+                Optional.empty(), 10, 1000.0, 5000L);
+
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+        // Alice (Mayor) holds townRole and mayorRole. Bob (Resident) should hold townRole, but DOES NOT.
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(mayorDiscordId)); // resDiscordId is missing!
+        when(discordGateway.roleHolders(mayorRole)).thenReturn(Set.of(mayorDiscordId));
+
+        PluginConfig reportConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(),
+                new PluginConfig.Sync(Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPORT, 2, Duration.ofSeconds(5)),
+                config.linking(), config.logging(), config.updates(), config.commands()
+        );
+
+        DefaultSyncService reportService = new DefaultSyncService(
+                spySpaceRepository, spyLinkRepository, discordGateway, townyFacade, reportConfig,
+                clock, Runnable::run, null, null
+        );
+
+        SyncReport report = reportService.syncTown(townUuid).join();
+
+        assertTrue(report.isReportMode());
+        assertEquals(0, report.rolesGranted(), "Report mode must never report confirmed grants");
+        assertEquals(0, report.rolesRevoked(), "Report mode must never report confirmed revocations");
+        assertEquals(1, report.proposedGrants(), "Report mode must detect Bob's missing town role assignment");
+        assertEquals(0, report.proposedRevocations());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(0, report.inconsistenciesRepaired());
+
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains(resDiscordId) && p.contains("missing roles")),
+                "Problems list must explicitly mention missing role for Bob");
+
+        verify(discordGateway, never()).submit(any());
     }
 
     @Test
@@ -589,16 +765,23 @@ class DefaultSyncServiceTest {
         when(townyFacade.resident(oldMayorUuid)).thenReturn(Optional.of(oldMayorRes));
         when(townyFacade.resident(newMayorUuid)).thenReturn(Optional.of(newMayorRes));
 
+        // Prior to mayorship transfer in Discord:
+        // Old mayor holds townRole AND role-mayor-id.
+        // New mayor holds townRole (as existing resident), but NOT role-mayor-id.
+        String mayorRole = "role-mayor-id";
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(oldMayorDiscordId, newMayorDiscordId));
+        when(discordGateway.roleHolders(mayorRole)).thenReturn(Set.of(oldMayorDiscordId));
+
         // Sync old mayor
         service.syncPlayer(oldMayorUuid).join();
         ArgumentCaptor<GuildOperation> captor1 = ArgumentCaptor.forClass(GuildOperation.class);
         verify(discordGateway).submit(captor1.capture());
         GuildOperation.ApplyMemberRoles op1 = (GuildOperation.ApplyMemberRoles) captor1.getValue();
 
-        assertTrue(op1.revokeRoleIds().contains("role-mayor-id"),
+        assertEquals(List.of(mayorRole), op1.revokeRoleIds(),
                 "Old mayor must lose mayor role");
-        assertTrue(op1.grantRoleIds().contains(townRole),
-                "Old mayor keeps town role");
+        assertTrue(op1.grantRoleIds().isEmpty(),
+                "Old mayor already holds town role, so no grant operation should be submitted");
 
         // Sync new mayor
         service.syncPlayer(newMayorUuid).join();
@@ -606,10 +789,10 @@ class DefaultSyncServiceTest {
         verify(discordGateway, times(2)).submit(captor2.capture());
         GuildOperation.ApplyMemberRoles op2 = (GuildOperation.ApplyMemberRoles) captor2.getValue();
 
-        assertTrue(op2.grantRoleIds().contains("role-mayor-id"),
+        assertEquals(List.of(mayorRole), op2.grantRoleIds(),
                 "New mayor must gain mayor role");
-        assertTrue(op2.grantRoleIds().contains(townRole),
-                "New mayor gains/keeps town role");
+        assertTrue(op2.revokeRoleIds().isEmpty(),
+                "New mayor holds no unjustified roles to revoke");
     }
 
     @Test
@@ -633,6 +816,13 @@ class DefaultSyncServiceTest {
         when(townyFacade.resident(playerUuid)).thenReturn(Optional.of(res));
         when(townyFacade.townOf(playerUuid)).thenReturn(Optional.empty());
 
+        // Kicked resident currently holds the managed town role and mayor role on Discord, plus an unmanaged role
+        String mayorRole = "role-mayor-id";
+        String unmanagedRole = "role-supporter";
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(discordId));
+        when(discordGateway.roleHolders(mayorRole)).thenReturn(Set.of(discordId));
+        when(discordGateway.roleHolders(unmanagedRole)).thenReturn(Set.of(discordId));
+
         service.syncPlayer(playerUuid).join();
 
         ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
@@ -641,10 +831,10 @@ class DefaultSyncServiceTest {
 
         assertTrue(op.grantRoleIds().isEmpty(),
                 "Player with no town must be granted zero roles");
-        assertTrue(op.revokeRoleIds().contains(townRole),
-                "Town role must be revoked");
-        assertTrue(op.revokeRoleIds().contains("role-mayor-id"),
-                "Mayor role must be revoked");
+        assertEquals(Set.of(townRole, mayorRole), Set.copyOf(op.revokeRoleIds()),
+                "All held managed roles must be revoked");
+        assertFalse(op.revokeRoleIds().contains(unmanagedRole),
+                "Unmanaged role must not be touched");
     }
 
     @Test
@@ -982,9 +1172,11 @@ class DefaultSyncServiceTest {
         // 1. Assert ZERO Discord operations submitted
         verify(discordGateway, never()).submit(any());
 
-        // 2. Assert report counts what it would have revoked
-        assertEquals(1, report.rolesRevoked(),
-                "Report mode must count what it would have revoked");
+        // 2. Assert report counts what it would have revoked in proposedRevocations, not confirmed rolesRevoked
+        assertEquals(0, report.rolesRevoked(),
+                "Report mode must not count confirmed revocations");
+        assertEquals(1, report.proposedRevocations(),
+                "Report mode must record proposed revocations");
         assertTrue(report.inconsistenciesFound() >= 1,
                 "Report mode must record the inconsistency");
         assertEquals(0, report.inconsistenciesRepaired(),
@@ -1514,6 +1706,293 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(1, report.inconsistenciesRepaired());
         verify(spaceService).restore(argThat(req -> req.townUuid().equals(townUuid)));
+    }
+
+    // --- Tests for Finding 7: Isolated Batch Failures ---
+
+    @Test
+    @DisplayName("One failing space in an earlier batch does not abort later batches and retains problems in the report")
+    void spaceFailureInEarlierBatchDoesNotAbortLaterBatchesAndRetainsProblemsInReport() {
+        // 4 spaces, batch size is 2 => Batch 1: Town 1, Town 2; Batch 2: Town 3, Town 4
+        UUID town1Uuid = UUID.randomUUID();
+        UUID town2Uuid = UUID.randomUUID();
+        UUID town3Uuid = UUID.randomUUID();
+        UUID town4Uuid = UUID.randomUUID();
+
+        spySpaceRepository.save(new TownSpace(
+                town1Uuid, "FailingTown1",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+        spySpaceRepository.save(new TownSpace(
+                town2Uuid, "HealthyTown2",
+                Optional.of("cat-1"), Optional.of("txt-2"), Optional.of("vc-2"),
+                Optional.of("role-2"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+        spySpaceRepository.save(new TownSpace(
+                town3Uuid, "HealthyTown3",
+                Optional.of("cat-1"), Optional.of("txt-3"), Optional.of("vc-3"),
+                Optional.of("role-3"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+        spySpaceRepository.save(new TownSpace(
+                town4Uuid, "HealthyTown4",
+                Optional.of("cat-1"), Optional.of("txt-4"), Optional.of("vc-4"),
+                Optional.of("role-4"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        // Town 1 throws an unexpected runtime exception during lookup
+        when(townyFacade.town(town1Uuid)).thenThrow(new RuntimeException("Simulated database failure for Town 1"));
+
+        // Towns 2, 3, 4 return healthy snapshots
+        TownSnapshot snap2 = new TownSnapshot(town2Uuid, "HealthyTown2", UUID.randomUUID(), List.of(), false, Optional.empty(), 1, 100.0, 1000L);
+        TownSnapshot snap3 = new TownSnapshot(town3Uuid, "HealthyTown3", UUID.randomUUID(), List.of(), false, Optional.empty(), 1, 100.0, 1000L);
+        TownSnapshot snap4 = new TownSnapshot(town4Uuid, "HealthyTown4", UUID.randomUUID(), List.of(), false, Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(town2Uuid)).thenReturn(Optional.of(snap2));
+        when(townyFacade.town(town3Uuid)).thenReturn(Optional.of(snap3));
+        when(townyFacade.town(town4Uuid)).thenReturn(Optional.of(snap4));
+
+        // Reconcile all
+        SyncReport report = service.reconcileAll().join();
+
+        // Assert: The report was not discarded, and all 4 spaces were checked across both batches
+        assertEquals(4, report.spacesChecked(), "All 4 spaces must be checked despite failure in Batch 1");
+
+        // Assert: Batch 2 spaces were indeed processed
+        verify(townyFacade).town(town3Uuid);
+        verify(townyFacade).town(town4Uuid);
+
+        // Assert: Problems list retains the failure for Town 1
+        assertTrue(report.inconsistenciesFound() >= 1, "Must record inconsistency for the failed space");
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("FailingTown1") || p.contains("Town 1")),
+                "Problems list must retain the failure details for Town 1");
+    }
+
+    // --- Tests for Finding 11: Global Mayor Role Auditing ---
+
+    @Test
+    @DisplayName("Audit mayor role: unjustified holder loses mayor role in repair mode while legitimate mayors are unaffected")
+    void auditMayorRoleRevokesUnjustifiedHolderInRepairMode() {
+        UUID mayorAliceUuid = UUID.randomUUID();
+        String aliceDiscordId = "discord-alice";
+        spyLinkRepository.save(new AccountLink(mayorAliceUuid, aliceDiscordId, clock.instant(), "Alice"));
+
+        UUID townAUuid = UUID.randomUUID();
+        TownSpace spaceA = new TownSpace(
+                townAUuid, "TownA",
+                Optional.of("cat-1"), Optional.of("txt-a"), Optional.of("vc-a"),
+                Optional.of("role-town-a"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spySpaceRepository.save(spaceA);
+
+        TownSnapshot townA = new TownSnapshot(
+                townAUuid, "TownA", mayorAliceUuid, List.of(mayorAliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townAUuid)).thenReturn(Optional.of(townA));
+        when(townyFacade.allTowns()).thenReturn(List.of(townA));
+
+        // In Discord, both legitimate mayor Alice and intruder Eve hold the global mayor role
+        String mayorRoleId = "role-mayor-id";
+        String eveDiscordId = "discord-eve";
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of(aliceDiscordId, eveDiscordId));
+        when(discordGateway.roleHolders("role-town-a")).thenReturn(Set.of(aliceDiscordId));
+
+        SyncReport report = service.reconcileAll().join();
+
+        // Capture Discord operations
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway, atLeastOnce()).submit(captor.capture());
+
+        // Eve must have mayor role revoked
+        GuildOperation.ApplyMemberRoles eveOp = captor.getAllValues().stream()
+                .filter(op -> op instanceof GuildOperation.ApplyMemberRoles a && a.discordId().equals(eveDiscordId))
+                .map(op -> (GuildOperation.ApplyMemberRoles) op)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected ApplyMemberRoles operation for intruder Eve"));
+
+        assertEquals(List.of(mayorRoleId), eveOp.revokeRoleIds(), "Intruder Eve must have mayor role revoked");
+        assertTrue(eveOp.grantRoleIds().isEmpty());
+
+        // Alice must NOT have mayor role revoked
+        boolean aliceMayorRevoked = captor.getAllValues().stream()
+                .filter(op -> op instanceof GuildOperation.ApplyMemberRoles a && a.discordId().equals(aliceDiscordId))
+                .map(op -> (GuildOperation.ApplyMemberRoles) op)
+                .anyMatch(a -> a.revokeRoleIds().contains(mayorRoleId));
+        assertFalse(aliceMayorRevoked, "Legitimate mayor Alice must not have mayor role revoked");
+
+        assertTrue(report.rolesRevoked() >= 1, "Must count revoked mayor role");
+    }
+
+    @Test
+    @DisplayName("Audit mayor role: report mode reports proposed revocation without submitting mutations")
+    void auditMayorRoleInReportModeDoesNotMutateAndReportsProposedRevocation() {
+        PluginConfig.Sync reportSyncConfig = new PluginConfig.Sync(
+                Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPORT, 10, Duration.ofSeconds(5));
+        PluginConfig reportConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), reportSyncConfig, config.linking(),
+                config.logging(), config.updates(), config.commands());
+
+        DefaultSyncService reportService = new DefaultSyncService(
+                spySpaceRepository,
+                spyLinkRepository,
+                discordGateway,
+                townyFacade,
+                reportConfig,
+                clock,
+                Runnable::run
+        );
+
+        UUID mayorAliceUuid = UUID.randomUUID();
+        String aliceDiscordId = "discord-alice";
+        spyLinkRepository.save(new AccountLink(mayorAliceUuid, aliceDiscordId, clock.instant(), "Alice"));
+
+        UUID townAUuid = UUID.randomUUID();
+        TownSpace spaceA = new TownSpace(
+                townAUuid, "TownA",
+                Optional.of("cat-1"), Optional.of("txt-a"), Optional.of("vc-a"),
+                Optional.of("role-town-a"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spySpaceRepository.save(spaceA);
+
+        TownSnapshot townA = new TownSnapshot(
+                townAUuid, "TownA", mayorAliceUuid, List.of(mayorAliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townAUuid)).thenReturn(Optional.of(townA));
+        when(townyFacade.allTowns()).thenReturn(List.of(townA));
+
+        String mayorRoleId = "role-mayor-id";
+        String eveDiscordId = "discord-eve";
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of(aliceDiscordId, eveDiscordId));
+        when(discordGateway.roleHolders("role-town-a")).thenReturn(Set.of(aliceDiscordId));
+
+        SyncReport report = reportService.reconcileAll().join();
+
+        // Zero mutations submitted
+        verify(discordGateway, never()).submit(any());
+
+        // Confirmed revocations must be 0, proposed revocations must be >= 1
+        assertEquals(0, report.rolesRevoked(), "Report mode must not perform confirmed revocations");
+        assertTrue(report.proposedRevocations() >= 1, "Report mode must count proposed revocations for mayor role");
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains(eveDiscordId) && p.contains(mayorRoleId)),
+                "Problems list must identify Eve holding the mayor role");
+    }
+
+    @Test
+    @DisplayName("Audit mayor role: legitimate mayor whose town has no registered space keeps their role")
+    void auditMayorRolePreservesLegitimateMayorWhoseTownHasNoSpace() {
+        UUID charlieUuid = UUID.randomUUID();
+        String charlieDiscordId = "discord-charlie";
+        spyLinkRepository.save(new AccountLink(charlieUuid, charlieDiscordId, clock.instant(), "Charlie"));
+
+        UUID townNoSpaceUuid = UUID.randomUUID();
+        TownSnapshot townNoSpace = new TownSnapshot(
+                townNoSpaceUuid, "NoSpaceTown", charlieUuid, List.of(charlieUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+
+        // Town exists in Towny but NOT in spaceRepository
+        when(townyFacade.allTowns()).thenReturn(List.of(townNoSpace));
+
+        String mayorRoleId = "role-mayor-id";
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of(charlieDiscordId));
+
+        SyncReport report = service.reconcileAll().join();
+
+        // Charlie legitimately holds the mayor role: no revocation should be submitted
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway, atLeast(0)).submit(captor.capture());
+
+        boolean charlieRevoked = captor.getAllValues().stream()
+                .filter(op -> op instanceof GuildOperation.ApplyMemberRoles a && a.discordId().equals(charlieDiscordId))
+                .map(op -> (GuildOperation.ApplyMemberRoles) op)
+                .anyMatch(a -> a.revokeRoleIds().contains(mayorRoleId));
+        assertFalse(charlieRevoked, "Charlie is legitimate mayor of NoSpaceTown and must not lose mayor role");
+        assertEquals(0, report.rolesRevoked());
+    }
+
+    @Test
+    @DisplayName("Audit mayor role: legitimate mayor whose town has no registered space is granted missing mayor role")
+    void auditMayorRoleGrantsMissingRoleToLegitimateMayorWhoseTownHasNoSpace() {
+        UUID charlieUuid = UUID.randomUUID();
+        String charlieDiscordId = "discord-charlie";
+        spyLinkRepository.save(new AccountLink(charlieUuid, charlieDiscordId, clock.instant(), "Charlie"));
+
+        UUID townNoSpaceUuid = UUID.randomUUID();
+        TownSnapshot townNoSpace = new TownSnapshot(
+                townNoSpaceUuid, "NoSpaceTown", charlieUuid, List.of(charlieUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+
+        // Alice has mayor role, Charlie does not
+        String mayorRoleId = "role-mayor-id";
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of("discord-alice"));
+
+        // Alice is also a verified mayor
+        UUID aliceUuid = UUID.randomUUID();
+        spyLinkRepository.save(new AccountLink(aliceUuid, "discord-alice", clock.instant(), "Alice"));
+        UUID townAliceUuid = UUID.randomUUID();
+        TownSnapshot townAlice = new TownSnapshot(
+                townAliceUuid, "AliceTown", aliceUuid, List.of(aliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.allTowns()).thenReturn(List.of(townNoSpace, townAlice));
+
+        SyncReport report = service.reconcileAll().join();
+
+        // Charlie must be granted the mayor role
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway, atLeastOnce()).submit(captor.capture());
+
+        GuildOperation.ApplyMemberRoles charlieOp = captor.getAllValues().stream()
+                .filter(op -> op instanceof GuildOperation.ApplyMemberRoles a && a.discordId().equals(charlieDiscordId))
+                .map(op -> (GuildOperation.ApplyMemberRoles) op)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected ApplyMemberRoles operation for mayor Charlie"));
+
+        assertTrue(charlieOp.grantRoleIds().contains(mayorRoleId), "Charlie must be granted the mayor role");
+        assertTrue(report.rolesGranted() >= 1, "Must record role granted");
+    }
+
+    @Test
+    @DisplayName("Audit mayor role: empty or failed holder lookup or failed Towny read revokes nothing")
+    void auditMayorRoleEmptyOrFailedLookupRevokesNothing() {
+        String mayorRoleId = "role-mayor-id";
+        UUID aliceUuid = UUID.randomUUID();
+        String aliceDiscordId = "discord-alice";
+        spyLinkRepository.save(new AccountLink(aliceUuid, aliceDiscordId, clock.instant(), "Alice"));
+
+        TownSnapshot townA = new TownSnapshot(
+                UUID.randomUUID(), "TownA", aliceUuid, List.of(aliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.allTowns()).thenReturn(List.of(townA));
+
+        // Subcase A: Gateway roleHolders throws exception
+        when(discordGateway.roleHolders(mayorRoleId)).thenThrow(new IllegalStateException("Gateway timeout"));
+
+        SyncReport reportThrown = service.reconcileAll().join();
+        assertEquals(0, reportThrown.rolesRevoked(), "Exception in roleHolders must revoke nothing");
+        assertTrue(reportThrown.inconsistenciesFound() >= 1);
+        assertTrue(reportThrown.problems().stream().anyMatch(p -> p.contains("mayor") && p.contains("Gateway timeout")));
+
+        // Subcase B: roleHolders returns empty set when verified mayors exist (cache cold)
+        reset(discordGateway);
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.mayorRoleId()).thenReturn(Optional.of(mayorRoleId));
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of());
+
+        SyncReport reportEmpty = service.reconcileAll().join();
+        assertEquals(0, reportEmpty.rolesRevoked(), "Empty roleHolders lookup must revoke nothing");
+        assertTrue(reportEmpty.inconsistenciesFound() >= 1);
+        assertTrue(reportEmpty.problems().stream().anyMatch(p ->
+                p.toLowerCase().contains("cold") || p.toLowerCase().contains("cache") || p.toLowerCase().contains("empty")));
+        verify(discordGateway, never()).submit(any());
+
+        // Subcase C: TownyFacade.allTowns() throws TownyReadException
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of("discord-eve"));
+        when(townyFacade.allTowns()).thenThrow(new TownyReadException("Towny data unavailable"));
+
+        SyncReport reportTownyFailed = service.reconcileAll().join();
+        assertEquals(0, reportTownyFailed.rolesRevoked(), "Towny read failure must revoke nothing");
+        assertTrue(reportTownyFailed.inconsistenciesFound() >= 1);
+        assertTrue(reportTownyFailed.problems().stream().anyMatch(p -> p.contains("Towny read failed")));
+        verify(discordGateway, never()).submit(any());
     }
 }
 

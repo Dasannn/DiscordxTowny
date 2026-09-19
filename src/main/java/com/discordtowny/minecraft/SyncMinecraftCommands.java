@@ -11,7 +11,6 @@ import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
-import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -325,65 +324,70 @@ public final class SyncMinecraftCommands {
         }
 
         if (isReportMode) {
-            replyReportMode(sender, report);
+            replyReportMode(sender, report, messages);
             return;
         }
 
         if (!report.problems().isEmpty() || report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
-            replyFailures(sender, report);
+            replyFailures(sender, report, messages);
             return;
         }
 
         sender.sendMessage(messages.get("sync.finished"));
     }
 
-    private static void replyReportMode(CommandSender sender, SyncService.SyncReport report) {
+    private static void replyReportMode(CommandSender sender, SyncService.SyncReport report, Messages messages) {
         if (report.inconsistenciesFound() > 0) {
-            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&8[&bDiscordTowny&8] &e[Report Mode] Found &f" + report.inconsistenciesFound()
-                            + " &ediscrepancy(ies) (deliberately not modified)."));
+            sender.sendMessage(messages.get("sync.report-found", Map.of(
+                    "count", String.valueOf(report.inconsistenciesFound())
+            )));
             if (report.rolesGranted() > 0 || report.rolesRevoked() > 0) {
-                sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                        "&8[&bDiscordTowny&8] &7Pending changes: &f" + report.rolesGranted()
-                                + " &7roles to grant, &f" + report.rolesRevoked() + " &7roles to revoke."));
+                sender.sendMessage(messages.get("sync.report-pending", Map.of(
+                        "granted", String.valueOf(report.rolesGranted()),
+                        "revoked", String.valueOf(report.rolesRevoked())
+                )));
             }
         } else {
-            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&8[&bDiscordTowny&8] &a[Report Mode] Scan finished: no discrepancies found across &f"
-                            + report.spacesChecked() + " &aspace(s)."));
+            sender.sendMessage(messages.get("sync.report-clean", Map.of(
+                    "spaces", String.valueOf(report.spacesChecked())
+            )));
         }
 
         if (!report.problems().isEmpty()) {
-            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&8[&bDiscordTowny&8] &c[Report Mode] Encountered &f" + report.problems().size()
-                            + " &cproblem(s):"));
+            sender.sendMessage(messages.get("sync.problems-header", Map.of(
+                    "count", String.valueOf(report.problems().size())
+            )));
             for (String problem : report.problems()) {
-                sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                        "&8[&bDiscordTowny&8] &c- &f" + problem));
+                sender.sendMessage(messages.get("sync.problem-entry", Map.of(
+                        "problem", problem
+                )));
             }
         }
     }
 
-    private static void replyFailures(CommandSender sender, SyncService.SyncReport report) {
+    private static void replyFailures(CommandSender sender, SyncService.SyncReport report, Messages messages) {
         if (report.inconsistenciesRepaired() > 0 || report.rolesGranted() > 0 || report.rolesRevoked() > 0) {
-            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&8[&bDiscordTowny&8] &eRepaired &f" + report.inconsistenciesRepaired()
-                            + " &einconsistency(ies) (&f" + report.rolesGranted() + " &egranted, &f"
-                            + report.rolesRevoked() + " &erevoked)."));
+            sender.sendMessage(messages.get("sync.repaired", Map.of(
+                    "count", String.valueOf(report.inconsistenciesRepaired()),
+                    "granted", String.valueOf(report.rolesGranted()),
+                    "revoked", String.valueOf(report.rolesRevoked())
+            )));
         }
 
         if (!report.problems().isEmpty()) {
-            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&8[&bDiscordTowny&8] &cSynchronization finished with &f" + report.problems().size()
-                            + " &cfailure(s):"));
+            sender.sendMessage(messages.get("sync.problems-header", Map.of(
+                    "count", String.valueOf(report.problems().size())
+            )));
             for (String problem : report.problems()) {
-                sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                        "&8[&bDiscordTowny&8] &c- &f" + problem));
+                sender.sendMessage(messages.get("sync.problem-entry", Map.of(
+                        "problem", problem
+                )));
             }
         } else if (report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
             int unhandled = report.inconsistenciesFound() - report.inconsistenciesRepaired();
-            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&8[&bDiscordTowny&8] &c" + unhandled + " inconsistency(ies) could not be repaired."));
+            sender.sendMessage(messages.get("sync.unrepaired", Map.of(
+                    "count", String.valueOf(unhandled)
+            )));
         }
     }
 

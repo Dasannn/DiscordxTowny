@@ -1,5 +1,8 @@
 package com.discordtowny.sync;
 
+import com.discordtowny.config.PluginConfig;
+
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -30,12 +33,55 @@ public interface SyncService {
      */
     CompletableFuture<SyncReport> reconcileAll();
 
-    /** What was found and what was done. */
+    /**
+     * What was found and what was done.
+     *
+     * <p>Distinguishes confirmed changes applied to Discord from proposed changes
+     * discovered in report-only mode.
+     */
     record SyncReport(
             int spacesChecked,
             int rolesGranted,
             int rolesRevoked,
             int inconsistenciesFound,
             int inconsistenciesRepaired,
-            java.util.List<String> problems) {}
+            List<String> problems,
+            PluginConfig.Sync.Mode mode,
+            int proposedRolesGranted,
+            int proposedRolesRevoked) {
+
+        public SyncReport {
+            problems = problems != null ? List.copyOf(problems) : List.of();
+            mode = mode != null ? mode : PluginConfig.Sync.Mode.REPAIR;
+        }
+
+        /**
+         * Backward-compatible constructor for repair mode without proposed changes.
+         */
+        public SyncReport(
+                int spacesChecked,
+                int rolesGranted,
+                int rolesRevoked,
+                int inconsistenciesFound,
+                int inconsistenciesRepaired,
+                List<String> problems) {
+            this(spacesChecked, rolesGranted, rolesRevoked, inconsistenciesFound,
+                    inconsistenciesRepaired, problems, PluginConfig.Sync.Mode.REPAIR, 0, 0);
+        }
+
+        /** True if this report was generated in REPORT mode. */
+        public boolean isReportMode() {
+            return mode == PluginConfig.Sync.Mode.REPORT;
+        }
+
+        /** Alias for {@link #proposedRolesGranted()}. */
+        public int proposedGrants() {
+            return proposedRolesGranted;
+        }
+
+        /** Alias for {@link #proposedRolesRevoked()}. */
+        public int proposedRevocations() {
+            return proposedRolesRevoked;
+        }
+    }
 }
