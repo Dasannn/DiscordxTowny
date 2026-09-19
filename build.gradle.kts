@@ -1,3 +1,5 @@
+import java.util.zip.ZipFile
+
 plugins {
     `java-library`
     id("com.gradleup.shadow") version "9.2.2"
@@ -66,7 +68,9 @@ tasks.shadowJar {
         "org.apache.commons.collections4",
         "com.fasterxml.jackson",
         "org.slf4j",
-        "org.sqlite",
+        // org.sqlite is NOT relocated: META-INF/services/java.sql.Driver names the
+        // driver class as text, relocation does not rewrite it, and the driver then
+        // registers a class that no longer exists. The pool fails to open at all.
     ).forEach { relocate(it, "com.discordtowny.lib.$it") }
 
     // Sin minimize: JDA carga clases por reflexion y el recorte las elimina.
@@ -83,4 +87,33 @@ tasks.processResources {
     filesMatching("paper-plugin.yml") {
         expand(values)
     }
+}
+
+// A JDBC driver registers itself through META-INF/services/java.sql.Driver, which
+// names its class as plain text. Relocating the driver rewrites the class but not
+// that text, so the driver registers a class that no longer exists and the pool
+// never opens. Unit tests cannot see this: they use the driver from the classpath
+// and never open the shaded jar. Only running the real jar showed it.
+val verifyJdbcDriverIsResolvable by tasks.registering {
+    dependsOn(tasks.shadowJar)
+    doLast {
+        val jar = tasks.shadowJar.get().archiveFile.get().asFile
+        ZipFile(jar).use { zip ->
+            val service = zip.getEntry("META-INF/services/java.sql.Driver")
+                ?: throw GradleException("The shaded jar declares no JDBC driver service.")
+            val declared = zip.getInputStream(service).bufferedReader().readText()
+                .lines().map { it.substringBefore('#').trim() }.first { it.isNotEmpty() }
+            if (zip.getEntry(declared.replace('.', '/') + ".class") == null) {
+                throw GradleException(
+                    "The JDBC driver service names " + declared + ", which is not in the jar. " +
+                    "It is almost certainly relocated, and a relocated driver cannot register itself."
+                )
+            }
+            logger.lifecycle("JDBC driver service resolves: " + declared)
+        }
+    }
+}
+
+tasks.build {
+    dependsOn(verifyJdbcDriverIsResolvable)
 }

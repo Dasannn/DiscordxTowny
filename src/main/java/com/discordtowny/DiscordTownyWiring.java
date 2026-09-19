@@ -141,7 +141,7 @@ public final class DiscordTownyWiring {
         Storage newStorage = null;
         try {
             if (this.storage == null) {
-                newStorage = new HikariStorage(config.database(), logger);
+                newStorage = new HikariStorage(config.database(), logger, dataFolder);
                 newStorage.initialize();
             } else {
                 newStorage = this.storage;
@@ -369,7 +369,7 @@ public final class DiscordTownyWiring {
             // Attempt recovery from degraded mode if storage was uninitialized
             if (degraded && storage == null) {
                 try {
-                    storage = new HikariStorage(newConfig.database(), logger);
+                    storage = new HikariStorage(newConfig.database(), logger, dataFolder);
                     storage.initialize();
                     degraded = false;
                     safeLog(Level.INFO, "Recovered from degraded mode: database connection established.");

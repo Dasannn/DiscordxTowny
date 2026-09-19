@@ -22,6 +22,7 @@ public final class HikariStorage implements Storage {
     private final PluginConfig.Database dbConfig;
     private final Logger logger;
 
+    private final java.nio.file.Path dataFolder;
     private HikariDataSource dataSource;
     private SqlLinkRepository linkRepo;
     private SqlSpaceRepository spaceRepo;
@@ -29,8 +30,18 @@ public final class HikariStorage implements Storage {
     private SqlSettingsRepository settingsRepo;
 
     public HikariStorage(PluginConfig.Database dbConfig, Logger logger) {
+        this(dbConfig, logger, null);
+    }
+
+    /**
+     * @param dataFolder the plugin's own folder, which is where a SQLite file
+     *     belongs. Without it the configured name resolves against the server's
+     *     working directory, leaving the database loose in the server root.
+     */
+    public HikariStorage(PluginConfig.Database dbConfig, Logger logger, java.nio.file.Path dataFolder) {
         this.dbConfig = dbConfig;
         this.logger = logger;
+        this.dataFolder = dataFolder;
     }
 
     // --- Storage ---
@@ -121,10 +132,15 @@ public final class HikariStorage implements Storage {
         try {
             return new HikariDataSource(config);
         } catch (Exception e) {
-            // Do not propagate the original exception: it may contain the URL with credentials.
+            // The original exception can carry the URL, and the URL can carry the
+            // password: report the cause, with that value masked. Saying nothing
+            // was safe and made the failure impossible to diagnose.
+            boolean sqlite = dbConfig.type() == PluginConfig.Database.Type.SQLITE;
             throw new StorageException(
-                "Failed to create connection pool (" + dbConfig.type() + "). "
-                + "Check host, port, database name, and credentials in config.yml.");
+                "Failed to create connection pool (" + dbConfig.type() + "): " + rootCauseDetail(e) + ". "
+                + (sqlite
+                    ? "Check that the plugin folder is writable and that no other process holds the file."
+                    : "Check host, port, database name, and credentials in config.yml."));
         }
     }
 
@@ -178,12 +194,42 @@ public final class HikariStorage implements Storage {
      * tests to pass a temporary file. In production the plugin will overwrite
      * this method or pass the correct path.
      */
+    /** Class and message of the deepest cause, with the configured password masked. */
+    private String rootCauseDetail(Throwable e) {
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage() == null ? "" : root.getMessage();
+        String password = dbConfig.password();
+        if (password != null && !password.isBlank()) {
+            message = message.replace(password, "[REDACTED]");
+        }
+        return root.getClass().getSimpleName() + (message.isBlank() ? "" : ": " + message);
+    }
+
     private String sqliteFilePath() {
         String name = dbConfig.name();
-        if (name != null && !name.isBlank()) {
-            return name;
+        if (name == null || name.isBlank()) {
+            name = "discordtowny";
         }
-        return "discordtowny.db";
+        name = name.trim();
+        if (!name.toLowerCase(java.util.Locale.ROOT).endsWith(".db")) {
+            name = name + ".db";
+        }
+        java.nio.file.Path file = java.nio.file.Path.of(name);
+        if (!file.isAbsolute() && dataFolder != null) {
+            file = dataFolder.resolve(file);
+        }
+        java.nio.file.Path parent = file.getParent();
+        if (parent != null) {
+            try {
+                java.nio.file.Files.createDirectories(parent);
+            } catch (java.io.IOException e) {
+                throw new StorageException("Could not create the folder for the database: " + parent, e);
+            }
+        }
+        return file.toString();
     }
 
     HikariDataSource dataSource() {
