@@ -293,7 +293,7 @@ even with many towns. No empty embed for a non-existent entity.
 ## T10 — Updater
 
 - **Branch**: `feat/actualizador` · **Phase** 6 · **Depends on**: T0
-- **Parallel to**: almost everything · **Status**: pending · **Zone**: `update/`
+- **Parallel to**: almost everything · **Status**: integrated · **Zone**: `update/`
 
 **Builds**
 
