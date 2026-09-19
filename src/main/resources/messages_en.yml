@@ -7,6 +7,9 @@
 prefix: "&8[&bDiscordTowny&8] &r"
 
 general:
+  resident-not-found: "&cThere is no resident named &f{resident}&c."
+  towny-read-failed: "&cTowny could not be read right now. Try again in a moment."
+  no-towns-found: "&7There are no towns on this server yet."
   no-permission: "&cYou do not have permission to use this."
   players-only: "&cThis command only works in-game."
   unknown-command: "&cUnknown command. Use &f/dt help&c."
@@ -68,3 +71,28 @@ admin:
   purge-confirm: "&cThis will permanently delete {count} archived spaces. Repeat the command to confirm."
   purged: "&aDeleted {count} archived spaces."
   unlinked: "&a{player} no longer has a linked account."
+
+# Labels for the embeds the bot publishes in Discord. Spec 9.1: the language
+# setting covers these too, so they are not hard-coded in the code.
+embed:
+  town: "Town"
+  mayor: "Mayor"
+  residents: "Residents"
+  resident: "Resident"
+  nation: "Nation"
+  founded: "Founded"
+  bank: "Bank"
+  balance: "Balance"
+  plots: "Plots"
+  status: "Status"
+  rank: "Rank"
+  online: "Online"
+  offline: "Offline"
+  ruined: "Ruined"
+  none: "None"
+  unknown: "Unknown"
+  yes: "Yes"
+  no: "No"
+  page: "Page {current} of {total}"
+  next: "Next"
+  previous: "Previous"
