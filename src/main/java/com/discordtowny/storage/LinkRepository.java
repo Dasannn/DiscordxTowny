@@ -77,6 +77,18 @@ public interface LinkRepository {
     ConsumeOutcome consumeCodeAndLink(String code, String discordId, String lastKnownName,
                                       java.time.Instant now);
 
+    /**
+     * Refreshes the display name stored with a link.
+     *
+     * <p>{@code lastKnownName} is captured when the code is generated and is
+     * only ever shown, never matched against: a player who changes their name
+     * would otherwise be listed under the old one forever. Synchronization
+     * refreshes it when the player joins.
+     *
+     * <p>Does nothing when there is no link for that player.
+     */
+    void updateLastKnownName(UUID uuid, String lastKnownName);
+
     /** Result of {@link #consumeCodeAndLink}. */
     record ConsumeOutcome(ConsumeResult result, Optional<AccountLink> link) {
 

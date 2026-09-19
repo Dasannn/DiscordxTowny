@@ -229,6 +229,19 @@ final class SqlLinkRepository implements LinkRepository {
      * in place: a uniqueness collision must not burn the player's code.
      */
     @Override
+    public void updateLastKnownName(UUID uuid, String lastKnownName) {
+        String sql = "UPDATE " + tLinks + " SET last_known_name = ? WHERE uuid = ?";
+        try (Connection conn = ds.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, lastKnownName);
+            ps.setString(2, uuid.toString());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new StorageException("Error updating the name of the link for " + uuid, e);
+        }
+    }
+
+    @Override
     public ConsumeOutcome consumeCodeAndLink(String code, String discordId, String lastKnownName,
                                              Instant now) {
         String sel = "SELECT uuid, expires_at FROM " + tCodes + " WHERE code = ?";

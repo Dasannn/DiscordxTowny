@@ -305,4 +305,23 @@ class LinkRepositoryTest extends StorageTestBase {
                 "Must not delete a link different from the authorized one");
         assertTrue(links.findByUuid(uuid).isPresent(), "The new link remains intact");
     }
+
+    @Test
+    void refreshingTheNameChangesOnlyTheNameAndIgnoresPlayersWithoutALink() {
+        UUID uuid = UUID.randomUUID();
+        Instant when = Instant.ofEpochMilli(1_700_000_000_000L);
+        links.save(new AccountLink(uuid, "discord_1", when, "OldName"));
+
+        links.updateLastKnownName(uuid, "NewName");
+
+        AccountLink stored = links.findByUuid(uuid).orElseThrow();
+        assertEquals("NewName", stored.lastKnownName());
+        assertEquals("discord_1", stored.discordId(), "The link itself must not change");
+        assertEquals(when, stored.linkedAt());
+
+        // A player with no link is not an error and creates nothing.
+        UUID stranger = UUID.randomUUID();
+        links.updateLastKnownName(stranger, "Ghost");
+        assertTrue(links.findByUuid(stranger).isEmpty());
+    }
 }
