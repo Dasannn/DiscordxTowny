@@ -160,6 +160,13 @@ The reviewer does not touch the code because a fix from them would enter unrevie
 The only exception is obvious typos in text or comments, noted in the
 report.
 
+Every review works through `docs/review-checklist.md`, which lists what this
+project has actually got wrong: the thread rules, identity by ID and never by
+name, success reported without doing the work, a failed read passing for an
+answer, the message catalogue, and the ways a test can lie. It exists so that
+the rigour of a review does not depend on how each assignment happened to be
+worded that day.
+
 ### What it reviews
 
 - Meets the acceptance criterion for its task.
