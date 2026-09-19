@@ -17,11 +17,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Default implementation of {@link SpaceService}.
@@ -43,6 +45,10 @@ public final class DefaultSpaceService implements SpaceService {
     private final Clock clock;
     private final Executor executor;
 
+    private final Object admissionLock = new Object();
+    private final Set<UUID> pendingTowns = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> pendingMayors = ConcurrentHashMap.newKeySet();
+    private int pendingCreations = 0;
     private final ConcurrentHashMap<UUID, Instant> creationCooldowns = new ConcurrentHashMap<>();
 
     public DefaultSpaceService(
@@ -67,11 +73,12 @@ public final class DefaultSpaceService implements SpaceService {
 
     @Override
     public CompletableFuture<CreateResult> create(SpaceRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            if (request == null || request.townUuid() == null || request.townName() == null || request.townName().isBlank()) {
-                return CompletableFuture.completedFuture(CreateResult.FAILED);
-            }
+        if (request == null || request.townUuid() == null || request.townName() == null || request.townName().isBlank()) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("Invalid space request: town UUID and name are required"));
+        }
 
+        return CompletableFuture.supplyAsync(() -> {
             // 1. Cheap in-memory precondition: mayor must have a linked Discord account
             if (request.mayorDiscordId() == null || request.mayorDiscordId().isBlank()) {
                 return CompletableFuture.completedFuture(CreateResult.MAYOR_NOT_LINKED);
@@ -86,39 +93,80 @@ public final class DefaultSpaceService implements SpaceService {
                 return CompletableFuture.completedFuture(CreateResult.TOO_FEW_RESIDENTS);
             }
 
-            // 3. In-memory check: creation cooldown
-            Duration cooldown = config.limits().creationCooldown();
+            // 3. Atomic admission: cooldown, quota, existing space, and in-flight tracking
             Instant now = clock.instant();
+            boolean admitted = false;
+            try {
+                synchronized (admissionLock) {
+                    Optional<TownSpace> existingOpt = spaceRepository.findByTownUuid(request.townUuid());
+                    // Only an incomplete creation (no archivedAt) can be resumed through create
+                    boolean isResume = existingOpt.isPresent()
+                            && existingOpt.get().state() == SpaceState.INCONSISTENT
+                            && existingOpt.get().archivedAt().isEmpty();
 
-            Optional<TownSpace> existingOpt = spaceRepository.findByTownUuid(request.townUuid());
-            boolean isResume = existingOpt.isPresent() && existingOpt.get().state() == SpaceState.INCONSISTENT;
+                    if (pendingTowns.contains(request.townUuid())) {
+                        return CompletableFuture.completedFuture(CreateResult.ALREADY_EXISTS);
+                    }
 
-            if (!isResume && isOnCooldown(request, now, cooldown)) {
-                return CompletableFuture.completedFuture(CreateResult.ON_COOLDOWN);
-            }
+                    // 4. Database checks: does space already exist in active, archived, or interrupted-archive state?
+                    if (existingOpt.isPresent()) {
+                        TownSpace existing = existingOpt.get();
+                        if (existing.state() == SpaceState.ACTIVE
+                                || existing.state() == SpaceState.ARCHIVED
+                                || existing.archivedAt().isPresent()) {
+                            return CompletableFuture.completedFuture(CreateResult.ALREADY_EXISTS);
+                        }
+                    }
 
-            // 4. Database checks: does space already exist in active or archived state?
-            if (existingOpt.isPresent()) {
-                SpaceState state = existingOpt.get().state();
-                if (state == SpaceState.ACTIVE || state == SpaceState.ARCHIVED) {
-                    return CompletableFuture.completedFuture(CreateResult.ALREADY_EXISTS);
+                    Duration cooldown = config.limits().creationCooldown();
+                    if (!isResume && isOnCooldownLocked(request, now, cooldown)) {
+                        return CompletableFuture.completedFuture(CreateResult.ON_COOLDOWN);
+                    }
+
+                    // Capacity limit (active spaces + pending in-flight creations)
+                    int activeCount = spaceRepository.countActive();
+                    if (!isResume && (activeCount + pendingCreations) >= config.limits().maxTowns()) {
+                        return CompletableFuture.completedFuture(CreateResult.LIMIT_REACHED);
+                    }
+
+                    // 5. Discord check: bot must be connected and have required permissions (Discord last)
+                    if (!isDiscordReady()) {
+                        return CompletableFuture.completedFuture(CreateResult.DISCORD_UNAVAILABLE);
+                    }
+
+                    // Admission succeeded: reserve slot and track in-flight creation
+                    pendingTowns.add(request.townUuid());
+                    if (request.mayorUuid() != null) {
+                        pendingMayors.add(request.mayorUuid());
+                    }
+                    pendingCreations++;
+                    recordCooldown(request, now);
+                    admitted = true;
                 }
+            } catch (Throwable t) {
+                if (admitted) {
+                    releaseReservation(request);
+                }
+                throw t;
             }
 
-            // Capacity limit (active spaces)
-            if (!isResume && spaceRepository.countActive() >= config.limits().maxTowns()) {
-                return CompletableFuture.completedFuture(CreateResult.LIMIT_REACHED);
+            AtomicBoolean released = new AtomicBoolean(false);
+            Runnable release = () -> {
+                if (released.compareAndSet(false, true)) {
+                    releaseReservation(request);
+                }
+            };
+
+            CompletableFuture<OperationOutcome> submitFuture;
+            try {
+                submitFuture = discordGateway.submit(new GuildOperation.CreateSpace(request));
+            } catch (Throwable t) {
+                release.run();
+                throw t;
             }
 
-            // 5. Discord check: bot must be connected and have required permissions (Discord last)
-            if (!isDiscordReady()) {
-                return CompletableFuture.completedFuture(CreateResult.DISCORD_UNAVAILABLE);
-            }
-
-            // Record cooldown upon admitting a new creation
-            recordCooldown(request, now);
-
-            return discordGateway.submit(new GuildOperation.CreateSpace(request))
+            return submitFuture
+                    .whenComplete((outcome, ex) -> release.run())
                     .thenApply(outcome -> {
                         Instant eventTime = clock.instant();
                         String actor = request.mayorDiscordId() != null ? request.mayorDiscordId() : "mayor";
@@ -208,13 +256,22 @@ public final class DefaultSpaceService implements SpaceService {
                 return CompletableFuture.<Void>completedFuture(null);
             }
 
+            Instant now = clock.instant();
+            if (space.archivedAt().isEmpty()) {
+                TownSpace beingArchived = new TownSpace(
+                        space.townUuid(), space.townName(),
+                        space.categoryId(), space.textChannelId(), space.voiceChannelId(), space.roleId(),
+                        space.state(), space.createdAt(), Optional.of(now), space.lastActivityAt());
+                spaceRepository.save(beingArchived);
+            }
+
             return discordGateway.submit(new GuildOperation.ArchiveSpace(townUuid, space.townName()))
                     .thenAccept(outcome -> {
-                        Instant now = clock.instant();
+                        Instant eventTime = clock.instant();
                         if (outcome != null && outcome.succeeded()) {
                             spaceRepository.updateState(townUuid, SpaceState.ARCHIVED);
                             discordGateway.log(new AuditEvent(
-                                    now, AuditEvent.Severity.INFO,
+                                    eventTime, AuditEvent.Severity.INFO,
                                     "plugin", "space_archive", space.townName(), true,
                                     Optional.ofNullable(reason)));
                         } else {
@@ -222,7 +279,7 @@ public final class DefaultSpaceService implements SpaceService {
                                     ? outcome.reason().get()
                                     : "Archive operation failed";
                             discordGateway.log(new AuditEvent(
-                                    now, AuditEvent.Severity.ERROR,
+                                    eventTime, AuditEvent.Severity.ERROR,
                                     "plugin", "space_archive", space.townName(), false,
                                     Optional.of(errorReason)));
                             throw new IllegalStateException(errorReason);
@@ -248,13 +305,27 @@ public final class DefaultSpaceService implements SpaceService {
             if (space.state() == SpaceState.ACTIVE) {
                 return CompletableFuture.<Void>completedFuture(null);
             }
+            if (space.state() == SpaceState.INCONSISTENT && space.archivedAt().isEmpty()) {
+                return CompletableFuture.<Void>failedFuture(
+                        new IllegalStateException("Space is an incomplete creation, not an archived space: " + request.townUuid()));
+            }
 
             return discordGateway.submit(new GuildOperation.RestoreSpace(request))
                     .thenAccept(outcome -> {
                         Instant now = clock.instant();
                         String actor = request.mayorDiscordId() != null ? request.mayorDiscordId() : "mayor";
                         if (outcome != null && outcome.succeeded()) {
-                            spaceRepository.updateState(request.townUuid(), SpaceState.ACTIVE);
+                            Optional<TownSpace> currentOpt = spaceRepository.findByTownUuid(request.townUuid());
+                            if (currentOpt.isPresent()) {
+                                TownSpace current = currentOpt.get();
+                                spaceRepository.save(new TownSpace(
+                                        current.townUuid(), current.townName(),
+                                        current.categoryId(), current.textChannelId(), current.voiceChannelId(), current.roleId(),
+                                        SpaceState.ACTIVE,
+                                        current.createdAt(), Optional.empty(), Optional.of(now)));
+                            } else {
+                                spaceRepository.updateState(request.townUuid(), SpaceState.ACTIVE);
+                            }
                             discordGateway.log(new AuditEvent(
                                     now, AuditEvent.Severity.INFO,
                                     actor, "space_restore",
@@ -349,21 +420,41 @@ public final class DefaultSpaceService implements SpaceService {
         }
     }
 
-    private boolean isOnCooldown(SpaceRequest request, Instant now, Duration cooldown) {
+    private void releaseReservation(SpaceRequest request) {
+        synchronized (admissionLock) {
+            pendingTowns.remove(request.townUuid());
+            if (request.mayorUuid() != null) {
+                pendingMayors.remove(request.mayorUuid());
+            }
+            pendingCreations = Math.max(0, pendingCreations - 1);
+        }
+    }
+
+    private boolean isOnCooldownLocked(SpaceRequest request, Instant now, Duration cooldown) {
         if (cooldown == null || cooldown.isZero() || cooldown.isNegative()) {
             return false;
+        }
+        if (pendingTowns.contains(request.townUuid())) {
+            return true;
         }
         Instant lastTown = creationCooldowns.get(request.townUuid());
         if (lastTown != null && Duration.between(lastTown, now).compareTo(cooldown) < 0) {
             return true;
         }
         if (request.mayorUuid() != null) {
+            if (pendingMayors.contains(request.mayorUuid())) {
+                return true;
+            }
             Instant lastMayor = creationCooldowns.get(request.mayorUuid());
             if (lastMayor != null && Duration.between(lastMayor, now).compareTo(cooldown) < 0) {
                 return true;
             }
         }
         return false;
+    }
+
+    private boolean isOnCooldown(SpaceRequest request, Instant now, Duration cooldown) {
+        return isOnCooldownLocked(request, now, cooldown);
     }
 
     private void recordCooldown(SpaceRequest request, Instant now) {

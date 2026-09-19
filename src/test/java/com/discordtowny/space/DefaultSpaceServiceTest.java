@@ -192,6 +192,33 @@ class DefaultSpaceServiceTest {
     }
 
     @Test
+    @DisplayName("Concurrent creation requests by same mayor enforce cooldown atomically")
+    void concurrentCreationBySameMayorEnforcesCooldownAtomically() {
+        UUID mayorUuid = UUID.randomUUID();
+        CompletableFuture<OperationOutcome> inFlightFuture = new CompletableFuture<>();
+        when(discordGateway.submit(any(GuildOperation.CreateSpace.class)))
+                .thenReturn(inFlightFuture);
+
+        SpaceRequest req1 = new SpaceRequest(
+                UUID.randomUUID(), "TownA", mayorUuid, List.of("res1", "res2"), "mayor-discord", 2);
+        SpaceRequest req2 = new SpaceRequest(
+                UUID.randomUUID(), "TownB", mayorUuid, List.of("res1", "res2"), "mayor-discord", 2);
+
+        // Start first creation by mayor; it is admitted and remains in flight
+        CompletableFuture<CreateResult> fut1 = service.create(req1);
+
+        // Second creation by same mayor while first is in flight must fail with ON_COOLDOWN
+        CreateResult res2 = service.create(req2).join();
+        assertEquals(CreateResult.ON_COOLDOWN, res2);
+
+        // Complete first creation
+        inFlightFuture.complete(OperationOutcome.success());
+        assertEquals(CreateResult.SUCCESS, fut1.join());
+
+        verify(discordGateway, times(1)).submit(any(GuildOperation.CreateSpace.class));
+    }
+
+    @Test
     @DisplayName("Create fails with ALREADY_EXISTS when town space is already active and not on cooldown")
     void createFailsWithAlreadyExistsWhenSpaceIsAlreadyActive() {
         UUID townUuid = UUID.randomUUID();
@@ -241,6 +268,31 @@ class DefaultSpaceServiceTest {
     }
 
     @Test
+    @DisplayName("Create fails with ALREADY_EXISTS when space was interrupted during archive")
+    void createFailsWithAlreadyExistsWhenSpaceWasInterruptedDuringArchive() {
+        UUID townUuid = UUID.randomUUID();
+        // Space that was being archived: state is INCONSISTENT, but archivedAt is present
+        TownSpace interruptedArchive = new TownSpace(
+                townUuid, "Riverwood",
+                Optional.of("cat-archived"), Optional.of("txt-1"), Optional.of("voice-1"), Optional.empty(),
+                SpaceState.INCONSISTENT,
+                clock.instant().minus(Duration.ofDays(2)),
+                Optional.of(clock.instant().minus(Duration.ofDays(1))),
+                Optional.empty());
+        spaceRepository.save(interruptedArchive);
+
+        clock.advance(Duration.ofHours(1));
+
+        SpaceRequest req = new SpaceRequest(
+                townUuid, "Riverwood", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        CreateResult result = service.create(req).join();
+
+        assertEquals(CreateResult.ALREADY_EXISTS, result);
+        verify(discordGateway, never()).submit(any());
+    }
+
+    @Test
     @DisplayName("Create fails with LIMIT_REACHED when count of active spaces reaches max-towns")
     void createFailsWithLimitReachedWhenAtActiveCapacity() {
         // Limit is 2 active towns. Populate 2 active spaces.
@@ -262,6 +314,77 @@ class DefaultSpaceServiceTest {
 
         assertEquals(CreateResult.LIMIT_REACHED, result);
         verify(discordGateway, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("Concurrent creation requests enforce quota atomically with pending creation accounting")
+    void concurrentCreationEnforcesQuotaAtomically() {
+        // Limit is 2 active towns. Populate 1 active space.
+        TownSpace s1 = new TownSpace(UUID.randomUUID(), "TownOne",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("voz-1"), Optional.of("rol-1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(s1);
+        assertEquals(1, spaceRepository.countActive());
+
+        // Controlled future for the first create request
+        CompletableFuture<OperationOutcome> inFlightFuture = new CompletableFuture<>();
+        when(discordGateway.submit(any(GuildOperation.CreateSpace.class)))
+                .thenReturn(inFlightFuture);
+
+        SpaceRequest req1 = new SpaceRequest(
+                UUID.randomUUID(), "TownTwo", UUID.randomUUID(), List.of("res1", "res2"), "mayor1-discord", 2);
+        SpaceRequest req2 = new SpaceRequest(
+                UUID.randomUUID(), "TownThree", UUID.randomUUID(), List.of("res1", "res2"), "mayor2-discord", 2);
+
+        // Start first creation (it gets admitted and sits in flight)
+        CompletableFuture<CreateResult> fut1 = service.create(req1);
+
+        // Second creation arrives while first is still in flight: must be rejected with LIMIT_REACHED
+        CreateResult res2 = service.create(req2).join();
+        assertEquals(CreateResult.LIMIT_REACHED, res2);
+
+        // First creation now completes successfully
+        inFlightFuture.complete(OperationOutcome.success());
+        CreateResult res1 = fut1.join();
+        assertEquals(CreateResult.SUCCESS, res1);
+
+        // Gateway only received the first request
+        verify(discordGateway, times(1)).submit(any(GuildOperation.CreateSpace.class));
+    }
+
+    @Test
+    @DisplayName("Failed creation in flight releases capacity reservation for subsequent requests")
+    void failedCreationReleasesCapacityReservation() {
+        // Limit is 2 active towns. Populate 1 active space.
+        TownSpace s1 = new TownSpace(UUID.randomUUID(), "TownOne",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("voz-1"), Optional.of("rol-1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(s1);
+
+        CompletableFuture<OperationOutcome> inFlightFuture = new CompletableFuture<>();
+        when(discordGateway.submit(any(GuildOperation.CreateSpace.class)))
+                .thenReturn(inFlightFuture);
+
+        SpaceRequest req1 = new SpaceRequest(
+                UUID.randomUUID(), "TownTwo", UUID.randomUUID(), List.of("res1", "res2"), "mayor1-discord", 2);
+        SpaceRequest req2 = new SpaceRequest(
+                UUID.randomUUID(), "TownThree", UUID.randomUUID(), List.of("res1", "res2"), "mayor2-discord", 2);
+
+        CompletableFuture<CreateResult> fut1 = service.create(req1);
+
+        // req2 blocked because req1 holds the slot
+        assertEquals(CreateResult.LIMIT_REACHED, service.create(req2).join());
+
+        // req1 fails in Discord
+        inFlightFuture.complete(OperationOutcome.permanentFailure("Discord error"));
+        assertEquals(CreateResult.FAILED, fut1.join());
+
+        // Now that req1 has failed and released its reservation, req2 can be submitted and admitted
+        when(discordGateway.submit(any(GuildOperation.CreateSpace.class)))
+                .thenReturn(CompletableFuture.completedFuture(OperationOutcome.success()));
+
+        CreateResult res2Retry = service.create(req2).join();
+        assertEquals(CreateResult.SUCCESS, res2Retry);
     }
 
     @Test
@@ -309,17 +432,27 @@ class DefaultSpaceServiceTest {
     }
 
     @Test
-    @DisplayName("Create fails with FAILED when request parameters are invalid")
-    void createFailsWithFailedWhenRequestIsInvalid() {
-        assertEquals(CreateResult.FAILED, service.create(null).join());
+    @DisplayName("Create fails exceptionally with IllegalArgumentException when request parameters are invalid")
+    void createFailsWithIllegalArgumentExceptionWhenRequestIsInvalid() {
+        CompletionException ex1 = assertThrows(CompletionException.class, () -> service.create(null).join());
+        assertInstanceOf(IllegalArgumentException.class, ex1.getCause());
 
         SpaceRequest reqNullTown = new SpaceRequest(
                 null, "Riverwood", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
-        assertEquals(CreateResult.FAILED, service.create(reqNullTown).join());
+        CompletionException ex2 = assertThrows(CompletionException.class, () -> service.create(reqNullTown).join());
+        assertInstanceOf(IllegalArgumentException.class, ex2.getCause());
 
         SpaceRequest reqBlankName = new SpaceRequest(
                 UUID.randomUUID(), "   ", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
-        assertEquals(CreateResult.FAILED, service.create(reqBlankName).join());
+        CompletionException ex3 = assertThrows(CompletionException.class, () -> service.create(reqBlankName).join());
+        assertInstanceOf(IllegalArgumentException.class, ex3.getCause());
+
+        SpaceRequest reqNullName = new SpaceRequest(
+                UUID.randomUUID(), null, UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+        CompletionException ex4 = assertThrows(CompletionException.class, () -> service.create(reqNullName).join());
+        assertInstanceOf(IllegalArgumentException.class, ex4.getCause());
+
+        verify(discordGateway, never()).submit(any());
     }
 
     @Test
@@ -339,8 +472,8 @@ class DefaultSpaceServiceTest {
     // --- Idempotency & Resumption ---
 
     @Test
-    @DisplayName("Creation interrupted after role is resumed and completed without being rejected as ALREADY_EXISTS")
-    void creationInterruptedAfterRoleResumesAndCompletes() {
+    @DisplayName("Inconsistent row is admitted and delegated to CreateSpace without being rejected as ALREADY_EXISTS")
+    void inconsistentRowIsAdmittedAndDelegatedToCreateSpace() {
         UUID townUuid = UUID.randomUUID();
         String townName = "Falkreath";
         String existingRoleId = "role-interrupted-456";
@@ -500,6 +633,67 @@ class DefaultSpaceServiceTest {
 
         service.restore(req).join();
 
+        verify(discordGateway, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("Restore resumes an inconsistent space that was interrupted during archive")
+    void restoreResumesInconsistentArchivedSpace() {
+        UUID townUuid = UUID.randomUUID();
+        String textChannelId = "txt-existing-333";
+        String voiceChannelId = "voice-existing-444";
+
+        TownSpace interruptedArchive = new TownSpace(
+                townUuid, "Whiterun",
+                Optional.of("cat-archive"), Optional.of(textChannelId), Optional.of(voiceChannelId), Optional.empty(),
+                SpaceState.INCONSISTENT,
+                clock.instant().minus(Duration.ofDays(5)),
+                Optional.of(clock.instant().minus(Duration.ofDays(1))),
+                Optional.empty());
+        spaceRepository.save(interruptedArchive);
+
+        when(discordGateway.submit(any(GuildOperation.RestoreSpace.class))).thenAnswer(invocation -> {
+            TownSpace restored = new TownSpace(
+                    townUuid, "Whiterun",
+                    Optional.of("cat-active"), Optional.of(textChannelId), Optional.of(voiceChannelId), Optional.of("role-new-888"),
+                    SpaceState.ACTIVE,
+                    interruptedArchive.createdAt(), Optional.empty(), Optional.of(clock.instant()));
+            spaceRepository.save(restored);
+            return CompletableFuture.completedFuture(OperationOutcome.success());
+        });
+
+        SpaceRequest req = new SpaceRequest(
+                townUuid, "Whiterun", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        service.restore(req).join();
+
+        ArgumentCaptor<GuildOperation> opCaptor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway).submit(opCaptor.capture());
+        assertInstanceOf(GuildOperation.RestoreSpace.class, opCaptor.getValue());
+
+        TownSpace activeSpace = spaceRepository.findByTownUuid(townUuid).orElseThrow();
+        assertEquals(SpaceState.ACTIVE, activeSpace.state());
+        assertTrue(activeSpace.archivedAt().isEmpty());
+    }
+
+    @Test
+    @DisplayName("Restore fails when space is an incomplete creation rather than an archived space")
+    void restoreFailsWhenSpaceIsIncompleteCreation() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace incompleteCreation = new TownSpace(
+                townUuid, "Windhelm",
+                Optional.of("cat-1"), Optional.empty(), Optional.empty(), Optional.of("role-1"),
+                SpaceState.INCONSISTENT,
+                clock.instant(),
+                Optional.empty(),
+                Optional.of(clock.instant()));
+        spaceRepository.save(incompleteCreation);
+
+        SpaceRequest req = new SpaceRequest(
+                townUuid, "Windhelm", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        CompletionException ex = assertThrows(CompletionException.class, () -> service.restore(req).join());
+        assertInstanceOf(IllegalStateException.class, ex.getCause());
         verify(discordGateway, never()).submit(any());
     }
 

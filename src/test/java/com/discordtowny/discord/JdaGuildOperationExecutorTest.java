@@ -6,16 +6,23 @@ import com.discordtowny.model.SpaceState;
 import com.discordtowny.model.TownSpace;
 import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
+import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.PermissionOverride;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.channel.concrete.Category;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
 import net.dv8tion.jda.api.exceptions.ErrorResponseException;
 import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
+import net.dv8tion.jda.api.managers.channel.concrete.TextChannelManager;
+import net.dv8tion.jda.api.managers.channel.concrete.VoiceChannelManager;
 import net.dv8tion.jda.api.requests.ErrorResponse;
 import net.dv8tion.jda.api.requests.restaction.AuditableRestAction;
+import net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction;
+import net.dv8tion.jda.api.requests.restaction.RoleAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,6 +37,7 @@ import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -42,6 +50,11 @@ import static org.mockito.Mockito.*;
  * <ul>
  *   <li>that ApplyMemberRoles only touches roles managed by the plugin,</li>
  *   <li>that a retry does not duplicate already created categories or roles,</li>
+ *   <li>that crash recovery reclaims created channels across categories (F1),</li>
+ *   <li>that an unowned role collision is never adopted (F2),</li>
+ *   <li>that missing required resources during restore or rename fail visibly (F5),</li>
+ *   <li>that archiving preserves channels and role deletion (F9),</li>
+ *   <li>that restoration returns the exact same channel IDs without creation/deletion (F10),</li>
  *   <li>that the token is masked in error messages.</li>
  * </ul>
  */
@@ -75,6 +88,23 @@ class JdaGuildOperationExecutorTest {
         when(rolesConfig.mayorRoleName()).thenReturn("Alcalde");
         when(rolesConfig.townRoleName()).thenReturn("{town}");
         when(discordConfig.token()).thenReturn("token-secreto-12345");
+    }
+
+    @SuppressWarnings("unchecked")
+    private Role mockRoleCreation(String roleId, String roleName) {
+        Role role = mock(Role.class);
+        when(role.getId()).thenReturn(roleId);
+        when(role.getName()).thenReturn(roleName);
+        when(guild.getRoleById(roleId)).thenReturn(role);
+        when(guild.getRolesByName(eq(roleName), anyBoolean())).thenReturn(Collections.emptyList());
+
+        RoleAction roleAction = mock(RoleAction.class);
+        when(guild.createRole()).thenReturn(roleAction);
+        when(roleAction.setName(any())).thenReturn(roleAction);
+        when(roleAction.setColor(any(java.awt.Color.class))).thenReturn(roleAction);
+        when(roleAction.setHoisted(anyBoolean())).thenReturn(roleAction);
+        when(roleAction.complete()).thenReturn(role);
+        return role;
     }
 
     @Test
@@ -152,14 +182,15 @@ class JdaGuildOperationExecutorTest {
         when(townRole.getName()).thenReturn("TestTown");
         when(guild.getRoleById(townRoleId)).thenReturn(townRole);
 
-        String vipRoleId = "role-vip";
-        Role vipRole = mock(Role.class);
-        when(vipRole.getId()).thenReturn(vipRoleId);
-        when(vipRole.getName()).thenReturn("VIP");
-        when(guild.getRoleById(vipRoleId)).thenReturn(vipRole);
+        String adminRoleId = "role-admin-server";
+        Role adminRole = mock(Role.class);
+        when(adminRole.getId()).thenReturn(adminRoleId);
+        when(adminRole.getName()).thenReturn("Administrador");
+        when(guild.getRoleById(adminRoleId)).thenReturn(adminRole);
 
-        when(member.getRoles()).thenReturn(List.of(townRole, vipRole));
+        when(member.getRoles()).thenReturn(List.of(townRole, adminRole));
 
+        // Only townRoleId is registered
         TownSpace registeredSpace = new TownSpace(
                 UUID.randomUUID(), "TestTown",
                 Optional.of("cat-1"), Optional.of("text-1"), Optional.of("voice-1"),
@@ -172,25 +203,23 @@ class JdaGuildOperationExecutorTest {
 
         var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
 
-        // Request revoking town role and also an external role (VIP)
+        // Revocation list contains both roles
         var op = new GuildOperation.ApplyMemberRoles(
                 memberId,
                 Collections.emptyList(),
-                List.of(townRoleId, vipRoleId));
+                List.of(townRoleId, adminRoleId));
 
         OperationOutcome outcome = executor.execute(op);
 
         assertTrue(outcome.succeeded());
-        // Revokes the managed role
         verify(guild).removeRoleFromMember(member, townRole);
-        // Does NOT revoke the unmanaged role (VIP)
-        verify(guild, never()).removeRoleFromMember(member, vipRole);
+        verify(guild, never()).removeRoleFromMember(member, adminRole);
     }
 
     @Test
-    @DisplayName("ApplyMemberRoles recognizes the mayor role by persisted ID even if renamed")
+    @DisplayName("ApplyMemberRoles revokes mayor role renamed in Discord if its persisted ID matches")
     @SuppressWarnings("unchecked")
-    void applyMemberRolesRecognizesMayorRoleByStableIdEvenIfRenamed() {
+    void applyMemberRolesRevokesRenamedMayorRoleIfPersistedIdMatches() {
         String memberId = "111222333";
         Member member = mock(Member.class);
         when(guild.getMemberById(memberId)).thenReturn(member);
@@ -298,23 +327,26 @@ class JdaGuildOperationExecutorTest {
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
-        // Must not create new category or new role
-        verify(guild, never()).createCategory(any());
         verify(guild, never()).createRole();
+        verify(guild, never()).createCategory(any());
     }
 
     @Test
-    @DisplayName("The token never appears in executor error messages")
-    void tokenNeverAppearsInErrorMessages() {
+    @DisplayName("The token does not appear in error messages")
+    void tokenMaskedInErrorMessage() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "PuebloError";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor", 2);
+
+        // The town role must be creatable, so that the failure under test is the
+        // one the category lookup raises and not an earlier one.
+        mockRoleCreation("role-error", townName);
         when(structureConfig.categoryName()).thenReturn("Comunidades");
-        when(spaces.findByTownUuid(any())).thenThrow(
-                new RuntimeException("Connection failed with token token-secreto-12345 on host"));
+        when(guild.getCategoriesByName("Comunidades", true))
+                .thenThrow(new RuntimeException("Connection failed with token-secreto-12345: timeout"));
 
         var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
-        var op = new GuildOperation.CreateSpace(new SpaceRequest(
-                UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor", 2));
-
-        OperationOutcome outcome = executor.execute(op);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertFalse(outcome.succeeded());
         String reason = outcome.reason().orElse("");
@@ -338,9 +370,7 @@ class JdaGuildOperationExecutorTest {
         when(category.getVoiceChannels()).thenReturn(Collections.emptyList());
         when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
 
-        Role townRole = mock(Role.class);
-        when(townRole.getId()).thenReturn("role-id");
-        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+        Role townRole = mockRoleCreation("role-id", townName);
 
         Role mayorRole = mock(Role.class);
         when(mayorRole.getId()).thenReturn("role-mayor-id");
@@ -453,9 +483,7 @@ class JdaGuildOperationExecutorTest {
         when(category.getId()).thenReturn("cat-1");
         when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
 
-        Role townRole = mock(Role.class);
-        when(townRole.getId()).thenReturn("role-town-id");
-        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+        Role townRole = mockRoleCreation("role-town-id", townName);
 
         Role mayorRole = mock(Role.class);
         when(mayorRole.getId()).thenReturn("role-mayor-id");
@@ -482,20 +510,34 @@ class JdaGuildOperationExecutorTest {
     }
 
     @Test
-    @DisplayName("Retrieves member from Discord API when not in cache")
-    @SuppressWarnings("unchecked")
-    void retrievesMemberFromApiWhenNotInCache() {
-        String memberId = "uncached-user-456";
+    @DisplayName("ApplyMemberRoles: If member is not in guild, succeeds without error")
+    void memberNotFoundDoesNotCausePermanentFailure() {
+        String memberId = "non-existent-user";
         when(guild.getMemberById(memberId)).thenReturn(null);
 
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        var op = new GuildOperation.ApplyMemberRoles(memberId, List.of("role-1"), List.of());
+
+        OperationOutcome outcome = executor.execute(op);
+
+        assertTrue(outcome.succeeded());
+    }
+
+    @Test
+    @DisplayName("ApplyMemberRoles: Retrieves member via API if not in cache")
+    @SuppressWarnings("unchecked")
+    void memberRetrievedFromApiIfNotInCache() {
+        String memberId = "user-not-in-cache";
+        when(guild.getMemberById(memberId)).thenReturn(null);
+
+        net.dv8tion.jda.api.requests.restaction.CacheRestAction<Member> retrieveAction =
+                mock(net.dv8tion.jda.api.requests.restaction.CacheRestAction.class);
         Member member = mock(Member.class);
         when(member.getRoles()).thenReturn(Collections.emptyList());
-
-        net.dv8tion.jda.api.requests.restaction.CacheRestAction<Member> retrieveAction = mock(net.dv8tion.jda.api.requests.restaction.CacheRestAction.class);
-        when(guild.retrieveMemberById(memberId)).thenReturn(retrieveAction);
         when(retrieveAction.complete()).thenReturn(member);
+        when(guild.retrieveMemberById(memberId)).thenReturn(retrieveAction);
 
-        String townRoleId = "role-town-uncached";
+        String townRoleId = "role-town-1";
         Role townRole = mock(Role.class);
         when(townRole.getId()).thenReturn(townRoleId);
         when(townRole.getName()).thenReturn("TestTown");
@@ -566,9 +608,7 @@ class JdaGuildOperationExecutorTest {
         when(guild.createCategory("Comunidades 2")).thenReturn(createCatAction);
         when(createCatAction.complete()).thenReturn(newCat);
 
-        Role townRole = mock(Role.class);
-        when(townRole.getId()).thenReturn("role-1");
-        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+        Role townRole = mockRoleCreation("role-1", townName);
 
         Role mayorRole = mock(Role.class);
         when(mayorRole.getId()).thenReturn("role-mayor-id");
@@ -640,7 +680,6 @@ class JdaGuildOperationExecutorTest {
 
     @Test
     @DisplayName("restoreSpace persists the created role immediately before moving channels")
-    @SuppressWarnings("unchecked")
     void restoreSpacePersistsRoleImmediately() {
         UUID townUuid = UUID.randomUUID();
         String townName = "Revivida";
@@ -658,9 +697,7 @@ class JdaGuildOperationExecutorTest {
         when(guild.getCategoryById("cat-active")).thenReturn(category);
         when(category.getChannels()).thenReturn(Collections.emptyList());
 
-        Role newRole = mock(Role.class);
-        when(newRole.getId()).thenReturn("new-role-id");
-        when(guild.getRolesByName(townName, true)).thenReturn(List.of(newRole));
+        mockRoleCreation("new-role-id", townName);
 
         Role mayorRole = mock(Role.class);
         when(mayorRole.getId()).thenReturn("role-mayor-id");
@@ -695,9 +732,7 @@ class JdaGuildOperationExecutorTest {
         when(category.getId()).thenReturn("cat-1");
         when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
 
-        Role townRole = mock(Role.class);
-        when(townRole.getId()).thenReturn("role-1");
-        when(guild.getRolesByName(townName, true)).thenReturn(List.of(townRole));
+        mockRoleCreation("role-1", townName);
 
         Role mayorRole = mock(Role.class);
         when(mayorRole.getId()).thenReturn("role-mayor-id");
@@ -711,7 +746,7 @@ class JdaGuildOperationExecutorTest {
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
 
         assertTrue(outcome.succeeded());
-        // The first save stored the category with state INCONSISTENT
+        // The first save stored the role with state INCONSISTENT
         verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
         // The last save stored the space with state ACTIVE
         verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.ACTIVE));
@@ -811,9 +846,9 @@ class JdaGuildOperationExecutorTest {
         Category category = mock(Category.class);
         when(category.getId()).thenReturn("cat-1");
         when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
-        Role townRole = mock(Role.class);
-        when(townRole.getId()).thenReturn("role-town-id");
-        when(guild.getRolesByName("MyTown", true)).thenReturn(List.of(townRole));
+
+        mockRoleCreation("role-town-id", "MyTown");
+
         when(structureConfig.categoryName()).thenReturn("Comunidades");
         when(structureConfig.createTextChannel()).thenReturn(false);
         when(structureConfig.createVoiceChannel()).thenReturn(false);
@@ -821,5 +856,349 @@ class JdaGuildOperationExecutorTest {
         OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
         assertFalse(outcome.succeeded());
         verify(guild, never()).addRoleToMember(any(), eq(mayorRole));
+    }
+
+    // --- New executor tests for F9, F10, F5, F2, F1 ---
+
+    @Test
+    @DisplayName("Archiving deletes no text or voice channel, moves them to archive category, leaves read-only, and removes town role (F9)")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceDeletesNoChannelsMovesToArchiveReadOnlyAndRemovesTownRole() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "ArchiveTown";
+        String textChId = "txt-arch-1";
+        String voiceChId = "vc-arch-1";
+        String roleId = "role-arch-1";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        TextChannel textCh = mock(TextChannel.class);
+        VoiceChannel voiceCh = mock(VoiceChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        when(voiceCh.getId()).thenReturn(voiceChId);
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh);
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(voiceCh);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        VoiceChannelManager voiceManager = mock(VoiceChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(voiceCh.getManager()).thenReturn(voiceManager);
+        when(textManager.setParent(archiveCat)).thenReturn(textManager);
+        when(voiceManager.setParent(archiveCat)).thenReturn(voiceManager);
+
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+        net.dv8tion.jda.api.entities.SelfMember selfMember = mock(net.dv8tion.jda.api.entities.SelfMember.class);
+        when(guild.getSelfMember()).thenReturn(selfMember);
+
+        PermissionOverrideAction textOverrideAction = mock(PermissionOverrideAction.class);
+        when(textCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.deny(any(Permission[].class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.grant(any(Permission[].class))).thenReturn(textOverrideAction);
+
+        PermissionOverrideAction voiceOverrideAction = mock(PermissionOverrideAction.class);
+        when(voiceCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.deny(any(Permission[].class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.grant(any(Permission[].class))).thenReturn(voiceOverrideAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertTrue(outcome.succeeded());
+
+        // Verifies F9: Deletes NO text or voice channel
+        verify(textCh, never()).delete();
+        verify(voiceCh, never()).delete();
+
+        // Verifies F9: Removes the town role
+        verify(townRole).delete();
+
+        // Verifies F9: Moves channels to archive category
+        verify(textManager).setParent(archiveCat);
+        verify(voiceManager).setParent(archiveCat);
+
+        // Verifies F9: Leaves channels read-only (denies VIEW_CHANNEL and MESSAGE_SEND / VOICE_CONNECT)
+        verify(textCh).upsertPermissionOverride(publicRole);
+        verify(textOverrideAction).deny(Permission.MESSAGE_SEND, Permission.VIEW_CHANNEL);
+        verify(voiceCh).upsertPermissionOverride(publicRole);
+        verify(voiceOverrideAction).deny(Permission.VOICE_CONNECT, Permission.VIEW_CHANNEL);
+
+        // State in DB is ARCHIVED with role removed and channels intact
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED
+                && s.roleId().isEmpty()
+                && s.textChannelId().equals(Optional.of(textChId))
+                && s.voiceChannelId().equals(Optional.of(voiceChId))));
+    }
+
+    @Test
+    @DisplayName("Restoration returns the exact same channel IDs, with zero channel creations and zero deletions, and reapplies permissions (F10)")
+    @SuppressWarnings("unchecked")
+    void restoreSpaceReturnsExactChannelIdsWithZeroCreationsOrDeletionsAndReappliesPermissions() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "RestoreTown";
+        String textChId = "txt-exact-101";
+        String voiceChId = "vc-exact-202";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id", 2);
+
+        TownSpace archivedSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-archive"), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.empty(), SpaceState.ARCHIVED,
+                Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(archivedSpace));
+
+        Category activeCat = mock(Category.class);
+        when(activeCat.getId()).thenReturn("cat-active");
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(activeCat));
+        when(guild.getCategoryById("cat-active")).thenReturn(activeCat);
+        when(activeCat.getChannels()).thenReturn(Collections.emptyList());
+
+        Role restoredRole = mockRoleCreation("role-restored-id", townName);
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        TextChannel textCh = mock(TextChannel.class);
+        VoiceChannel voiceCh = mock(VoiceChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        when(voiceCh.getId()).thenReturn(voiceChId);
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh);
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(voiceCh);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        VoiceChannelManager voiceManager = mock(VoiceChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(voiceCh.getManager()).thenReturn(voiceManager);
+        when(textManager.setParent(activeCat)).thenReturn(textManager);
+        when(voiceManager.setParent(activeCat)).thenReturn(voiceManager);
+
+        PermissionOverrideAction overrideAction = mock(PermissionOverrideAction.class);
+        when(textCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(overrideAction);
+        when(voiceCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(overrideAction);
+        when(overrideAction.deny(any(Permission[].class))).thenReturn(overrideAction);
+        when(overrideAction.grant(any(Permission[].class))).thenReturn(overrideAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.RestoreSpace(req));
+
+        assertTrue(outcome.succeeded());
+
+        // Zero channel creations
+        verify(activeCat, never()).createTextChannel(any());
+        verify(activeCat, never()).createVoiceChannel(any());
+
+        // Zero channel deletions
+        verify(textCh, never()).delete();
+        verify(voiceCh, never()).delete();
+
+        // Channels moved to active category
+        verify(textManager).setParent(activeCat);
+        verify(voiceManager).setParent(activeCat);
+
+        // Reapplies permissions for town role
+        verify(textCh).upsertPermissionOverride(restoredRole);
+        verify(voiceCh).upsertPermissionOverride(restoredRole);
+
+        // Exact same channel IDs returned/persisted in active state
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ACTIVE
+                && s.textChannelId().equals(Optional.of(textChId))
+                && s.voiceChannelId().equals(Optional.of(voiceChId))
+                && s.roleId().equals(Optional.of("role-restored-id"))));
+    }
+
+    @Test
+    @DisplayName("A required channel missing during restore does not report success and leaves inconsistent state (F5)")
+    void restoreSpaceWithMissingRequiredChannelDoesNotReportSuccess() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "MissingChannelTown";
+        String missingTextId = "txt-deleted-by-hand";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id", 2);
+
+        TownSpace archivedSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-archive"), Optional.of(missingTextId), Optional.empty(),
+                Optional.empty(), SpaceState.ARCHIVED,
+                Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(archivedSpace));
+
+        // Channel was deleted in Discord -> lookup returns null
+        when(guild.getTextChannelById(missingTextId)).thenReturn(null);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.RestoreSpace(req));
+
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+        assertTrue(outcome.reason().orElse("").contains(missingTextId));
+
+        // Must NEVER report active with dead IDs
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ACTIVE));
+
+        // Leaves space in INCONSISTENT state for reconciliation to repair
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("A required channel missing during rename does not report success and leaves inconsistent state (F5)")
+    void renameSpaceWithMissingRequiredChannelDoesNotReportSuccess() {
+        UUID townUuid = UUID.randomUUID();
+        String missingTextId = "txt-renamed-missing";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, "OldTown",
+                Optional.of("cat-active"), Optional.of(missingTextId), Optional.empty(),
+                Optional.of("role-1"), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(guild.getRoleById("role-1")).thenReturn(townRole);
+
+        // Missing channel in Discord
+        when(guild.getTextChannelById(missingTextId)).thenReturn(null);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.RenameSpace(townUuid, "OldTown", "NewTown"));
+
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+        assertTrue(outcome.reason().orElse("").contains(missingTextId));
+
+        // Never updates name in repository on failed rename
+        verify(spaces, never()).save(argThat(s -> s.townName().equals("NewTown")));
+
+        // Leaves space in INCONSISTENT state
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("The F2 collision: a name-matching role that the plugin does not own is never adopted")
+    void createSpaceRejectsAdoptingUnownedRoleWithMatchingName() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "CollidingTown";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor", 2);
+
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
+        when(spaces.findAll()).thenReturn(Collections.emptyList());
+
+        // An unowned role already exists with this name in Discord
+        Role strangerRole = mock(Role.class);
+        when(strangerRole.getId()).thenReturn("stranger-role-id");
+        when(strangerRole.getName()).thenReturn("CollidingTown");
+        when(guild.getRolesByName("CollidingTown", true)).thenReturn(List.of(strangerRole));
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+        assertTrue(outcome.reason().orElse("").contains("CollidingTown"));
+
+        // Unowned role is never adopted into space
+        verify(spaces, never()).save(argThat(s -> s.roleId().isPresent() && s.roleId().get().equals("stranger-role-id")));
+
+        // Unowned role is never assigned to members
+        verify(guild, never()).addRoleToMember(any(), eq(strangerRole));
+
+        // The collision is caught before the first row is written, so nothing at
+        // all is persisted: there is no half-created space left behind.
+        verify(spaces, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Crash recovery reclaims resources across managed categories without duplicating (F1)")
+    @SuppressWarnings("unchecked")
+    void createSpaceCrashRecoveryReclaimsExistingChannelAcrossCategoriesWithoutDuplication() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "CrashTown";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id", 2);
+
+        // Setup managed category Comunidades containing 49 channels (near 50 capacity)
+        Category cat1 = mock(Category.class);
+        when(cat1.getId()).thenReturn("cat-1");
+        when(cat1.getName()).thenReturn("Comunidades");
+
+        TextChannel textCh49 = mock(TextChannel.class);
+        when(textCh49.getId()).thenReturn("txt-reclaimed-49");
+        when(textCh49.getName()).thenReturn("CrashTown");
+        when(textCh49.getParentCategory()).thenReturn(cat1);
+        when(guild.getTextChannelById("txt-reclaimed-49")).thenReturn(textCh49);
+
+        List<GuildChannel> channelList = new ArrayList<>();
+        for (int i = 0; i < 48; i++) {
+            channelList.add(mock(GuildChannel.class));
+        }
+        channelList.add(textCh49);
+        when(cat1.getChannels()).thenReturn(channelList);
+        when(cat1.getTextChannels()).thenReturn(List.of(textCh49));
+        when(cat1.getVoiceChannels()).thenReturn(Collections.emptyList());
+
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.textChannelName()).thenReturn("{town}");
+        when(structureConfig.voiceChannelName()).thenReturn("{town}");
+        when(structureConfig.createTextChannel()).thenReturn(true);
+        when(structureConfig.createVoiceChannel()).thenReturn(true);
+
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(cat1));
+        when(guild.getCategoryById("cat-1")).thenReturn(cat1);
+
+        Role townRole = mockRoleCreation("role-town-id", townName);
+        Role mayorRole = mock(Role.class);
+        when(mayorRole.getId()).thenReturn("role-mayor-id");
+        when(guild.getRolesByName("Alcalde", true)).thenReturn(List.of(mayorRole));
+
+        // Ownership proof: textCh49 has permission override for townRole
+        PermissionOverride override = mock(PermissionOverride.class);
+        when(textCh49.getPermissionOverride(townRole)).thenReturn(override);
+
+        // Missing voice channel creation action in cat1 (channel 50)
+        net.dv8tion.jda.api.requests.restaction.ChannelAction<VoiceChannel> voiceAction =
+                mock(net.dv8tion.jda.api.requests.restaction.ChannelAction.class);
+        when(cat1.createVoiceChannel("CrashTown")).thenReturn(voiceAction);
+        when(voiceAction.addPermissionOverride(any(), any(), any())).thenReturn(voiceAction);
+        VoiceChannel createdVoice = mock(VoiceChannel.class);
+        when(createdVoice.getId()).thenReturn("vc-50");
+        when(voiceAction.complete()).thenReturn(createdVoice);
+
+        // Spaces DB has no textChannelId or voiceChannelId saved yet (simulating kill right after Discord returned text channel ID)
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
+        when(spaces.findAll()).thenReturn(Collections.emptyList());
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertTrue(outcome.succeeded());
+
+        // Verifies F1: did NOT create duplicate text channel
+        verify(cat1, never()).createTextChannel(any());
+
+        // Verifies F1: did NOT reject cat1 or create Comunidades 2 because capacity check knew only 1 channel was genuinely missing!
+        verify(guild, never()).createCategory(any());
+
+        // Verifies F1: missing voice channel was created in cat1
+        verify(cat1).createVoiceChannel("CrashTown");
+
+        // Verifies F1: exact reclaimed text channel and new voice channel persisted in ACTIVE space
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.ACTIVE
+                && s.textChannelId().equals(Optional.of("txt-reclaimed-49"))
+                && s.voiceChannelId().equals(Optional.of("vc-50"))));
     }
 }
