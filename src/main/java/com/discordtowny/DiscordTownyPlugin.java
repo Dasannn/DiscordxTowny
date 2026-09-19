@@ -17,7 +17,8 @@ public final class DiscordTownyPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        saveResource("messages.yml", false);
+        // The message files are written by the config loader, which knows there
+        // is one per language. Doing it here too would mean naming them twice.
 
         getLogger().info("DiscordTowny " + getPluginMeta().getVersion() + " started.");
     }

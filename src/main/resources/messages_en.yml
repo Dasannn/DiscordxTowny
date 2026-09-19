@@ -1,0 +1,61 @@
+# Plugin texts. Editable without touching config.yml.
+#
+# Available placeholders depending on the message: {player}, {town}, {mayor}, {code},
+# {minutes}, {current}, {latest}, {max}, {reason}.
+# Colors with Minecraft formatting using &.
+
+prefix: "&8[&bDiscordTowny&8] &r"
+
+general:
+  no-permission: "&cYou do not have permission to use this."
+  players-only: "&cThis command only works in-game."
+  unknown-command: "&cUnknown command. Use &f/dt help&c."
+  working: "&7Working on it, I'll let you know when finished."
+  discord-unavailable: "&cDiscord is not available right now. Try again later."
+  database-unavailable: "&cCannot access the database. Notify an administrator."
+  not-in-town: "&cYou do not belong to any town."
+  not-mayor: "&cOnly the town mayor can do this."
+  town-not-found: "&cThere is no town named &f{town}&c."
+
+linking:
+  code-generated: "&aYour code is &f{code}&a. Type &f/link {code}&a on Discord. Expires in {minutes} minutes."
+  already-linked: "&cYou already have a linked Discord account. Use &f/dt unlink&c first."
+  discord-already-linked: "&cThat Discord account is already linked to another player."
+  code-invalid: "&cThat code is not valid."
+  code-expired: "&cThat code has expired. Generate a new one with &f/dt link&c."
+  too-many-attempts: "&cToo many failed attempts. Wait {minutes} minutes."
+  link-success: "&aAccount successfully linked."
+  unlink-success: "&aLink removed. You have lost the roles granted by the plugin."
+  not-linked: "&cYou do not have any linked account."
+  link-required: "&cYou need to link your Discord account. Use &f/dt link&c."
+
+space:
+  created: "&aThe space for &f{town}&a is ready on Discord."
+  already-exists: "&cThe town &f{town}&c already has a space on Discord."
+  creating: "&7Creating the space for &f{town}&7 on Discord..."
+  too-few-residents: "&cYour town needs at least {min} residents to have a space."
+  limit-reached: "&cReached the limit of {max} towns with a space. Notify an administrator."
+  cooldown: "&cWait {seconds} seconds before trying again."
+  archived: "&aThe space for &f{town}&a was archived. Channels are now read-only."
+  restored: "&aThe space for &f{town}&a was restored with its history."
+  delete-confirm: "&eThis will archive the channels for &f{town}&e. Repeat the command to confirm."
+  renamed: "&aThe channels for &f{town}&a were renamed."
+  failed: "&cCould not complete the operation: {reason}. It will be retried automatically."
+
+sync:
+  started: "&7Synchronizing..."
+  finished: "&aSynchronization finished."
+  player-synced: "&aYour Discord roles are up to date."
+
+updates:
+  available: "&eThere is a new version of DiscordTowny: &f{latest}&e (you have &f{current}&e)."
+  downloaded: "&aVersion &f{latest}&a is downloaded. Restart the server to apply it."
+  download-failed: "&cCould not download the update: {reason}."
+  checksum-mismatch: "&cThe download does not match the published checksum and was discarded."
+  up-to-date: "&aYou are on the latest version."
+
+admin:
+  reloaded: "&aConfiguration reloaded."
+  purge-confirm: "&cThis will permanently delete {count} archived spaces. Repeat the command to confirm."
+  purged: "&aDeleted {count} archived spaces."
+  unlinked: "&a{player} no longer has a linked account."

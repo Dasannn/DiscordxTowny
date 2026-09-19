@@ -56,7 +56,7 @@ public final class LinkSlashCommands extends ListenerAdapter {
         List<SlashCommandData> data = new ArrayList<>();
         if (config == null || config.commands().byName("link").map(PluginConfig.DiscordCommand::enabled).orElse(true)) {
             data.add(Commands.slash("link", "Link your Minecraft account with Discord")
-                    .addOption(OptionType.STRING, "codigo",
+                    .addOption(OptionType.STRING, "code",
                             "6-character code generated in-game with /dt link", true));
         }
         if (config == null || config.commands().byName("unlink").map(PluginConfig.DiscordCommand::enabled).orElse(true)) {
@@ -114,9 +114,9 @@ public final class LinkSlashCommands extends ListenerAdapter {
     private void handleLink(SlashCommandInteractionEvent event) {
         // Mandatory ephemeral reply: the code must never remain visible in the public channel
         event.deferReply(true).queue(hook -> {
-            OptionMapping option = event.getOption("codigo");
+            OptionMapping option = event.getOption("code");
             if (option == null) {
-                option = event.getOption("code");
+                option = event.getOption("codigo");
             }
 
             if (option == null || option.getAsString().isBlank()) {

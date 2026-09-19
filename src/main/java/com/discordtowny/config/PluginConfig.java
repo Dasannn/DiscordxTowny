@@ -15,6 +15,7 @@ import java.util.Optional;
  * key is wrong and the plugin starts degraded, rather than operating with garbage.
  */
 public record PluginConfig(
+        String language,
         Discord discord,
         Database database,
         Structure structure,
@@ -26,6 +27,27 @@ public record PluginConfig(
         Logging logging,
         Updates updates,
         Commands commands) {
+
+    public PluginConfig {
+        if (language == null || language.isBlank()) {
+            language = "en";
+        }
+    }
+
+    public PluginConfig(
+            Discord discord,
+            Database database,
+            Structure structure,
+            Roles roles,
+            Limits limits,
+            Lifecycle lifecycle,
+            Sync sync,
+            Linking linking,
+            Logging logging,
+            Updates updates,
+            Commands commands) {
+        this("en", discord, database, structure, roles, limits, lifecycle, sync, linking, logging, updates, commands);
+    }
 
     /**
      * The token is sensitive: do not include it in toString, logs, or error

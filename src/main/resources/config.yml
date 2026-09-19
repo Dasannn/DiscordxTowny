@@ -7,6 +7,9 @@
 # NUNCA compartas este archivo: contiene el token del bot y las credenciales de
 # la base de datos.
 
+# Language for plugin messages: en or es. Default is en.
+language: en
+
 discord:
   # Token del bot. Obligatorio.
   token: "PON_AQUI_TU_TOKEN"
