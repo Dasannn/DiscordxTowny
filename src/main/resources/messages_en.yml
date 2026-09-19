@@ -68,6 +68,8 @@ updates:
   download-failed: "&cCould not download the update: {reason}."
   checksum-mismatch: "&cThe download does not match the published checksum and was discarded."
   up-to-date: "&aYou are on the latest version."
+  breaking: "&c&lWARNING: &cRelease &f{latest}&c contains breaking changes. Automatic download is suppressed; confirmation is required."
+  summary: "&7Changes summary: &f{summary}"
 
 admin:
   list-header: "&b{count} &7registered spaces:"

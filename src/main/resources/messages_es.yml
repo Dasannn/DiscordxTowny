@@ -68,6 +68,8 @@ updates:
   download-failed: "&cNo se pudo descargar la actualizacion: {reason}."
   checksum-mismatch: "&cLa descarga no coincide con el checksum publicado y fue descartada."
   up-to-date: "&aEstas en la ultima version."
+  breaking: "&c&lATENCIÓN: &cLa versión &f{latest}&c contiene cambios incompatibles. La descarga automática está deshabilitada; se requiere confirmación."
+  summary: "&7Resumen de cambios: &f{summary}"
 
 admin:
   list-header: "&b{count} &7espacios registrados:"
