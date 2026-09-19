@@ -155,7 +155,7 @@ La fachada devuelve datos correctos contra un servidor local con Towny.
 ## T5 — Vinculación de cuentas
 
 - **Rama**: `feat/vinculacion` · **Fase** 3 · **Depende de**: T2, T3, T4
-- **Estado**: en curso · **Zona**: `link/`, más sus comandos en `minecraft/` y
+- **Estado**: integrada · **Zona**: `link/`, más sus comandos en `minecraft/` y
   `discord/`
 
 **Construye**

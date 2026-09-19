@@ -57,4 +57,4 @@ esa etapa ya pasó.
 
 ## Estado por tarea
 
-Ver `docs/tasks.md`. Integradas: T0, T1, T2, T3, T4.
+Ver `docs/tasks.md`. Integradas: T0, T1, T2, T3, T4, T5, T11.
