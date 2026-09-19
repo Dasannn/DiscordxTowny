@@ -230,7 +230,7 @@ next pass. A manually deleted channel is detected and repaired.
 ## T8 — In-Game Commands
 
 - **Branch**: `feat/comandos-juego` · **Phase** 5 · **Depends on**: T7
-- **Parallel to**: T9 · **Status**: pending · **Zone**: `minecraft/`
+- **Parallel to**: T9 · **Status**: integrated · **Zone**: `minecraft/`
 
 **Builds**
 
@@ -272,7 +272,7 @@ without Discord available, inside and outside a town.
 ## T9 — Discord Commands
 
 - **Branch**: `feat/comandos-discord` · **Phase** 5 · **Depends on**: T7
-- **Parallel to**: T8 · **Status**: pending · **Zone**: slash commands in
+- **Parallel to**: T8 · **Status**: integrated · **Zone**: slash commands in
   `discord/`
 
 **Builds**
