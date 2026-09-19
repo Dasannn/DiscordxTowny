@@ -179,7 +179,7 @@ expired or already-used code is rejected.
 ## T6 — Space Lifecycle
 
 - **Branch**: `feat/espacios` · **Phase** 4 · **Depends on**: T5
-- **Sequential with**: T7 · **Status**: pending · **Zone**: `space/`
+- **Sequential with**: T7 · **Status**: integrated · **Zone**: `space/`
 
 **Builds**
 
@@ -239,6 +239,18 @@ next pass. A manually deleted channel is detected and repaired.
 - Admin block: `list`, `info <town>`, `purge` with confirmation, `reload`.
 - Full permission tree and argument autocompletion.
 - Immediate response on asynchronous operations, with subsequent confirmation.
+
+**Inherited from T14, and not optional**
+
+- Console output must stay English whatever `language` says, and today it does
+  not: running `/dt link`, `/dt unlink` or `/dt admin unlink` from the console
+  replies in the player language. Spec 9.1 is explicit that the console stays
+  English so a log reads the same for everyone reporting a problem. This card
+  rewrites command registration anyway, so it fixes it here.
+- Slash-command names and descriptions are hard-coded English with no catalog
+  keys. Discord localises those per viewer's client locale, a different
+  mechanism from `language`. Documented debt; do not invent keys for it without
+  the architect deciding the mechanism first.
 
 **Acceptance**: each command responds correctly with and without permissions, with and
 without Discord available, inside and outside a town.
@@ -357,7 +369,7 @@ correctly by the updater on an instance running the previous version.
 ## T14 — Configurable Language
 
 - **Branch**: `feat/language` · **Phase** 6 · **Depends on**: T4
-- **Parallel to**: almost everything · **Status**: pending · **Zone**:
+- **Parallel to**: almost everything · **Status**: integrated · **Zone**:
   `config/`, `src/main/resources/messages_*.yml`, `src/main/resources/config.yml`
 
 **Builds**

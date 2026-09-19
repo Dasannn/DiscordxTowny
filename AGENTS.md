@@ -60,4 +60,4 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0, T1, T2, T3, T4, T5, T11.
+See `docs/tasks.md`. Integrated: T0, T1, T2, T3, T4, T5, T6, T11, T14.
