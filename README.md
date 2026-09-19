@@ -6,7 +6,7 @@ Every town needs private channels: creating them and maintaining their permissio
 
 - Paper for Minecraft **26.2**.
 - **Java 25**.
-- **Towny Advanced 0.103.2.7 or higher**.
+- **Towny Advanced 0.103.2.0 or higher**. The plugin is compiled against that version on purpose: building against the oldest supported release turns compatibility into a compile error here rather than a crash on your server.
 - A Discord server and your own bot, which you will create in the next step.
 - SQLite, included as the default option, or a MySQL/MariaDB database with its credentials.
 

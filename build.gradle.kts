@@ -18,7 +18,7 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:26.2.build.124-stable")
-    compileOnly("com.palmergames.bukkit.towny:towny:0.103.2.7")
+    compileOnly("com.palmergames.bukkit.towny:towny:0.103.2.0")
 
     implementation("net.dv8tion:JDA:6.6.0") {
         // El plugin no reproduce audio: fuera la pila de voz.
@@ -33,7 +33,7 @@ dependencies {
     // El servidor los aporta en runtime, pero los tests si los necesitan en el
     // classpath: sin esto no compila nada que toque Bukkit, Adventure o Towny.
     testImplementation("io.papermc.paper:paper-api:26.2.build.124-stable")
-    testImplementation("com.palmergames.bukkit.towny:towny:0.103.2.7")
+    testImplementation("com.palmergames.bukkit.towny:towny:0.103.2.0")
 
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
