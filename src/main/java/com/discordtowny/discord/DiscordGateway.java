@@ -85,5 +85,22 @@ public interface DiscordGateway {
      * @throws IllegalStateException if the gateway is unavailable or could not be resolved.
      */
     java.util.Set<String> roleHolders(String roleId);
+
+    /**
+     * Answers which of a set of stored Discord IDs still exist in the guild —
+     * channels and roles alike.
+     *
+     * <p>Plain Discord IDs are returned; internal gateway entities never escape
+     * this package.
+     *
+     * @param ids the IDs to check.
+     * @return an unmodifiable set of IDs from the input that currently exist in the guild.
+     * @throws IllegalStateException if the gateway is unavailable or could not be resolved.
+     */
+    java.util.Set<String> existingResourceIds(java.util.Collection<String> ids);
+
+    default java.util.Set<String> existingIds(java.util.Collection<String> ids) {
+        return existingResourceIds(ids);
+    }
 }
 

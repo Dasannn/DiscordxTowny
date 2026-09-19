@@ -13,8 +13,10 @@ import com.discordtowny.space.SpaceService;
 import com.discordtowny.storage.LinkRepository;
 import com.discordtowny.storage.SpaceRepository;
 import com.discordtowny.towny.TownyFacade;
+import com.discordtowny.towny.TownyReadException;
 
 import java.time.Clock;
+import java.time.Instant;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,8 +64,10 @@ public final class DefaultSyncService implements SyncService {
     private final Executor executor;
     private final Consumer<Duration> pauseAction;
     private final Executor mainThreadExecutor;
+    private final SpaceService spaceService;
 
     public DefaultSyncService(
+            SpaceService spaceService,
             SpaceRepository spaceRepository,
             LinkRepository linkRepository,
             DiscordGateway discordGateway,
@@ -73,6 +77,7 @@ public final class DefaultSyncService implements SyncService {
             Executor executor,
             Consumer<Duration> pauseAction,
             Executor mainThreadExecutor) {
+        this.spaceService = spaceService;
         this.spaceRepository = Objects.requireNonNull(spaceRepository, "spaceRepository cannot be null");
         this.linkRepository = Objects.requireNonNull(linkRepository, "linkRepository cannot be null");
         this.discordGateway = Objects.requireNonNull(discordGateway, "discordGateway cannot be null");
@@ -91,8 +96,22 @@ public final class DefaultSyncService implements SyncService {
             TownyFacade townyFacade,
             PluginConfig config,
             Clock clock,
+            Executor executor,
+            Consumer<Duration> pauseAction,
+            Executor mainThreadExecutor) {
+        this(null, spaceRepository, linkRepository, discordGateway, townyFacade, config,
+                clock, executor, pauseAction, mainThreadExecutor);
+    }
+
+    public DefaultSyncService(
+            SpaceRepository spaceRepository,
+            LinkRepository linkRepository,
+            DiscordGateway discordGateway,
+            TownyFacade townyFacade,
+            PluginConfig config,
+            Clock clock,
             Executor executor) {
-        this(spaceRepository, linkRepository, discordGateway, townyFacade, config,
+        this(null, spaceRepository, linkRepository, discordGateway, townyFacade, config,
                 clock, executor, null, null);
     }
 
@@ -103,7 +122,7 @@ public final class DefaultSyncService implements SyncService {
             TownyFacade townyFacade,
             PluginConfig config,
             Executor mainThreadExecutor) {
-        this(spaceRepository, linkRepository, discordGateway, townyFacade, config,
+        this(null, spaceRepository, linkRepository, discordGateway, townyFacade, config,
                 Clock.systemUTC(), ForkJoinPool.commonPool(), null, mainThreadExecutor);
     }
 
@@ -113,7 +132,7 @@ public final class DefaultSyncService implements SyncService {
             DiscordGateway discordGateway,
             TownyFacade townyFacade,
             PluginConfig config) {
-        this(spaceRepository, linkRepository, discordGateway, townyFacade, config,
+        this(null, spaceRepository, linkRepository, discordGateway, townyFacade, config,
                 Clock.systemUTC(), ForkJoinPool.commonPool(), null, null);
     }
 
@@ -124,7 +143,7 @@ public final class DefaultSyncService implements SyncService {
             DiscordGateway discordGateway,
             TownyFacade townyFacade,
             PluginConfig config) {
-        this(spaceRepository, linkRepository, discordGateway, townyFacade, config,
+        this(spaceService, spaceRepository, linkRepository, discordGateway, townyFacade, config,
                 Clock.systemUTC(), ForkJoinPool.commonPool(), null, null);
     }
 
@@ -198,13 +217,21 @@ public final class DefaultSyncService implements SyncService {
         return CompletableFuture.supplyAsync(() -> {
             return callTowny(() -> {
                 if (!townyFacade.isAvailable()) {
-                    return new TownyLookupResult(false, Optional.empty());
+                    return TownyLookupResult.unavailable();
                 }
-                return new TownyLookupResult(true, townyFacade.town(townUuid));
+                try {
+                    return TownyLookupResult.ok(townyFacade.town(townUuid));
+                } catch (TownyReadException e) {
+                    return TownyLookupResult.failedRead(e.getMessage() != null ? e.getMessage() : "Read failed against Towny");
+                }
             }).thenComposeAsync(lookup -> {
-                if (!lookup.available()) {
+                if (lookup.isUnavailable()) {
                     return CompletableFuture.completedFuture(
                             new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable")));
+                }
+                if (lookup.isFailedRead()) {
+                    return CompletableFuture.completedFuture(
+                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny read failed for town " + townUuid + ": " + lookup.errorMessage())));
                 }
 
                 Optional<TownSnapshot> townOpt = lookup.town();
@@ -218,15 +245,13 @@ public final class DefaultSyncService implements SyncService {
                         acc.inconsistenciesFound.incrementAndGet();
                         acc.problems.add("Town " + space.townName() + " (" + townUuid + ") no longer exists in Towny");
 
-                        if (!isReportMode && space.state() == SpaceState.ACTIVE) {
-                            return discordGateway.submit(new GuildOperation.ArchiveSpace(space.townUuid(), space.townName()))
-                                    .thenApply(outcome -> {
-                                        if (outcome != null && outcome.succeeded()) {
-                                            spaceRepository.updateState(space.townUuid(), SpaceState.ARCHIVED);
+                        if (!isReportMode && space.state() != SpaceState.ARCHIVED) {
+                            return executeArchive(space, "Town " + space.townName() + " deleted in Towny")
+                                    .thenApply(success -> {
+                                        if (success) {
                                             acc.inconsistenciesRepaired.incrementAndGet();
                                         } else {
-                                            acc.problems.add("Failed to archive deleted town space " + space.townName()
-                                                    + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                            acc.problems.add("Failed to archive deleted town space " + space.townName());
                                         }
                                         return acc.toReport();
                                     });
@@ -323,14 +348,24 @@ public final class DefaultSyncService implements SyncService {
             PluginConfig.Sync.Mode mode) {
         return callTowny(() -> {
             if (!townyFacade.isAvailable()) {
-                return new TownyLookupResult(false, Optional.empty());
+                return TownyLookupResult.unavailable();
             }
-            return new TownyLookupResult(true, townyFacade.town(space.townUuid()));
+            try {
+                return TownyLookupResult.ok(townyFacade.town(space.townUuid()));
+            } catch (TownyReadException e) {
+                return TownyLookupResult.failedRead(e.getMessage() != null ? e.getMessage() : "Read failed against Towny");
+            }
         }).thenComposeAsync(lookup -> {
-            if (!lookup.available()) {
+            if (lookup.isUnavailable()) {
                 SyncReportAccumulator acc = new SyncReportAccumulator(1);
                 acc.inconsistenciesFound.incrementAndGet();
                 acc.problems.add("Towny is unavailable while checking space " + space.townName());
+                return CompletableFuture.completedFuture(acc);
+            }
+            if (lookup.isFailedRead()) {
+                SyncReportAccumulator acc = new SyncReportAccumulator(1);
+                acc.inconsistenciesFound.incrementAndGet();
+                acc.problems.add("Towny read failed for space " + space.townName() + " (" + space.townUuid() + "): " + lookup.errorMessage());
                 return CompletableFuture.completedFuture(acc);
             }
 
@@ -342,15 +377,13 @@ public final class DefaultSyncService implements SyncService {
                 acc.inconsistenciesFound.incrementAndGet();
                 acc.problems.add("Town " + space.townName() + " (" + space.townUuid() + ") no longer exists in Towny");
 
-                if (!isReportMode && space.state() == SpaceState.ACTIVE) {
-                    return discordGateway.submit(new GuildOperation.ArchiveSpace(space.townUuid(), space.townName()))
-                            .thenApply(outcome -> {
-                                if (outcome != null && outcome.succeeded()) {
-                                    spaceRepository.updateState(space.townUuid(), SpaceState.ARCHIVED);
+                if (!isReportMode && space.state() != SpaceState.ARCHIVED) {
+                    return executeArchive(space, "Town " + space.townName() + " deleted in Towny")
+                            .thenApply(success -> {
+                                if (success) {
                                     acc.inconsistenciesRepaired.incrementAndGet();
                                 } else {
-                                    acc.problems.add("Failed to archive deleted town space " + space.townName()
-                                            + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                    acc.problems.add("Failed to archive deleted town space " + space.townName());
                                 }
                                 return acc;
                             });
@@ -369,27 +402,86 @@ public final class DefaultSyncService implements SyncService {
         boolean isReportMode = mode == PluginConfig.Sync.Mode.REPORT;
         SyncReportAccumulator acc = new SyncReportAccumulator(1);
 
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
-
-        // 1. Ruined check
-        if (town.ruined() && space.state() == SpaceState.ACTIVE) {
+        // 1. Ruined town check: ONE decision per space.
+        // A ruined town's space must be ARCHIVED. No creation or resident role grants ever.
+        if (town.ruined()) {
+            if (space.state() == SpaceState.ARCHIVED) {
+                return CompletableFuture.completedFuture(acc);
+            }
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Town " + town.name() + " is ruined but space is ACTIVE");
-            if (!isReportMode) {
-                futures.add(discordGateway.submit(new GuildOperation.ArchiveSpace(space.townUuid(), space.townName()))
-                        .thenAccept(outcome -> {
-                            if (outcome != null && outcome.succeeded()) {
-                                spaceRepository.updateState(space.townUuid(), SpaceState.ARCHIVED);
+            acc.problems.add("Town " + town.name() + " is ruined but space is " + space.state());
+            if (isReportMode) {
+                return CompletableFuture.completedFuture(acc);
+            }
+            return executeArchive(space, "Town " + town.name() + " is ruined")
+                    .thenApply(success -> {
+                        if (success) {
+                            acc.inconsistenciesRepaired.incrementAndGet();
+                        } else {
+                            acc.problems.add("Failed to archive ruined town space " + town.name());
+                        }
+                        return acc;
+                    });
+        }
+
+        // Town is alive and not ruined:
+        // 2. Revived town: ARCHIVED space whose town is alive again.
+        // Must restore space with history intact (spec section 7).
+        if (space.state() == SpaceState.ARCHIVED) {
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Town " + town.name() + " is alive but space is ARCHIVED");
+            if (isReportMode) {
+                return CompletableFuture.completedFuture(acc);
+            }
+            return executeRestore(space, town)
+                    .thenApply(success -> {
+                        if (success) {
+                            acc.inconsistenciesRepaired.incrementAndGet();
+                        } else {
+                            acc.problems.add("Failed to restore space " + town.name());
+                        }
+                        return acc;
+                    });
+        }
+
+        // 3. Inconsistent state check
+        if (space.state() == SpaceState.INCONSISTENT) {
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Space for town " + town.name() + " is in INCONSISTENT state");
+            if (isReportMode) {
+                return CompletableFuture.completedFuture(acc);
+            }
+            if (space.archivedAt().isPresent()) {
+                // Incomplete restoration: resume restoration with history
+                return executeRestore(space, town)
+                        .thenApply(success -> {
+                            if (success) {
                                 acc.inconsistenciesRepaired.incrementAndGet();
                             } else {
-                                acc.problems.add("Failed to archive ruined town space " + town.name()
+                                acc.problems.add("Failed to resume restoration of space " + town.name());
+                            }
+                            return acc;
+                        });
+            } else {
+                // Incomplete creation: resume creation
+                SpaceRequest request = buildSpaceRequest(town);
+                return discordGateway.submit(new GuildOperation.CreateSpace(request))
+                        .thenApply(outcome -> {
+                            if (outcome != null && outcome.succeeded()) {
+                                acc.inconsistenciesRepaired.incrementAndGet();
+                            } else {
+                                acc.problems.add("Failed to repair inconsistent space " + town.name()
                                         + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
                             }
-                        }));
+                            return acc;
+                        });
             }
         }
 
-        // 2. Rename check
+        // 4. ACTIVE space reconciliation
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        // 4a. Rename check
         if (!town.name().equalsIgnoreCase(space.townName())) {
             acc.inconsistenciesFound.incrementAndGet();
             acc.problems.add("Town renamed: " + space.townName() + " -> " + town.name());
@@ -402,50 +494,55 @@ public final class DefaultSyncService implements SyncService {
                                 acc.problems.add("Failed to rename space from " + space.townName() + " to " + town.name()
                                         + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
                             }
+                        })
+                        .exceptionally(ex -> {
+                            acc.problems.add("Failed to rename space from " + space.townName() + " to " + town.name() + ": " + ex.getMessage());
+                            return null;
                         }));
             }
         }
 
-        // 3. Inconsistent state check
-        if (space.state() == SpaceState.INCONSISTENT) {
-            acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Space for town " + town.name() + " is in INCONSISTENT state");
-            if (!isReportMode) {
-                if (space.archivedAt().isPresent()) {
-                    futures.add(discordGateway.submit(new GuildOperation.ArchiveSpace(space.townUuid(), space.townName()))
-                            .thenAccept(outcome -> {
-                                if (outcome != null && outcome.succeeded()) {
-                                    spaceRepository.updateState(space.townUuid(), SpaceState.ARCHIVED);
-                                    acc.inconsistenciesRepaired.incrementAndGet();
-                                } else {
-                                    acc.problems.add("Failed to repair archived space " + town.name()
-                                            + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
-                                }
-                            }));
-                } else {
-                    SpaceRequest request = buildSpaceRequest(town);
-                    futures.add(discordGateway.submit(new GuildOperation.CreateSpace(request))
-                            .thenAccept(outcome -> {
-                                if (outcome != null && outcome.succeeded()) {
-                                    acc.inconsistenciesRepaired.incrementAndGet();
-                                } else {
-                                    acc.problems.add("Failed to repair inconsistent space " + town.name()
-                                            + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
-                                }
-                            }));
-                }
-            }
-        }
-
-        // 4. Missing channels / role check
+        // 4b. Missing channels / role check against Discord (Finding 1)
         boolean wantsText = config.structure().createTextChannel();
         boolean wantsVoice = config.structure().createVoiceChannel();
-        boolean textMissing = wantsText && space.textChannelId().isEmpty();
-        boolean voiceMissing = wantsVoice && space.voiceChannelId().isEmpty();
-        boolean roleMissing = space.roleId().isEmpty();
-        boolean noChannels = space.textChannelId().isEmpty() && space.voiceChannelId().isEmpty();
 
-        if (space.state() == SpaceState.ACTIVE && (textMissing || voiceMissing || roleMissing || noChannels)) {
+        List<String> storedIds = new ArrayList<>();
+        space.textChannelId().ifPresent(storedIds::add);
+        space.voiceChannelId().ifPresent(storedIds::add);
+        space.roleId().ifPresent(storedIds::add);
+
+        Set<String> existingDiscordIds = null;
+        boolean discordCheckFailed = false;
+        try {
+            existingDiscordIds = discordGateway.existingResourceIds(storedIds);
+        } catch (Exception e) {
+            discordCheckFailed = true;
+            acc.inconsistenciesFound.incrementAndGet();
+            acc.problems.add("Failed to verify Discord resources for town " + town.name() + ": " + e.getMessage());
+        }
+
+        boolean textMissing;
+        boolean voiceMissing;
+        boolean roleMissing;
+        boolean noChannels;
+
+        if (discordCheckFailed || existingDiscordIds == null) {
+            // When Discord is unavailable or check failed loudly:
+            // The caller must NEVER read a deletion out of an outage!
+            textMissing = false;
+            voiceMissing = false;
+            roleMissing = false;
+            noChannels = false;
+        } else {
+            textMissing = wantsText && (space.textChannelId().isEmpty() || !existingDiscordIds.contains(space.textChannelId().get()));
+            voiceMissing = wantsVoice && (space.voiceChannelId().isEmpty() || !existingDiscordIds.contains(space.voiceChannelId().get()));
+            roleMissing = space.roleId().isEmpty() || !existingDiscordIds.contains(space.roleId().get());
+            boolean hasText = space.textChannelId().isPresent() && existingDiscordIds.contains(space.textChannelId().get());
+            boolean hasVoice = space.voiceChannelId().isPresent() && existingDiscordIds.contains(space.voiceChannelId().get());
+            noChannels = !hasText && !hasVoice;
+        }
+
+        if (textMissing || voiceMissing || roleMissing || noChannels) {
             acc.inconsistenciesFound.incrementAndGet();
             if (noChannels) {
                 acc.problems.add("Space for town " + town.name() + " has no channels registered");
@@ -464,42 +561,50 @@ public final class DefaultSyncService implements SyncService {
                                 acc.problems.add("Failed to repair missing channels/role for " + town.name()
                                         + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
                             }
+                        })
+                        .exceptionally(ex -> {
+                            acc.problems.add("Failed to repair missing channels/role for " + town.name() + ": " + ex.getMessage());
+                            return null;
                         }));
             }
         }
 
-        // 5. Residents role sync
-        if (space.state() == SpaceState.ACTIVE && !town.ruined()) {
-            Set<String> allManagedRoles = getManagedRoleIds();
-            for (UUID residentUuid : town.residentUuids()) {
-                Optional<AccountLink> linkOpt = linkRepository.findByUuid(residentUuid);
-                if (linkOpt.isPresent()) {
-                    AccountLink link = linkOpt.get();
-                    PlayerRoleDiff diff = calculatePlayerRoleDiff(
-                            residentUuid, Optional.empty(), Optional.of(town), allManagedRoles);
+        // 4c. Residents role sync
+        Set<String> allManagedRoles = getManagedRoleIds();
+        for (UUID residentUuid : town.residentUuids()) {
+            Optional<AccountLink> linkOpt = linkRepository.findByUuid(residentUuid);
+            if (linkOpt.isPresent()) {
+                AccountLink link = linkOpt.get();
+                PlayerRoleDiff diff = calculatePlayerRoleDiff(
+                        residentUuid, Optional.empty(), Optional.of(town), allManagedRoles);
 
-                    if (!isReportMode) {
-                        if (!diff.grantRoles().isEmpty() || !diff.revokeRoles().isEmpty()) {
-                            futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
-                                    link.discordId(), diff.grantRoles(), diff.revokeRoles()
-                            )).thenAccept(outcome -> {
-                                if (outcome != null && outcome.succeeded()) {
-                                    acc.rolesGranted.addAndGet(diff.grantRoles().size());
-                                    acc.rolesRevoked.addAndGet(diff.revokeRoles().size());
-                                } else {
-                                    acc.problems.add("Failed to adjust roles for member " + link.discordId()
-                                            + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
-                                }
-                            }));
-                        }
+                if (!isReportMode) {
+                    if (!diff.grantRoles().isEmpty() || !diff.revokeRoles().isEmpty()) {
+                        futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
+                                link.discordId(), diff.grantRoles(), diff.revokeRoles()
+                        )).thenAccept(outcome -> {
+                            if (outcome != null && outcome.succeeded()) {
+                                acc.rolesGranted.addAndGet(diff.grantRoles().size());
+                                acc.rolesRevoked.addAndGet(diff.revokeRoles().size());
+                            } else {
+                                acc.problems.add("Failed to adjust roles for member " + link.discordId()
+                                        + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                            }
+                        }).exceptionally(ex -> {
+                            acc.problems.add("Failed to adjust roles for member " + link.discordId() + ": " + ex.getMessage());
+                            return null;
+                        }));
                     }
                 }
             }
         }
 
+        // 4d. Role holders audit (ensure every holder of this managed town role is a justified resident)
+        boolean roleExistsInDiscord = space.roleId().isPresent()
+                && existingDiscordIds != null
+                && existingDiscordIds.contains(space.roleId().get());
 
-        // 6. Role holders audit (ensure every holder of this managed town role is a justified resident)
-        if (space.state() == SpaceState.ACTIVE && !town.ruined() && space.roleId().isPresent()) {
+        if (roleExistsInDiscord) {
             String townRoleId = space.roleId().get();
             try {
                 Set<String> holders = discordGateway.roleHolders(townRoleId);
@@ -536,6 +641,10 @@ public final class DefaultSyncService implements SyncService {
                                                 + " from member " + holderDiscordId + ": "
                                                 + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
                                     }
+                                }).exceptionally(ex -> {
+                                    acc.problems.add("Failed to revoke unjustified role " + townRoleId
+                                            + " from member " + holderDiscordId + ": " + ex.getMessage());
+                                    return null;
                                 }));
                             }
                         }
@@ -617,6 +726,63 @@ public final class DefaultSyncService implements SyncService {
         return new PlayerRoleDiff(new ArrayList<>(shouldHave), new ArrayList<>(shouldRevoke));
     }
 
+    private CompletableFuture<Boolean> executeArchive(TownSpace space, String reason) {
+        if (spaceService != null) {
+            return spaceService.archive(space.townUuid(), reason)
+                    .thenApply(v -> true)
+                    .exceptionally(ex -> false);
+        }
+
+        Instant now = clock.instant();
+        if (space.archivedAt().isEmpty()) {
+            TownSpace beingArchived = new TownSpace(
+                    space.townUuid(), space.townName(),
+                    space.categoryId(), space.textChannelId(), space.voiceChannelId(), space.roleId(),
+                    space.state(), space.createdAt(), Optional.of(now), space.lastActivityAt());
+            spaceRepository.save(beingArchived);
+        }
+
+        return discordGateway.submit(new GuildOperation.ArchiveSpace(space.townUuid(), space.townName()))
+                .thenApply(outcome -> {
+                    if (outcome != null && outcome.succeeded()) {
+                        spaceRepository.updateState(space.townUuid(), SpaceState.ARCHIVED);
+                        return true;
+                    }
+                    return false;
+                })
+                .exceptionally(ex -> false);
+    }
+
+    private CompletableFuture<Boolean> executeRestore(TownSpace space, TownSnapshot town) {
+        SpaceRequest request = buildSpaceRequest(town);
+        if (spaceService != null) {
+            return spaceService.restore(request)
+                    .thenApply(v -> true)
+                    .exceptionally(ex -> false);
+        }
+
+        return discordGateway.submit(new GuildOperation.RestoreSpace(request))
+                .thenApply(outcome -> {
+                    if (outcome != null && outcome.succeeded()) {
+                        Instant now = clock.instant();
+                        Optional<TownSpace> currentOpt = spaceRepository.findByTownUuid(space.townUuid());
+                        if (currentOpt.isPresent()) {
+                            TownSpace current = currentOpt.get();
+                            spaceRepository.save(new TownSpace(
+                                    current.townUuid(), current.townName(),
+                                    current.categoryId(), current.textChannelId(), current.voiceChannelId(), current.roleId(),
+                                    SpaceState.ACTIVE,
+                                    current.createdAt(), Optional.empty(), Optional.of(now)));
+                        } else {
+                            spaceRepository.updateState(space.townUuid(), SpaceState.ACTIVE);
+                        }
+                        return true;
+                    }
+                    return false;
+                })
+                .exceptionally(ex -> false);
+    }
+
     private SpaceRequest buildSpaceRequest(TownSnapshot town) {
         List<String> linkedResidents = new ArrayList<>();
         String mayorDiscordId = "";
@@ -661,10 +827,41 @@ public final class DefaultSyncService implements SyncService {
             Optional<TownSnapshot> town
     ) {}
 
+    private enum TownyStatus {
+        OK,
+        FAILED_READ,
+        UNAVAILABLE
+    }
+
     private record TownyLookupResult(
-            boolean available,
-            Optional<TownSnapshot> town
-    ) {}
+            TownyStatus status,
+            Optional<TownSnapshot> town,
+            String errorMessage
+    ) {
+        static TownyLookupResult ok(Optional<TownSnapshot> town) {
+            return new TownyLookupResult(TownyStatus.OK, town, null);
+        }
+
+        static TownyLookupResult failedRead(String message) {
+            return new TownyLookupResult(TownyStatus.FAILED_READ, Optional.empty(), message);
+        }
+
+        static TownyLookupResult unavailable() {
+            return new TownyLookupResult(TownyStatus.UNAVAILABLE, Optional.empty(), "Towny is unavailable");
+        }
+
+        boolean isOk() {
+            return status == TownyStatus.OK;
+        }
+
+        boolean isUnavailable() {
+            return status == TownyStatus.UNAVAILABLE;
+        }
+
+        boolean isFailedRead() {
+            return status == TownyStatus.FAILED_READ;
+        }
+    }
 
     private record PlayerRoleDiff(
             List<String> grantRoles,

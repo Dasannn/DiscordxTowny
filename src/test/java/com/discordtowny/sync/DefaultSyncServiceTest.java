@@ -12,8 +12,10 @@ import com.discordtowny.model.TownSpace;
 import com.discordtowny.storage.HikariStorage;
 import com.discordtowny.storage.LinkRepository;
 import com.discordtowny.storage.SpaceRepository;
+import com.discordtowny.space.SpaceService;
 import com.discordtowny.sync.SyncService.SyncReport;
 import com.discordtowny.towny.TownyFacade;
+import com.discordtowny.towny.TownyReadException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -115,6 +117,10 @@ class DefaultSyncServiceTest {
         when(discordGateway.isAvailable()).thenReturn(true);
         when(discordGateway.mayorRoleId()).thenReturn(Optional.of("role-mayor-id"));
         when(discordGateway.submit(any())).thenReturn(CompletableFuture.completedFuture(OperationOutcome.success()));
+        when(discordGateway.existingResourceIds(any())).thenAnswer(invocation -> {
+            java.util.Collection<String> ids = invocation.getArgument(0);
+            return ids != null ? new java.util.LinkedHashSet<>(ids) : java.util.Collections.emptySet();
+        });
 
         townyFacade = mock(TownyFacade.class);
         when(townyFacade.isAvailable()).thenReturn(true);
@@ -1028,8 +1034,17 @@ class DefaultSyncServiceTest {
 
         // Sub-case B: Failed holder lookup (gateway threw exception)
         reset(discordGateway);
+        // reset() wipes what setUp stubbed, so the baseline has to come back:
+        // without it the stored resources look deleted and the service tries to
+        // repair them, which is not what this test is about.
         when(discordGateway.isAvailable()).thenReturn(true);
         when(discordGateway.mayorRoleId()).thenReturn(Optional.of("role-mayor-id"));
+        when(discordGateway.submit(any()))
+                .thenReturn(CompletableFuture.completedFuture(OperationOutcome.success()));
+        when(discordGateway.existingResourceIds(any())).thenAnswer(invocation -> {
+            java.util.Collection<String> ids = invocation.getArgument(0);
+            return ids != null ? new java.util.LinkedHashSet<>(ids) : java.util.Collections.emptySet();
+        });
         when(discordGateway.roleHolders(townRole))
                 .thenThrow(new IllegalStateException("Discord gateway is disconnected"));
 
@@ -1046,6 +1061,459 @@ class DefaultSyncServiceTest {
                 "Problem description must report the failed lookup");
         // Zero mutations submitted for revoking
         verify(discordGateway, never()).submit(any());
+    }
+
+    // --- Regression Tests for Finding 1 (AC 6): Deleted Discord resources with stored IDs ---
+
+    @Test
+    @DisplayName("Deleted Discord channel with persisted ID is detected and repaired via CreateSpace in repair mode")
+    void deletedDiscordChannelWithPersistedIdIsDetectedAndRepairedInRepairMode() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "TownOne",
+                Optional.of("cat-1"), Optional.of("txt-stored"), Optional.of("vc-stored"),
+                Optional.of("role-stored"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownOne", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 5, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        // text channel is missing in Discord, but persisted ID remains in database
+        when(discordGateway.existingResourceIds(any())).thenReturn(Set.of("vc-stored", "role-stored"));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("missing required channels")),
+                "Problem must report missing required channels");
+
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway).submit(captor.capture());
+        assertInstanceOf(GuildOperation.CreateSpace.class, captor.getValue());
+    }
+
+    @Test
+    @DisplayName("Deleted Discord channel with persisted ID in report mode records problem and submits zero operations")
+    void deletedDiscordChannelWithPersistedIdInReportModeReportsDiscrepancyWithoutModifications() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "TownOne",
+                Optional.of("cat-1"), Optional.of("txt-stored"), Optional.of("vc-stored"),
+                Optional.of("role-stored"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownOne", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 5, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        when(discordGateway.existingResourceIds(any())).thenReturn(Set.of("vc-stored", "role-stored"));
+
+        PluginConfig reportConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(),
+                new PluginConfig.Sync(Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPORT, 2, Duration.ofSeconds(5)),
+                config.linking(), config.logging(), config.updates(), config.commands()
+        );
+
+        DefaultSyncService reportService = new DefaultSyncService(
+                spySpaceRepository, spyLinkRepository, discordGateway, townyFacade, reportConfig,
+                clock, Runnable::run, null, null
+        );
+
+        SyncReport report = reportService.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(0, report.inconsistenciesRepaired());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("missing required channels")));
+
+        verify(discordGateway, never()).submit(any());
+        verify(spySpaceRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Deleted Discord role with persisted ID is detected and repaired via CreateSpace in repair mode")
+    void deletedDiscordRoleWithPersistedIdIsDetectedAndRepairedInRepairMode() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "TownOne",
+                Optional.of("cat-1"), Optional.of("txt-stored"), Optional.of("vc-stored"),
+                Optional.of("role-stored"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownOne", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 5, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        // role is missing in Discord, but persisted ID remains in database
+        when(discordGateway.existingResourceIds(any())).thenReturn(Set.of("txt-stored", "vc-stored"));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("deleted/missing role")),
+                "Problem must report deleted/missing role");
+
+        verify(discordGateway).submit(any(GuildOperation.CreateSpace.class));
+    }
+
+    @Test
+    @DisplayName("Discord outage during resource existence check fails loudly and does not treat outage as deletion")
+    void discordOutageDuringResourceExistenceCheckDoesNotTreatOutageAsDeletion() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "TownOne",
+                Optional.of("cat-1"), Optional.of("txt-stored"), Optional.of("vc-stored"),
+                Optional.of("role-stored"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownOne", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 5, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        when(discordGateway.existingResourceIds(any()))
+                .thenThrow(new IllegalStateException("Discord gateway unavailable"));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(0, report.inconsistenciesRepaired());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("Failed to verify Discord resources")),
+                "Problem must report failure to verify resources rather than claiming resource deletion");
+
+        verify(discordGateway, never()).submit(any(GuildOperation.CreateSpace.class));
+    }
+
+    // --- Regression Tests for Finding 2: Unified single lifecycle decision ---
+
+    @Test
+    @DisplayName("Ruined town with ACTIVE space and missing role queues only ArchiveSpace and never CreateSpace")
+    void ruinedTownWithActiveSpaceAndMissingRoleQueuesOnlyArchiveSpaceAndNeverCreateSpace() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "RuinedTown",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.empty(), SpaceState.ACTIVE, // missing role!
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot ruinedTown = new TownSnapshot(
+                townUuid, "RuinedTown", UUID.randomUUID(), List.of(), true, // ruined!
+                Optional.empty(), 5, 0, 0);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(ruinedTown));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+
+        verify(discordGateway).submit(any(GuildOperation.ArchiveSpace.class));
+        verify(discordGateway, never()).submit(any(GuildOperation.CreateSpace.class));
+        verify(discordGateway, never()).submit(any(GuildOperation.ApplyMemberRoles.class));
+        verify(spySpaceRepository).updateState(townUuid, SpaceState.ARCHIVED);
+    }
+
+    @Test
+    @DisplayName("Ruined town with INCONSISTENT space queues ArchiveSpace and never CreateSpace")
+    void ruinedTownWithInconsistentSpaceQueuesArchiveSpaceAndNeverCreateSpace() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "RuinedInconsistent",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.empty(),
+                Optional.of("role-1"), SpaceState.INCONSISTENT,
+                clock.instant(), Optional.empty(), Optional.empty()); // archivedAt is empty!
+        spaceRepository.save(space);
+
+        TownSnapshot ruinedTown = new TownSnapshot(
+                townUuid, "RuinedInconsistent", UUID.randomUUID(), List.of(), true,
+                Optional.empty(), 5, 0, 0);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(ruinedTown));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+
+        verify(discordGateway).submit(any(GuildOperation.ArchiveSpace.class));
+        verify(discordGateway, never()).submit(any(GuildOperation.CreateSpace.class));
+        verify(spySpaceRepository).updateState(townUuid, SpaceState.ARCHIVED);
+    }
+
+    @Test
+    @DisplayName("Failed archive leaving space inconsistent is retried on later passes and archived")
+    void failedArchiveLeavingSpaceInconsistentIsRetriedOnLaterPasses() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "FailedArchiveTown",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.INCONSISTENT,
+                clock.instant(), Optional.of(clock.instant()), Optional.empty());
+        spaceRepository.save(space);
+
+        when(townyFacade.town(townUuid)).thenReturn(Optional.empty()); // deleted town
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+
+        verify(discordGateway).submit(any(GuildOperation.ArchiveSpace.class));
+        verify(spySpaceRepository).updateState(townUuid, SpaceState.ARCHIVED);
+    }
+
+    @Test
+    @DisplayName("Archive records intent before submitting Discord operation")
+    void archiveRecordsIntentBeforeSubmittingDiscordOperation() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "IntentTown",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        when(townyFacade.town(townUuid)).thenReturn(Optional.empty());
+
+        InOrder inOrder = inOrder(spySpaceRepository, discordGateway);
+
+        service.reconcileAll().join();
+
+        inOrder.verify(spySpaceRepository).save(argThat(s -> s.archivedAt().isPresent()));
+        inOrder.verify(discordGateway).submit(any(GuildOperation.ArchiveSpace.class));
+        inOrder.verify(spySpaceRepository).updateState(townUuid, SpaceState.ARCHIVED);
+    }
+
+    // --- Regression Tests for Finding 3: Act on absence, never on a failed read ---
+
+    @Test
+    @DisplayName("TownyReadException in syncTown reports problem and leaves access untouched without archiving")
+    void townyReadExceptionInSyncTownReportsProblemAndLeavesAccessUntouched() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "TownLiving",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        when(townyFacade.town(townUuid))
+                .thenThrow(new TownyReadException("Towny read timed out", new RuntimeException()));
+
+        SyncReport report = service.syncTown(townUuid).join();
+
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(0, report.inconsistenciesRepaired());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("Towny read timed out")),
+                "Problem must report the Towny read failure");
+
+        verify(discordGateway, never()).submit(any());
+        verify(spySpaceRepository, never()).updateState(any(), any());
+
+        TownSpace current = spaceRepository.findByTownUuid(townUuid).orElseThrow();
+        assertEquals(SpaceState.ACTIVE, current.state(), "Space must remain ACTIVE after failed Towny read");
+    }
+
+    @Test
+    @DisplayName("TownyReadException in reconcileAll reports problem and protects living town from archive")
+    void townyReadExceptionInReconcileAllReportsProblemAndProtectsLivingTown() {
+        UUID town1Uuid = UUID.randomUUID();
+        TownSpace space1 = new TownSpace(
+                town1Uuid, "TownFailingRead",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space1);
+
+        UUID town2Uuid = UUID.randomUUID();
+        TownSpace space2 = new TownSpace(
+                town2Uuid, "TownHealthy",
+                Optional.of("cat-2"), Optional.of("txt-2"), Optional.of("vc-2"),
+                Optional.of("role-2"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space2);
+
+        when(townyFacade.town(town1Uuid))
+                .thenThrow(new TownyReadException("Read hiccup for town 1", null));
+        when(townyFacade.town(town2Uuid))
+                .thenReturn(Optional.of(new TownSnapshot(town2Uuid, "TownHealthy", UUID.randomUUID(), List.of(), false, Optional.empty(), 5, 0, 0)));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(2, report.spacesChecked());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("Towny read failed for space")),
+                "Problem must report the failed read for space 1");
+
+        verify(discordGateway, never()).submit(any(GuildOperation.ArchiveSpace.class));
+        assertEquals(SpaceState.ACTIVE, spaceRepository.findByTownUuid(town1Uuid).orElseThrow().state(),
+                "Space 1 must remain ACTIVE after Towny hiccup");
+    }
+
+    @Test
+    @DisplayName("TownyReadException in syncPlayer completes exceptionally and submits zero Discord operations")
+    void townyReadExceptionInSyncPlayerCompletesExceptionallyAndSubmitsZeroDiscordOperations() {
+        UUID playerUuid = UUID.randomUUID();
+        spyLinkRepository.save(new AccountLink(playerUuid, "discord-id", clock.instant(), "Player"));
+
+        when(townyFacade.resident(playerUuid))
+                .thenThrow(new TownyReadException("Failed to read resident snapshot", null));
+
+        CompletableFuture<Void> future = service.syncPlayer(playerUuid);
+        CompletionException ex = assertThrows(CompletionException.class, future::join);
+        assertInstanceOf(TownyReadException.class, ex.getCause());
+
+        verify(discordGateway, never()).submit(any());
+    }
+
+    // --- Regression Tests for Finding 4: Revived town restoration ---
+
+    @Test
+    @DisplayName("Revived town restores ARCHIVED space to ACTIVE and restores residents access")
+    void revivedTownRestoresArchivedSpaceToActiveAndRestoresResidentsAccess() {
+        UUID townUuid = UUID.randomUUID();
+        UUID mayorUuid = UUID.randomUUID();
+        UUID residentUuid = UUID.randomUUID();
+
+        TownSpace archivedSpace = new TownSpace(
+                townUuid, "RevivedTown",
+                Optional.of("cat-archive"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-old"), SpaceState.ARCHIVED,
+                clock.instant(), Optional.of(clock.instant().minusSeconds(3600)), Optional.empty());
+        spaceRepository.save(archivedSpace);
+
+        spyLinkRepository.save(new AccountLink(mayorUuid, "mayor-discord-id", clock.instant(), "Mayor"));
+        spyLinkRepository.save(new AccountLink(residentUuid, "resident-discord-id", clock.instant(), "Resident"));
+
+        TownSnapshot aliveTown = new TownSnapshot(
+                townUuid, "RevivedTown", mayorUuid, List.of(mayorUuid, residentUuid), false,
+                Optional.empty(), 2, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(aliveTown));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains("is alive but space is ARCHIVED")),
+                "Problem must report that alive town had an ARCHIVED space");
+
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway).submit(captor.capture());
+        assertInstanceOf(GuildOperation.RestoreSpace.class, captor.getValue());
+
+        GuildOperation.RestoreSpace restoreOp = (GuildOperation.RestoreSpace) captor.getValue();
+        assertEquals(townUuid, restoreOp.request().townUuid());
+        assertEquals("mayor-discord-id", restoreOp.request().mayorDiscordId());
+        assertTrue(restoreOp.request().linkedResidentDiscordIds().contains("resident-discord-id"),
+                "Restoration request must include linked resident IDs to restore their access");
+
+        TownSpace restored = spaceRepository.findByTownUuid(townUuid).orElseThrow();
+        assertEquals(SpaceState.ACTIVE, restored.state(), "Space must transition to ACTIVE");
+        assertTrue(restored.archivedAt().isEmpty(), "archivedAt must be cleared on restoration");
+    }
+
+    @Test
+    @DisplayName("Revived town with INCONSISTENT space carrying archivedAt resumes restoration")
+    void revivedTownWithInconsistentSpaceCarryingArchivedAtResumesRestoration() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace inconsistentSpace = new TownSpace(
+                townUuid, "RevivedInconsistent",
+                Optional.of("cat-archive"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-old"), SpaceState.INCONSISTENT,
+                clock.instant(), Optional.of(clock.instant().minusSeconds(1000)), Optional.empty());
+        spaceRepository.save(inconsistentSpace);
+
+        TownSnapshot aliveTown = new TownSnapshot(
+                townUuid, "RevivedInconsistent", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 5, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(aliveTown));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+
+        verify(discordGateway).submit(any(GuildOperation.RestoreSpace.class));
+        verify(discordGateway, never()).submit(any(GuildOperation.ArchiveSpace.class));
+    }
+
+    @Test
+    @DisplayName("When SpaceService is provided, reconcile consumes SpaceService.archive for ruined town")
+    void whenSpaceServiceProvidedReconcileConsumesSpaceServiceArchiveForRuinedTown() {
+        SpaceService spaceService = mock(SpaceService.class);
+        when(spaceService.archive(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+
+        DefaultSyncService syncService = new DefaultSyncService(
+                spaceService, spySpaceRepository, spyLinkRepository, discordGateway,
+                townyFacade, config, clock, Runnable::run, null, null
+        );
+
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "RuinedWithService",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot ruinedTown = new TownSnapshot(
+                townUuid, "RuinedWithService", UUID.randomUUID(), List.of(), true,
+                Optional.empty(), 5, 0, 0);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(ruinedTown));
+
+        SyncReport report = syncService.reconcileAll().join();
+
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+        verify(spaceService).archive(eq(townUuid), contains("ruined"));
+    }
+
+    @Test
+    @DisplayName("When SpaceService is provided, reconcile consumes SpaceService.restore for revived town")
+    void whenSpaceServiceProvidedReconcileConsumesSpaceServiceRestoreForRevivedTown() {
+        SpaceService spaceService = mock(SpaceService.class);
+        when(spaceService.restore(any())).thenReturn(CompletableFuture.completedFuture(null));
+
+        DefaultSyncService syncService = new DefaultSyncService(
+                spaceService, spySpaceRepository, spyLinkRepository, discordGateway,
+                townyFacade, config, clock, Runnable::run, null, null
+        );
+
+        UUID townUuid = UUID.randomUUID();
+        TownSpace archivedSpace = new TownSpace(
+                townUuid, "RevivedWithService",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.of("vc-1"),
+                Optional.of("role-1"), SpaceState.ARCHIVED,
+                clock.instant(), Optional.of(clock.instant().minusSeconds(3600)), Optional.empty());
+        spaceRepository.save(archivedSpace);
+
+        TownSnapshot aliveTown = new TownSnapshot(
+                townUuid, "RevivedWithService", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 5, 0, 0);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(aliveTown));
+
+        SyncReport report = syncService.reconcileAll().join();
+
+        assertEquals(1, report.inconsistenciesFound());
+        assertEquals(1, report.inconsistenciesRepaired());
+        verify(spaceService).restore(argThat(req -> req.townUuid().equals(townUuid)));
     }
 }
 

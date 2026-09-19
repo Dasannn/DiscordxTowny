@@ -18,6 +18,7 @@ import net.dv8tion.jda.api.utils.cache.CacheFlag;
 import java.awt.Color;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
@@ -271,6 +272,49 @@ public final class JdaDiscordGateway implements DiscordGateway {
             holders.add(member.getId());
         }
         return Collections.unmodifiableSet(holders);
+    }
+
+    @Override
+    public Set<String> existingResourceIds(Collection<String> ids) {
+        if (!isAvailable() || guild == null) {
+            throw new IllegalStateException("Discord is unavailable");
+        }
+        if (ids == null || ids.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<String> existing = new java.util.LinkedHashSet<>();
+        for (String id : ids) {
+            if (id == null || id.isBlank()) {
+                continue;
+            }
+            boolean found = false;
+            try {
+                if (guild.getRoleById(id) != null) {
+                    found = true;
+                }
+            } catch (Exception ignored) {
+            }
+            if (!found) {
+                try {
+                    if (guild.getGuildChannelById(id) != null) {
+                        found = true;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            if (!found) {
+                try {
+                    if (guild.getTextChannelById(id) != null || guild.getVoiceChannelById(id) != null) {
+                        found = true;
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            if (found) {
+                existing.add(id);
+            }
+        }
+        return Collections.unmodifiableSet(existing);
     }
 
     /** Returns the connected guild, if any. For package-internal use. */

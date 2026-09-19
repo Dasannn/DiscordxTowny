@@ -262,5 +262,62 @@ class JdaDiscordGatewayTest {
         assertNotNull(holders);
         assertTrue(holders.isEmpty());
     }
+
+    @Test
+    @DisplayName("existingResourceIds() fails loudly by throwing IllegalStateException when gateway is unavailable")
+    void existingResourceIdsThrowsWhenDisconnected() {
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
+        assertThrows(IllegalStateException.class, () -> gateway.existingResourceIds(List.of("some-id")),
+                "Must fail loudly when Discord is disconnected rather than reporting resources deleted");
+    }
+
+    @Test
+    @DisplayName("existingResourceIds() returns empty set when input is empty or null")
+    void existingResourceIdsReturnsEmptyWhenInputEmptyOrNull() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+
+        assertTrue(gateway.existingResourceIds(List.of()).isEmpty());
+        assertTrue(gateway.existingResourceIds(null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("existingResourceIds() returns empty set when none of the IDs exist in guild")
+    void existingResourceIdsReturnsEmptyWhenNoneExist() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+
+        when(guild.getRoleById("missing-role")).thenReturn(null);
+        when(guild.getTextChannelById("missing-text")).thenReturn(null);
+        when(guild.getVoiceChannelById("missing-voice")).thenReturn(null);
+
+        Set<String> result = gateway.existingResourceIds(List.of("missing-role", "missing-text", "missing-voice"));
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    @DisplayName("existingResourceIds() returns plain Discord IDs for existing roles and channels")
+    void existingResourceIdsReturnsMatchingPlainIdsForRolesAndChannels() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+
+        Role role = mock(Role.class);
+        when(guild.getRoleById("role-1")).thenReturn(role);
+
+        net.dv8tion.jda.api.entities.channel.concrete.TextChannel textCh =
+                mock(net.dv8tion.jda.api.entities.channel.concrete.TextChannel.class);
+        when(guild.getTextChannelById("text-1")).thenReturn(textCh);
+
+        net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel voiceCh =
+                mock(net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel.class);
+        when(guild.getVoiceChannelById("vc-1")).thenReturn(voiceCh);
+
+        Set<String> result = gateway.existingResourceIds(List.of("role-1", "text-1", "vc-1", "missing-id"));
+        assertEquals(Set.of("role-1", "text-1", "vc-1"), result);
+    }
 }
 

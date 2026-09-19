@@ -1,6 +1,7 @@
 package com.discordtowny.minecraft;
 
 import com.discordtowny.config.Messages;
+import com.discordtowny.config.PluginConfig;
 import com.discordtowny.model.TownSnapshot;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
@@ -9,12 +10,16 @@ import com.mojang.brigadier.tree.CommandNode;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -406,5 +411,244 @@ class SyncMinecraftCommandsTest {
         verify(sender, times(1)).sendMessage(messages.get("general.town-not-found", Map.of("town", "Atlantis")));
         verify(syncService, never()).syncTown(any());
         verify(syncService, never()).reconcileAll();
+    }
+
+    private static PluginConfig createConfig(PluginConfig.Sync.Mode mode) {
+        return new PluginConfig(
+                new PluginConfig.Discord("token", "guild", Optional.empty()),
+                new PluginConfig.Database(PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db", "", "", "dt_", 1, 1, Duration.ofSeconds(5)),
+                new PluginConfig.Structure("Cat", "Arch", true, true, "{town}", "{town}"),
+                new PluginConfig.Roles("Alcalde", "{town}", Optional.empty(), false),
+                new PluginConfig.Limits(200, 2, Duration.ofSeconds(60)),
+                new PluginConfig.Lifecycle(PluginConfig.Lifecycle.Action.ARCHIVE, PluginConfig.Lifecycle.Action.ARCHIVE, 30),
+                new PluginConfig.Sync(Duration.ofMinutes(30), mode, 20, Duration.ofSeconds(5)),
+                new PluginConfig.Linking(Duration.ofMinutes(10), 3, Duration.ofMinutes(15), true),
+                new PluginConfig.Logging(Duration.ofSeconds(10), 100, PluginConfig.Logging.Detail.FULL),
+                new PluginConfig.Updates(false, Duration.ofHours(24), false, false),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of())
+        );
+    }
+
+    @Test
+    void dtSyncWithNormallyCompletedReportCarryingFailuresReportsErrorsAndDoesNotAnnounceCleanSuccess() throws Exception {
+        AtomicBoolean scheduled = new AtomicBoolean(false);
+        Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        Player player = mock(Player.class);
+        UUID playerUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+
+        when(source.getSender()).thenReturn(player);
+        when(player.getUniqueId()).thenReturn(playerUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(playerUuid)).thenReturn(true);
+        when(townyFacade.townOf(playerUuid)).thenReturn(Optional.of(town));
+
+        CompletableFuture<SyncService.SyncReport> asyncFuture = new CompletableFuture<>();
+        when(syncService.syncTown(townUuid)).thenReturn(asyncFuture);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("sync").getCommand().run(ctx);
+
+        // Normally completed future carrying failures inside the SyncReport
+        SyncService.SyncReport failureReport = new SyncService.SyncReport(
+                1, 0, 0, 1, 0, List.of("Towny is unavailable", "Discord role could not be assigned"));
+        CompletableFuture.runAsync(() -> asyncFuture.complete(failureReport)).join();
+
+        assertTrue(scheduled.get());
+
+        // CRITICAL: Must NEVER send sync.finished when there are failures!
+        verify(player, never()).sendMessage(messages.get("sync.finished"));
+
+        // Must report the failure details to the player
+        ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
+        verify(player, atLeastOnce()).sendMessage(captor.capture());
+
+        List<String> plainTexts = captor.getAllValues().stream()
+                .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                .toList();
+
+        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("failure(s)") || t.contains("Towny is unavailable")),
+                "Must report failures/problems to sender instead of falsely announcing success");
+        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("Discord role could not be assigned")),
+                "Must include individual failure descriptions from the report");
+    }
+
+    @Test
+    void dtAdminSyncInReportModeWithDiscrepanciesReportsUntouchedFindingsAndDoesNotAnnounceCleanSuccess() throws Exception {
+        AtomicBoolean scheduled = new AtomicBoolean(false);
+        Consumer<Runnable> scheduler = task -> {
+            scheduled.set(true);
+            task.run();
+        };
+
+        PluginConfig reportConfig = createConfig(PluginConfig.Sync.Mode.REPORT);
+
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, reportConfig, messages, townyFacade, scheduler);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        CommandSender sender = mock(CommandSender.class);
+        when(source.getSender()).thenReturn(sender);
+
+        CompletableFuture<SyncService.SyncReport> asyncFuture = new CompletableFuture<>();
+        when(syncService.reconcileAll()).thenReturn(asyncFuture);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("admin").getChild("sync").getCommand().run(ctx);
+
+        // Report-mode normally completed report: discrepancies found, deliberately untouched (0 repaired)
+        SyncService.SyncReport reportModeReport = new SyncService.SyncReport(
+                5, 2, 1, 3, 0, List.of());
+        CompletableFuture.runAsync(() -> asyncFuture.complete(reportModeReport)).join();
+
+        assertTrue(scheduled.get());
+
+        // CRITICAL: Must NEVER send sync.finished in report mode with discrepancies!
+        verify(sender, never()).sendMessage(messages.get("sync.finished"));
+
+        // Must report what was found and deliberately not touched
+        ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
+        verify(sender, atLeastOnce()).sendMessage(captor.capture());
+
+        List<String> plainTexts = captor.getAllValues().stream()
+                .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                .toList();
+
+        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("[Report Mode]") && t.contains("3 discrepancy(ies)")),
+                "Must report discrepancies found without falsely implying synchronization repaired them");
+        assertTrue(plainTexts.stream().anyMatch(t -> t.contains("deliberately not modified")),
+                "Must indicate findings were deliberately not touched in report mode");
+    }
+
+    @Test
+    void suggestionsCheckPrimaryThreadFirstAndNeverCallFacadeOffThread() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade);
+
+        @SuppressWarnings("unchecked")
+        com.mojang.brigadier.tree.ArgumentCommandNode<CommandSourceStack, String> townArgNode =
+                (com.mojang.brigadier.tree.ArgumentCommandNode<CommandSourceStack, String>)
+                        root.getChild("admin").getChild("sync").getChild("town");
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        com.mojang.brigadier.suggestion.SuggestionsBuilder builder =
+                new com.mojang.brigadier.suggestion.SuggestionsBuilder("dt admin sync sp", 14);
+
+        // In this test environment, Bukkit.getServer() is null or Bukkit.isPrimaryThread() is false.
+        // Even if townyFacade would throw on any off-thread access, suggestions must not call it!
+        doAnswer(inv -> {
+            fail("townyFacade.isAvailable() must NEVER be called off the primary thread!");
+            return false;
+        }).when(townyFacade).isAvailable();
+
+        doAnswer(inv -> {
+            fail("townyFacade.allTowns() must NEVER be called off the primary thread!");
+            return List.of();
+        }).when(townyFacade).allTowns();
+
+        CompletableFuture<com.mojang.brigadier.suggestion.Suggestions> future =
+                townArgNode.listSuggestions(ctx, builder);
+
+        assertNotNull(future);
+        com.mojang.brigadier.suggestion.Suggestions suggestions = future.join();
+        assertNotNull(suggestions);
+
+        // Verify facade was NEVER invoked off primary thread
+        verify(townyFacade, never()).isAvailable();
+        verify(townyFacade, never()).allTowns();
+    }
+
+    @Test
+    void suggestionsOnPrimaryThreadProduceMatchingTowns() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade);
+
+        @SuppressWarnings("unchecked")
+        com.mojang.brigadier.tree.ArgumentCommandNode<CommandSourceStack, String> townArgNode =
+                (com.mojang.brigadier.tree.ArgumentCommandNode<CommandSourceStack, String>)
+                        root.getChild("admin").getChild("sync").getChild("town");
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        com.mojang.brigadier.suggestion.SuggestionsBuilder builder =
+                new com.mojang.brigadier.suggestion.SuggestionsBuilder("dt admin sync sp", 14);
+
+        TownSnapshot sparta = mock(TownSnapshot.class);
+        when(sparta.name()).thenReturn("Sparta");
+        TownSnapshot springfield = mock(TownSnapshot.class);
+        when(springfield.name()).thenReturn("Springfield");
+        TownSnapshot athens = mock(TownSnapshot.class);
+        when(athens.name()).thenReturn("Athens");
+
+        when(townyFacade.isAvailable()).thenReturn(true);
+        when(townyFacade.allTowns()).thenReturn(List.of(sparta, springfield, athens));
+
+        try (var bukkitMock = mockStatic(Bukkit.class)) {
+            org.bukkit.Server server = mock(org.bukkit.Server.class);
+            bukkitMock.when(Bukkit::getServer).thenReturn(server);
+            bukkitMock.when(Bukkit::isPrimaryThread).thenReturn(true);
+
+            CompletableFuture<com.mojang.brigadier.suggestion.Suggestions> future =
+                    townArgNode.listSuggestions(ctx, builder);
+
+            assertNotNull(future);
+            com.mojang.brigadier.suggestion.Suggestions suggestions = future.join();
+            List<String> list = suggestions.getList().stream()
+                    .map(com.mojang.brigadier.suggestion.Suggestion::getText)
+                    .toList();
+
+            assertTrue(list.contains("Sparta"));
+            assertTrue(list.contains("Springfield"));
+            assertFalse(list.contains("Athens"));
+        }
+    }
+
+    @Test
+    void suggestionsCatchExceptionsFromFacadeWithoutThrowing() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade);
+
+        @SuppressWarnings("unchecked")
+        com.mojang.brigadier.tree.ArgumentCommandNode<CommandSourceStack, String> townArgNode =
+                (com.mojang.brigadier.tree.ArgumentCommandNode<CommandSourceStack, String>)
+                        root.getChild("admin").getChild("sync").getChild("town");
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        com.mojang.brigadier.suggestion.SuggestionsBuilder builder =
+                new com.mojang.brigadier.suggestion.SuggestionsBuilder("dt admin sync sp", 14);
+
+        when(townyFacade.isAvailable()).thenThrow(new RuntimeException("Towny unavailable"));
+
+        try (var bukkitMock = mockStatic(Bukkit.class)) {
+            org.bukkit.Server server = mock(org.bukkit.Server.class);
+            bukkitMock.when(Bukkit::getServer).thenReturn(server);
+            bukkitMock.when(Bukkit::isPrimaryThread).thenReturn(true);
+
+            CompletableFuture<com.mojang.brigadier.suggestion.Suggestions> future =
+                    townArgNode.listSuggestions(ctx, builder);
+
+            assertNotNull(future);
+            com.mojang.brigadier.suggestion.Suggestions suggestions = future.join();
+            assertNotNull(suggestions);
+            assertTrue(suggestions.isEmpty());
+        }
     }
 }

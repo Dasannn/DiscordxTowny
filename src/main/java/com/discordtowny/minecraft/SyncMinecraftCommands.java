@@ -11,6 +11,7 @@ import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -22,6 +23,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -44,7 +46,7 @@ public final class SyncMinecraftCommands {
             PluginConfig config,
             Messages messages,
             TownyFacade townyFacade) {
-        return createCommandNode(syncService, messages, townyFacade, defaultScheduler());
+        return createCommandNode(syncService, config, messages, townyFacade, defaultScheduler());
     }
 
     public static LiteralCommandNode<CommandSourceStack> createCommandNode(
@@ -53,18 +55,27 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> syncScheduler) {
-        return createCommandNode(syncService, messages, townyFacade, syncScheduler);
+        return createCommandNode(syncService, config != null ? () -> config : null, messages, townyFacade, syncScheduler);
     }
 
     public static LiteralCommandNode<CommandSourceStack> createCommandNode(
             SyncService syncService,
             Messages messages,
             TownyFacade townyFacade) {
-        return createCommandNode(syncService, messages, townyFacade, defaultScheduler());
+        return createCommandNode(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, defaultScheduler());
     }
 
     public static LiteralCommandNode<CommandSourceStack> createCommandNode(
             SyncService syncService,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> syncScheduler) {
+        return createCommandNode(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, syncScheduler);
+    }
+
+    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> syncScheduler) {
@@ -73,13 +84,31 @@ public final class SyncMinecraftCommands {
         Consumer<Runnable> scheduler = syncScheduler != null ? syncScheduler : defaultScheduler();
 
         LiteralArgumentBuilder<CommandSourceStack> dt = Commands.literal("dt");
-        dt.then(createSyncSubcommand(syncService, messages, townyFacade, scheduler));
-        dt.then(createAdminNode(syncService, messages, townyFacade, scheduler));
+        dt.then(createSyncSubcommand(syncService, configSupplier, messages, townyFacade, scheduler));
+        dt.then(createAdminNode(syncService, configSupplier, messages, townyFacade, scheduler));
         return dt.build();
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createSyncSubcommand(
             SyncService syncService,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createSyncSubcommand(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createSyncSubcommand(
+            SyncService syncService,
+            PluginConfig config,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createSyncSubcommand(syncService, config != null ? () -> config : null, messages, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createSyncSubcommand(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
@@ -108,7 +137,7 @@ public final class SyncMinecraftCommands {
 
                     UUID townUuid = town.uuid();
                     syncService.syncTown(townUuid).thenAccept(report -> {
-                        scheduler.accept(() -> player.sendMessage(messages.get("sync.finished")));
+                        scheduler.accept(() -> replyReport(player, report, isReportMode(configSupplier), messages));
                     }).exceptionally(ex -> {
                         scheduler.accept(() -> replyError(player, messages, ex));
                         return null;
@@ -123,13 +152,49 @@ public final class SyncMinecraftCommands {
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
+        return createAdminNode(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
+            SyncService syncService,
+            PluginConfig config,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createAdminNode(syncService, config != null ? () -> config : null, messages, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
         return Commands.literal("admin")
                 .requires(source -> source.getSender().hasPermission("discordtowny.admin"))
-                .then(createAdminSyncSubcommand(syncService, messages, townyFacade, scheduler));
+                .then(createAdminSyncSubcommand(syncService, configSupplier, messages, townyFacade, scheduler));
     }
 
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
             SyncService syncService,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createAdminSyncSubcommand(syncService, (Supplier<PluginConfig>) null, messages, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
+            SyncService syncService,
+            PluginConfig config,
+            Messages messages,
+            TownyFacade townyFacade,
+            Consumer<Runnable> scheduler) {
+        return createAdminSyncSubcommand(syncService, config != null ? () -> config : null, messages, townyFacade, scheduler);
+    }
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminSyncSubcommand(
+            SyncService syncService,
+            Supplier<PluginConfig> configSupplier,
             Messages messages,
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
@@ -139,7 +204,7 @@ public final class SyncMinecraftCommands {
                     sender.sendMessage(messages.get("sync.started"));
 
                     syncService.reconcileAll().thenAccept(report -> {
-                        scheduler.accept(() -> sender.sendMessage(messages.get("sync.finished")));
+                        scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), messages));
                     }).exceptionally(ex -> {
                         scheduler.accept(() -> replyError(sender, messages, ex));
                         return null;
@@ -150,16 +215,16 @@ public final class SyncMinecraftCommands {
                 .then(Commands.argument("town", StringArgumentType.word())
                         .suggests((ctx, builder) -> {
                             String remaining = builder.getRemainingLowerCase();
-                            if (townyFacade != null && townyFacade.isAvailable() && Bukkit.isPrimaryThread()) {
-                                try {
+                            try {
+                                if (Bukkit.getServer() != null && Bukkit.isPrimaryThread() && townyFacade != null && townyFacade.isAvailable()) {
                                     for (TownSnapshot t : townyFacade.allTowns()) {
                                         if (t.name().toLowerCase().startsWith(remaining)) {
                                             builder.suggest(t.name());
                                         }
                                     }
-                                } catch (Exception ignored) {
-                                    // Ignored during suggestion phase
                                 }
+                            } catch (Throwable ignored) {
+                                // Ignored during suggestion phase
                             }
                             return builder.buildFuture();
                         })
@@ -177,7 +242,7 @@ public final class SyncMinecraftCommands {
                             sender.sendMessage(messages.get("sync.started"));
 
                             syncService.syncTown(townUuid).thenAccept(report -> {
-                                scheduler.accept(() -> sender.sendMessage(messages.get("sync.finished")));
+                                scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), messages));
                             }).exceptionally(ex -> {
                                 scheduler.accept(() -> replyError(sender, messages, ex));
                                 return null;
@@ -212,10 +277,13 @@ public final class SyncMinecraftCommands {
     }
 
     private static Optional<TownSnapshot> getPlayerTown(UUID playerUuid, TownyFacade townyFacade) {
-        if (townyFacade == null || !townyFacade.isAvailable()) {
+        if (townyFacade == null) {
             return Optional.empty();
         }
         try {
+            if (!townyFacade.isAvailable()) {
+                return Optional.empty();
+            }
             return townyFacade.townOf(playerUuid);
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "[SyncCommands] Error looking up town for player " + playerUuid, e);
@@ -224,14 +292,98 @@ public final class SyncMinecraftCommands {
     }
 
     private static Optional<TownSnapshot> getTownByName(String name, TownyFacade townyFacade) {
-        if (townyFacade == null || !townyFacade.isAvailable()) {
+        if (townyFacade == null) {
             return Optional.empty();
         }
         try {
+            if (!townyFacade.isAvailable()) {
+                return Optional.empty();
+            }
             return townyFacade.townByName(name);
         } catch (Exception e) {
             LOGGER.log(Level.WARNING, "[SyncCommands] Error looking up town by name '" + name + "'", e);
             return Optional.empty();
+        }
+    }
+
+    private static boolean isReportMode(Supplier<PluginConfig> configSupplier) {
+        if (configSupplier == null) {
+            return false;
+        }
+        PluginConfig config = configSupplier.get();
+        return config != null && config.sync() != null && config.sync().mode() == PluginConfig.Sync.Mode.REPORT;
+    }
+
+    private static void replyReport(
+            CommandSender sender,
+            SyncService.SyncReport report,
+            boolean isReportMode,
+            Messages messages) {
+        if (report == null) {
+            sender.sendMessage(messages.get("sync.finished"));
+            return;
+        }
+
+        if (isReportMode) {
+            replyReportMode(sender, report);
+            return;
+        }
+
+        if (!report.problems().isEmpty() || report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
+            replyFailures(sender, report);
+            return;
+        }
+
+        sender.sendMessage(messages.get("sync.finished"));
+    }
+
+    private static void replyReportMode(CommandSender sender, SyncService.SyncReport report) {
+        if (report.inconsistenciesFound() > 0) {
+            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&8[&bDiscordTowny&8] &e[Report Mode] Found &f" + report.inconsistenciesFound()
+                            + " &ediscrepancy(ies) (deliberately not modified)."));
+            if (report.rolesGranted() > 0 || report.rolesRevoked() > 0) {
+                sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        "&8[&bDiscordTowny&8] &7Pending changes: &f" + report.rolesGranted()
+                                + " &7roles to grant, &f" + report.rolesRevoked() + " &7roles to revoke."));
+            }
+        } else {
+            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&8[&bDiscordTowny&8] &a[Report Mode] Scan finished: no discrepancies found across &f"
+                            + report.spacesChecked() + " &aspace(s)."));
+        }
+
+        if (!report.problems().isEmpty()) {
+            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&8[&bDiscordTowny&8] &c[Report Mode] Encountered &f" + report.problems().size()
+                            + " &cproblem(s):"));
+            for (String problem : report.problems()) {
+                sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        "&8[&bDiscordTowny&8] &c- &f" + problem));
+            }
+        }
+    }
+
+    private static void replyFailures(CommandSender sender, SyncService.SyncReport report) {
+        if (report.inconsistenciesRepaired() > 0 || report.rolesGranted() > 0 || report.rolesRevoked() > 0) {
+            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&8[&bDiscordTowny&8] &eRepaired &f" + report.inconsistenciesRepaired()
+                            + " &einconsistency(ies) (&f" + report.rolesGranted() + " &egranted, &f"
+                            + report.rolesRevoked() + " &erevoked)."));
+        }
+
+        if (!report.problems().isEmpty()) {
+            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&8[&bDiscordTowny&8] &cSynchronization finished with &f" + report.problems().size()
+                            + " &cfailure(s):"));
+            for (String problem : report.problems()) {
+                sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                        "&8[&bDiscordTowny&8] &c- &f" + problem));
+            }
+        } else if (report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
+            int unhandled = report.inconsistenciesFound() - report.inconsistenciesRepaired();
+            sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&8[&bDiscordTowny&8] &c" + unhandled + " inconsistency(ies) could not be repaired."));
         }
     }
 
