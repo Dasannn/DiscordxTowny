@@ -121,7 +121,7 @@ class GuildOperationQueueTest {
 
         var op = new GuildOperation.CreateSpace(new com.discordtowny.model.SpaceRequest(
                 java.util.UUID.randomUUID(), "test-town", java.util.UUID.randomUUID(),
-                List.of(), "discord-mayor"));
+                List.of(), "discord-mayor", 2));
         OperationOutcome result = queue.submit(op).get(5, TimeUnit.SECONDS);
 
         queue.shutdown();

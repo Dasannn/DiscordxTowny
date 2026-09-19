@@ -266,7 +266,7 @@ class JdaGuildOperationExecutorTest {
     void createSpaceDoesNotDuplicateExistingRoleOrCategory() {
         UUID townUuid = UUID.randomUUID();
         String townName = "Capital";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id");
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id", 2);
 
         // Simulate that an earlier attempt created category and role before failing
         Category existingCat = mock(Category.class);
@@ -312,7 +312,7 @@ class JdaGuildOperationExecutorTest {
 
         var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         var op = new GuildOperation.CreateSpace(new SpaceRequest(
-                UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor"));
+                UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor", 2));
 
         OperationOutcome outcome = executor.execute(op);
 
@@ -330,7 +330,7 @@ class JdaGuildOperationExecutorTest {
     void channelCreatedWithStrictPermissions() {
         UUID townUuid = UUID.randomUUID();
         String townName = "Segura";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id");
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id", 2);
 
         Category category = mock(Category.class);
         when(category.getId()).thenReturn("cat-id");
@@ -391,7 +391,7 @@ class JdaGuildOperationExecutorTest {
     void createSpaceDoesNotDuplicateExistingChannels() {
         UUID townUuid = UUID.randomUUID();
         String townName = "Metropolis";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id");
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor-id", 2);
 
         Category category = mock(Category.class);
         when(category.getId()).thenReturn("cat-saved");
@@ -447,7 +447,7 @@ class JdaGuildOperationExecutorTest {
         UUID townUuid = UUID.randomUUID();
         String townName = "Alcaldia";
         String mayorId = "mayor-discord-123";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), mayorId);
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), mayorId, 2);
 
         Category category = mock(Category.class);
         when(category.getId()).thenReturn("cat-1");
@@ -531,7 +531,7 @@ class JdaGuildOperationExecutorTest {
 
         var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
         var op = new GuildOperation.CreateSpace(new SpaceRequest(
-                UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor"));
+                UUID.randomUUID(), "town", UUID.randomUUID(), List.of(), "mayor", 2));
 
         OperationOutcome outcome = executor.execute(op);
 
@@ -545,7 +545,7 @@ class JdaGuildOperationExecutorTest {
     void createsNumberedCategoryWhenLimitReached() {
         UUID townUuid = UUID.randomUUID();
         String townName = "NuevaTown";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor");
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor", 2);
 
         // Category 1: Comunidades full (50 channels)
         Category fullCat = mock(Category.class);
@@ -644,7 +644,7 @@ class JdaGuildOperationExecutorTest {
     void restoreSpacePersistsRoleImmediately() {
         UUID townUuid = UUID.randomUUID();
         String townName = "Revivida";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor");
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor", 2);
 
         TownSpace archivedSpace = new TownSpace(
                 townUuid, townName,
@@ -687,7 +687,7 @@ class JdaGuildOperationExecutorTest {
     void newEmptySpaceStartsInconsistentAndCompletesActive() {
         UUID townUuid = UUID.randomUUID();
         String townName = "EstadoTest";
-        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor");
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor", 2);
 
         when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
 
@@ -807,7 +807,7 @@ class JdaGuildOperationExecutorTest {
 
         // In createSpace, failure prevents granting the role to mayor and the operation is not confirmed
         UUID townUuid = UUID.randomUUID();
-        SpaceRequest req = new SpaceRequest(townUuid, "MyTown", UUID.randomUUID(), List.of(), "mayor-discord-id");
+        SpaceRequest req = new SpaceRequest(townUuid, "MyTown", UUID.randomUUID(), List.of(), "mayor-discord-id", 2);
         Category category = mock(Category.class);
         when(category.getId()).thenReturn("cat-1");
         when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
