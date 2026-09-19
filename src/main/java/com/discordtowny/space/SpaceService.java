@@ -8,20 +8,20 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Ciclo de vida del espacio de Discord de una town.
+ * Lifecycle of a town's Discord space.
  *
- * <p>Nada se borra por si solo: una town que desaparece deja su espacio
- * archivado, con el historial legible. El borrado definitivo lo ordena un
- * administrador.
+ * <p>Nothing is deleted on its own: a town that disappears leaves its space
+ * archived, with readable history. Permanent deletion is ordered by an
+ * administrator.
  */
 public interface SpaceService {
 
     /**
-     * Crea el espacio de una town.
+     * Creates a town's space.
      *
-     * <p>Quien llama ya comprobo en el hilo principal que es el alcalde. Aqui
-     * se comprueban las condiciones del plugin: que no exista ya, cupo, minimo
-     * de residentes y cooldown.
+     * <p>The caller already verified on the main thread that they are the mayor.
+     * Plugin conditions are checked here: that it does not already exist, quota,
+     * minimum resident count, and cooldown.
      */
     CompletableFuture<CreateResult> create(SpaceRequest request);
 
@@ -29,17 +29,17 @@ public interface SpaceService {
 
     CompletableFuture<Void> archive(UUID townUuid, String reason);
 
-    /** Devuelve al activo un espacio archivado, conservando su historial. */
+    /** Returns an archived space to active, preserving its history. */
     CompletableFuture<Void> restore(SpaceRequest request);
 
-    /** Borrado definitivo de los espacios archivados. Solo administradores. */
+    /** Permanent deletion of archived spaces. Administrators only. */
     CompletableFuture<Integer> purgeArchived();
 
     CompletableFuture<Optional<TownSpace>> find(UUID townUuid);
 
     CompletableFuture<List<TownSpace>> findAll();
 
-    /** Por que no se pudo crear, o que se creo. */
+    /** Why it could not be created, or that it was created. */
     enum CreateResult {
         SUCCESS,
         ALREADY_EXISTS,

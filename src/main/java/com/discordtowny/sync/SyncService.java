@@ -4,33 +4,33 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Reconciliacion entre Towny y Discord.
+ * Reconciliation between Towny and Discord.
  *
- * <p><b>Ante una discrepancia, Towny gana.</b> Si alguien recibio a mano el rol
- * de una town a la que no pertenece, la sincronizacion se lo quita.
+ * <p><b>In case of discrepancy, Towny wins.</b> If someone was manually given
+ * the role of a town they do not belong to, synchronization removes it.
  *
- * <p>Solo se tocan los roles gestionados por el plugin. Los demas roles de un
- * usuario de Discord no se miran ni se modifican.
+ * <p>Only roles managed by the plugin are touched. Other roles of a Discord
+ * user are neither inspected nor modified.
  */
 public interface SyncService {
 
-    /** Ajusta los roles de un jugador a lo que dice Towny. */
+    /** Adjusts a player's roles to what Towny says. */
     CompletableFuture<Void> syncPlayer(UUID uuid);
 
-    /** Ajusta los roles de todos los residentes de una town. */
+    /** Adjusts the roles of all residents of a town. */
     CompletableFuture<SyncReport> syncTown(UUID townUuid);
 
     /**
-     * Recorre todo: canales desaparecidos, roles borrados, espacios registrados
-     * sin canales, miembros con roles que no les tocan y espacios
-     * inconsistentes.
+     * Walks everything: missing channels, deleted roles, registered spaces
+     * without channels, members with roles they should not have, and
+     * inconsistent spaces.
      *
-     * <p>Va por lotes con pausas, para no saturar el limite de peticiones.
-     * Segun la configuracion repara o solo informa.
+     * <p>Runs in batches with pauses, so as not to saturate rate limits.
+     * Depending on configuration, repairs or only reports.
      */
     CompletableFuture<SyncReport> reconcileAll();
 
-    /** Que se encontro y que se hizo. */
+    /** What was found and what was done. */
     record SyncReport(
             int spacesChecked,
             int rolesGranted,

@@ -14,12 +14,12 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Pruebas unitarias de la verificacion de permisos y jerarquia de roles del bot.
+ * Unit tests for bot permission and role hierarchy verification.
  */
 class PermissionVerifierTest {
 
     @Test
-    @DisplayName("Devuelve vacio cuando el bot tiene todos los permisos y su rol esta por encima")
+    @DisplayName("Returns empty when the bot has all permissions and its role is above")
     void validPermissionsAndRoleHierarchy() {
         Guild guild = mock(Guild.class);
         SelfMember self = mock(SelfMember.class);
@@ -37,17 +37,17 @@ class PermissionVerifierTest {
 
         Optional<String> result = PermissionVerifier.verify(guild, List.of("role-town-1"));
 
-        assertTrue(result.isEmpty(), "Debe ser exitoso cuando los permisos y roles son validos");
+        assertTrue(result.isEmpty(), "Must succeed when permissions and roles are valid");
     }
 
     @Test
-    @DisplayName("Detecta cuando al bot le falta un permiso obligatorio")
+    @DisplayName("Detects when the bot is missing a required permission")
     void missingPermissionDetected() {
         Guild guild = mock(Guild.class);
         SelfMember self = mock(SelfMember.class);
 
         when(guild.getSelfMember()).thenReturn(self);
-        // Tiene todos los permisos excepto MANAGE_ROLES
+        // Has all permissions except MANAGE_ROLES
         when(self.hasPermission(any(Permission.class))).thenAnswer(invocation -> {
             Permission perm = invocation.getArgument(0);
             return perm != Permission.MANAGE_ROLES;
@@ -57,11 +57,11 @@ class PermissionVerifierTest {
 
         assertTrue(result.isPresent());
         assertTrue(result.get().contains("MANAGE_ROLES"),
-                "El mensaje debe senalar el permiso faltante");
+                "The message must indicate the missing permission");
     }
 
     @Test
-    @DisplayName("Detecta cuando el bot no tiene ningun rol asignado")
+    @DisplayName("Detects when the bot has no assigned roles")
     void botHasNoRoles() {
         Guild guild = mock(Guild.class);
         SelfMember self = mock(SelfMember.class);
@@ -73,12 +73,12 @@ class PermissionVerifierTest {
         Optional<String> result = PermissionVerifier.verify(guild, List.of());
 
         assertTrue(result.isPresent());
-        assertTrue(result.get().contains("no tiene ningun rol"),
-                "Debe avisar que el bot no tiene roles");
+        assertTrue(result.get().contains("has no assigned roles"),
+                "Must warn that the bot has no roles");
     }
 
     @Test
-    @DisplayName("Detecta cuando el rol del bot no esta por encima de los roles gestionados")
+    @DisplayName("Detects when the bot role is not above managed roles")
     void botRoleNotAboveManagedRoles() {
         Guild guild = mock(Guild.class);
         SelfMember self = mock(SelfMember.class);
@@ -97,7 +97,7 @@ class PermissionVerifierTest {
         Optional<String> result = PermissionVerifier.verify(guild, List.of("role-town-1"));
 
         assertTrue(result.isPresent());
-        assertTrue(result.get().contains("no esta por encima"),
-                "Debe avisar que el rol del bot no esta por encima de los roles gestionados");
+        assertTrue(result.get().contains("is not above the roles it manages"),
+                "Must warn that the bot role is not above managed roles");
     }
 }

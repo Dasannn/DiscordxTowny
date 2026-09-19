@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 
 /**
- * Clock mutable para pruebas de tiempo (caducidad de codigos, bloqueos).
+ * Mutable Clock for timing tests (code expiry, lockouts).
  */
 final class MutableClock extends Clock {
 

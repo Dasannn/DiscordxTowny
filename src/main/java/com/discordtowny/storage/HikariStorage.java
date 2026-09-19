@@ -9,13 +9,13 @@ import java.sql.SQLException;
 import java.util.logging.Logger;
 
 /**
- * Implementacion de {@link Storage} sobre HikariCP.
+ * HikariCP implementation of {@link Storage}.
  *
- * <p>Un unico camino de codigo para MySQL/MariaDB y SQLite: la diferencia
- * esta en la cadena de conexion y en ajustes del pool, no en los DAOs.
+ * <p>A single code path for MySQL/MariaDB and SQLite: the difference lies
+ * in the connection string and pool settings, not in the DAOs.
  *
- * <p>La contrasena y la cadena de conexion no viajan en mensajes de excepcion
- * ni en logs. Ver P7 de la constitucion.
+ * <p>The password and connection string do not travel in exception messages
+ * or logs. See P7 in the constitution.
  */
 public final class HikariStorage implements Storage {
 
@@ -38,22 +38,22 @@ public final class HikariStorage implements Storage {
     @Override
     public void initialize() throws StorageException {
         if (dataSource != null && !dataSource.isClosed()) {
-            throw new IllegalStateException("Storage ya inicializado: cierra el pool actual antes de reinicializar.");
+            throw new IllegalStateException("Storage already initialized: close current pool before reinitializing.");
         }
         dataSource = buildDataSource();
         boolean isSqlite = dbConfig.type() == PluginConfig.Database.Type.SQLITE;
         try (Connection conn = dataSource.getConnection()) {
             new MigrationRunner(dbConfig.tablePrefix(), logger, isSqlite).run(conn);
         } catch (SQLException e) {
-            // No incluir la cadena de conexion ni excepciones que puedan contenerla en el mensaje.
-            throw new StorageException("No se pudo obtener conexion inicial de la base de datos");
+            // Do not include the connection string or exceptions that might contain it in the message.
+            throw new StorageException("Failed to obtain initial database connection");
         }
         String prefix = dbConfig.tablePrefix();
         linkRepo  = new SqlLinkRepository(dataSource, prefix);
         spaceRepo = new SqlSpaceRepository(dataSource, prefix, isSqlite);
         auditRepo = new SqlAuditRepository(dataSource, prefix);
         settingsRepo = new SqlSettingsRepository(dataSource, prefix, isSqlite);
-        logger.info("Almacenamiento inicializado (" + dbConfig.type() + ").");
+        logger.info("Storage initialized (" + dbConfig.type() + ").");
     }
 
     @Override
@@ -94,11 +94,11 @@ public final class HikariStorage implements Storage {
     public void close() {
         if (dataSource != null && !dataSource.isClosed()) {
             dataSource.close();
-            logger.info("Pool de base de datos cerrado.");
+            logger.info("Database pool closed.");
         }
     }
 
-    // --- construccion del pool ---
+    // --- pool construction ---
 
     HikariConfig buildConfig() throws StorageException {
         HikariConfig config = new HikariConfig();
@@ -107,7 +107,7 @@ public final class HikariStorage implements Storage {
             case SQLITE -> configureSqlite(config);
             case MYSQL   -> configureMysql(config, "mysql");
             case MARIADB -> configureMysql(config, "mariadb");
-            default -> throw new StorageException("Tipo de base de datos no reconocido: " + dbConfig.type());
+            default -> throw new StorageException("Unrecognized database type: " + dbConfig.type());
         }
 
         config.setConnectionTimeout(dbConfig.connectionTimeout().toMillis());
@@ -121,29 +121,29 @@ public final class HikariStorage implements Storage {
         try {
             return new HikariDataSource(config);
         } catch (Exception e) {
-            // No propagar la excepcion original: puede contener la URL con credenciales.
+            // Do not propagate the original exception: it may contain the URL with credentials.
             throw new StorageException(
-                "No se pudo crear el pool de conexiones (" + dbConfig.type() + "). "
-                + "Revisa host, puerto, nombre de base de datos y credenciales en config.yml.");
+                "Failed to create connection pool (" + dbConfig.type() + "). "
+                + "Check host, port, database name, and credentials in config.yml.");
         }
     }
 
     private void configureSqlite(HikariConfig config) {
-        // SQLite en modo WAL permite lecturas concurrentes mientras se escribe.
-        // Con name == ":memory:" se crea en memoria con cache compartida para
-        // que todas las conexiones del pool vean la misma base de datos (util
-        // para tests). En produccion se usa un archivo en disco.
+        // SQLite in WAL mode allows concurrent reads while writing.
+        // With name == ":memory:" it is created in memory with shared cache so
+        // that all pool connections see the same database (useful for tests).
+        // In production, a disk file is used.
         String jdbcUrl;
         if (dbConfig.name().equals(":memory:")) {
-            // file::memory:?cache=shared hace que todas las conexiones JDBC
-            // compartan la misma BD en memoria dentro del mismo proceso.
+            // file::memory:?cache=shared makes all JDBC connections share
+            // the same in-memory DB within the same process.
             jdbcUrl = "jdbc:sqlite:file::memory:?cache=shared";
         } else {
             jdbcUrl = "jdbc:sqlite:" + sqliteFilePath();
         }
         config.setJdbcUrl(jdbcUrl);
         config.setDriverClassName("org.sqlite.JDBC");
-        // SQLite no admite pool real: un unico hilo de escritura.
+        // SQLite does not support a true pool: a single writer thread.
         config.setMaximumPoolSize(1);
         config.setMinimumIdle(1);
         config.addDataSourceProperty("journal_mode", "WAL");
@@ -151,8 +151,8 @@ public final class HikariStorage implements Storage {
     }
 
     private void configureMysql(HikariConfig config, String scheme) {
-        // La contrasena va en setPassword, no en la URL, para que HikariCP
-        // no la incluya en sus logs de depuracion.
+        // The password goes in setPassword, not in the URL, so that HikariCP
+        // does not include it in its debug logs.
         String url = String.format(
                 "jdbc:%s://%s:%d/%s"
                 + "?useSSL=false&characterEncoding=utf8&autoReconnect=false"
@@ -171,12 +171,12 @@ public final class HikariStorage implements Storage {
     }
 
     /**
-     * Ruta del archivo SQLite.
+     * SQLite file path.
      *
-     * <p>Si {@code dbConfig.name()} parece un path absoluto (comienza con
-     * separador de directorio o letra de unidad), se usa tal cual; esto
-     * permite que los tests pasen un archivo temporal. En produccion el
-     * plugin sobrescribira este metodo o pasara el path correcto.
+     * <p>If {@code dbConfig.name()} looks like an absolute path (starts with
+     * a directory separator or drive letter), it is used as is; this allows
+     * tests to pass a temporary file. In production the plugin will overwrite
+     * this method or pass the correct path.
      */
     private String sqliteFilePath() {
         String name = dbConfig.name();
@@ -192,7 +192,7 @@ public final class HikariStorage implements Storage {
 
     private void assertInitialized() {
         if (dataSource == null) {
-            throw new IllegalStateException("Storage no inicializado: llama a initialize() primero.");
+            throw new IllegalStateException("Storage not initialized: call initialize() first.");
         }
     }
 }

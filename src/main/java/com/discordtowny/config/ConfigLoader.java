@@ -2,22 +2,22 @@ package com.discordtowny.config;
 
 import java.util.List;
 
-/** Carga y valida config.yml y messages.yml. */
+/** Loads and validates config.yml and messages.yml. */
 public interface ConfigLoader {
 
     /**
-     * Lee y valida la configuracion.
+     * Reads and validates the configuration.
      *
-     * @throws ConfigException si algo es invalido, indicando la clave exacta.
+     * @throws ConfigException if anything is invalid, indicating the exact key.
      */
     PluginConfig load() throws ConfigException;
 
     Messages messages();
 
     /**
-     * Revisa la configuracion sin aplicarla.
+     * Inspects the configuration without applying it.
      *
-     * @return lista vacia si todo esta bien, o un problema por elemento.
+     * @return empty list if everything is fine, or one problem per element.
      */
     List<String> validate();
 }

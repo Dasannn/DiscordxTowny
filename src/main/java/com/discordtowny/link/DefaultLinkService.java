@@ -27,11 +27,11 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
 /**
- * Implementacion por defecto de {@link LinkService}.
+ * Default implementation of {@link LinkService}.
  *
- * <p>Regla de dependencias: dominio puro, no importa JDA ni Bukkit.
- * Todas las operaciones contra la base de datos se ejecutan fuera del
- * hilo principal a traves del executor configurado.
+ * <p>Dependency rule: pure domain, does not import JDA or Bukkit.
+ * All database operations run off the main thread through the
+ * configured executor.
  */
 public final class DefaultLinkService implements LinkService {
 
@@ -89,12 +89,12 @@ public final class DefaultLinkService implements LinkService {
     @Override
     public CompletableFuture<Optional<String>> generateCode(UUID uuid, String lastKnownName) {
         return CompletableFuture.supplyAsync(() -> {
-            // Devuelve vacio si el jugador ya esta vinculado
+            // Return empty if the player is already linked
             if (linkRepository.findByUuid(uuid).isPresent()) {
                 return Optional.empty();
             }
 
-            // Generar codigo no ambiguo asegurando que no colisione con otro vivo
+            // Generate non-ambiguous code ensuring it does not collide with another active one
             String code;
             int maxTries = 10;
             do {
@@ -105,10 +105,10 @@ public final class DefaultLinkService implements LinkService {
             Instant expiresAt = clock.instant().plus(config.linking().codeExpiry());
             LinkCode linkCode = new LinkCode(code, uuid, expiresAt, 0);
 
-            // Guarda el codigo sustituyendo cualquier codigo previo del mismo jugador
+            // Save the code replacing any previous code from the same player
             linkRepository.saveCode(linkCode);
 
-            // Guardar el nombre capturado para cuando se canjee el codigo
+            // Save the captured name for when the code is redeemed
             String name = (lastKnownName != null) ? lastKnownName : "";
             pendingCodeNames.put(code, name);
             if (!name.isBlank()) {
@@ -131,23 +131,23 @@ public final class DefaultLinkService implements LinkService {
             String code = rawCode.trim().toUpperCase(Locale.ROOT);
             Instant now = clock.instant();
 
-            // Serializar admision y resolucion de intentos por Discord ID
+            // Serialize attempt admission and resolution by Discord ID
             synchronized (getDiscordLock(discordId)) {
-                // 1. Comprobar bloqueo previo por intentos fallidos acumulados en la ventana
+                // 1. Check previous lockout from accumulated failed attempts in the window
                 if (attemptTracker.isLocked(discordId, now)) {
                     return CompletableFuture.completedFuture(LinkResult.TOO_MANY_ATTEMPTS);
                 }
 
-                // 2. Obtener ultimo nombre conocido capturado en el hilo principal
-                // ponytail: si el servidor se reinicia con un codigo pendiente, pendingCodeNames estara vacio
-                // y se guardara nombre vacio (""). Esto es aceptable porque lastKnownName es solo para
-                // mostrar segun contrato y no justifica una migracion de esquema; T7 lo refrescara al sincronizar en el join.
+                // 2. Get last known name captured on the main thread
+                // ponytail: if the server restarts with a pending code, pendingCodeNames will be empty
+                // and an empty name ("") will be saved. This is acceptable because lastKnownName is for
+                // display only per contract and does not justify a schema migration; T7 will refresh it when syncing on join.
                 String lastKnownName = pendingCodeNames.getOrDefault(code, "");
                 if (lastKnownName.isBlank()) {
                     lastKnownName = "";
                 }
 
-                // 3. Canje atomico en una sola transaccion
+                // 3. Atomic redemption in a single transaction
                 LinkRepository.ConsumeOutcome outcome = linkRepository.consumeCodeAndLink(
                         code, discordId, lastKnownName, now);
 
@@ -157,27 +157,27 @@ public final class DefaultLinkService implements LinkService {
                 switch (outcome.result()) {
                     case CODE_NOT_FOUND -> {
                         boolean locked = attemptTracker.recordFailure(discordId, now, maxAttempts, lockoutDuration);
-                        // Sin exponer el codigo en la auditoria
+                        // Without exposing the code in the audit
                         discordGateway.log(new AuditEvent(
                                 now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
-                                "", false, Optional.of("Codigo no valido")));
+                                "", false, Optional.of("Invalid code")));
                         return CompletableFuture.completedFuture(
                                 locked ? LinkResult.TOO_MANY_ATTEMPTS : LinkResult.CODE_INVALID);
                     }
                     case CODE_EXPIRED -> {
                         pendingCodeNames.remove(code);
                         boolean locked = attemptTracker.recordFailure(discordId, now, maxAttempts, lockoutDuration);
-                        // Sin exponer el codigo en la auditoria
+                        // Without exposing the code in the audit
                         discordGateway.log(new AuditEvent(
                                 now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
-                                "", false, Optional.of("Codigo caducado")));
+                                "", false, Optional.of("Expired code")));
                         return CompletableFuture.completedFuture(
                                 locked ? LinkResult.TOO_MANY_ATTEMPTS : LinkResult.CODE_EXPIRED);
                     }
                     case PLAYER_ALREADY_LINKED -> {
                         discordGateway.log(new AuditEvent(
                                 now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
-                                "", false, Optional.of("Jugador ya vinculado")));
+                                "", false, Optional.of("Player already linked")));
                         return CompletableFuture.completedFuture(LinkResult.PLAYER_ALREADY_LINKED);
                     }
                     case DISCORD_ALREADY_LINKED -> {
@@ -189,17 +189,17 @@ public final class DefaultLinkService implements LinkService {
                         pendingCodeNames.remove(code);
                         pendingPlayerNames.remove(playerUuid);
 
-                        // No se reinicia el contador de fallos: se preserva durante su ventana temporal
+                        // Failure counter is not reset: preserved during its time window
 
                         discordGateway.log(new AuditEvent(
                                 now, AuditEvent.Severity.INFO, discordId, "link",
-                                playerUuid.toString(), true, Optional.of("Cuenta vinculada exitosamente")));
+                                playerUuid.toString(), true, Optional.of("Account linked successfully")));
 
-                        // Delegar sincronizacion en el contrato previsto y encadenar resultado
+                        // Delegate synchronization to the specified contract and chain result
                         return syncService.syncPlayer(playerUuid)
                                 .thenApply(v -> LinkResult.SUCCESS);
                     }
-                    default -> throw new IllegalStateException("Resultado inesperado de canje: " + outcome.result());
+                    default -> throw new IllegalStateException("Unexpected redemption outcome: " + outcome.result());
                 }
             }
         }, executor).thenCompose(future -> future);
@@ -230,7 +230,7 @@ public final class DefaultLinkService implements LinkService {
         return CompletableFuture.supplyAsync(() -> {
             pendingPlayerNames.remove(uuid);
 
-            // 1. Comprobar primero: verificar la existencia y version leida en la autorizacion antes de tocar Discord
+            // 1. Check first: verify existence and read version in authorization before touching Discord
             Optional<AccountLink> optLink = linkRepository.findByUuid(uuid);
             if (optLink.isEmpty()) {
                 return CompletableFuture.completedFuture(false);
@@ -247,28 +247,28 @@ public final class DefaultLinkService implements LinkService {
             String discordId = link.discordId();
             Instant linkedAt = link.linkedAt();
 
-            // 2. Recopilar roles de towns registrados en storage (propagando fallos si ocurren)
+            // 2. Collect town roles registered in storage (propagating failures if they occur)
             List<String> rolesToRevoke = new ArrayList<>();
             spaceRepository.findAll().forEach(space -> {
                 space.roleId().ifPresent(rolesToRevoke::add);
             });
 
-            // Incluir tambien el rol global de alcalde gestionado por Discord
-            // Si el gateway no puede resolverlo lanzara excepcion, impidiendo un exito silencioso
+            // Include also the global mayor role managed by Discord
+            // If the gateway cannot resolve it, it will throw an exception, preventing silent success
             discordGateway.mayorRoleId().ifPresent(rolesToRevoke::add);
 
-            // 3. Solicitar retirada de roles en Discord
+            // 3. Request role removal on Discord
             return discordGateway.submit(new GuildOperation.ApplyMemberRoles(
                     discordId,
                     List.of(),
                     rolesToRevoke
             )).thenApply(outcome -> {
                 if (!outcome.succeeded()) {
-                    throw new IllegalStateException("Fallo al retirar roles en Discord: "
-                            + outcome.reason().orElse("desconocido"));
+                    throw new IllegalStateException("Failed to remove roles on Discord: "
+                            + outcome.reason().orElse("unknown"));
                 }
 
-                // 4. Borrado condicional atomico: la condicion viaja dentro del propio DELETE
+                // 4. Atomic conditional deletion: the condition travels within the DELETE itself
                 boolean deleted = linkRepository.deleteByUuidIfMatches(uuid, discordId, linkedAt);
                 if (!deleted) {
                     return false;
@@ -277,14 +277,14 @@ public final class DefaultLinkService implements LinkService {
                 Instant now = clock.instant();
                 discordGateway.log(new AuditEvent(
                         now, AuditEvent.Severity.INFO, "server", "unlink",
-                        uuid.toString(), true, Optional.of("Vinculo eliminado")));
+                        uuid.toString(), true, Optional.of("Link deleted")));
                 return true;
             });
         }, executor).thenCompose(future -> future);
     }
 
     /**
-     * Purga los codigos caducados de la base de datos.
+     * Purges expired codes from the database.
      */
     public CompletableFuture<Integer> purgeExpiredCodes() {
         return CompletableFuture.supplyAsync(() -> linkRepository.purgeExpiredCodes(clock.instant()), executor);

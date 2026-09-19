@@ -26,15 +26,15 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Implementacion de {@link DiscordGateway} sobre JDA.
+ * JDA implementation of {@link DiscordGateway}.
  *
- * <p>Conexion con los intents MINIMOS necesarios. Arranque y apagado limpios.
- * Si no hay conexion, {@link #isAvailable()} devuelve falso y el resto del
- * plugin puede seguir funcionando.
+ * <p>Connection with MINIMAL required intents. Clean startup and shutdown.
+ * If there is no connection, {@link #isAvailable()} returns false and the rest
+ * of the plugin can continue functioning.
  *
- * <p>Las mutaciones del guild pasan por una cola serializada de un solo
- * consumidor ({@link GuildOperationQueue}). Los eventos de auditoria van a
- * una cola de logs separada ({@link LogQueue}).
+ * <p>Guild mutations pass through a serialized single-consumer queue
+ * ({@link GuildOperationQueue}). Audit events go to a separate log queue
+ * ({@link LogQueue}).
  */
 public final class JdaDiscordGateway implements DiscordGateway {
 
@@ -56,30 +56,30 @@ public final class JdaDiscordGateway implements DiscordGateway {
                              SettingsRepository settings, Logger logger) {
         this.config = config;
         this.spaces = spaces;
-        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
+        this.settings = java.util.Objects.requireNonNull(settings, "settings cannot be null");
         this.logger = logger;
     }
 
-    /** Constructor de prueba con conexion simulada. */
+    /** Test constructor with simulated connection. */
     JdaDiscordGateway(PluginConfig config, SpaceRepository spaces,
                       SettingsRepository settings, Logger logger,
                       JDA jda, Guild guild) {
         this.config = config;
         this.spaces = spaces;
-        this.settings = java.util.Objects.requireNonNull(settings, "settings no puede ser nulo");
+        this.settings = java.util.Objects.requireNonNull(settings, "settings cannot be null");
         this.logger = logger;
         this.jdaRef.set(jda);
         this.guild = guild;
         this.available = true;
     }
 
-    // -- Arranque y apagado --
+    // -- Startup and shutdown --
 
     /**
-     * Conecta con Discord de forma asincrona fuera del hilo principal.
+     * Connects to Discord asynchronously off the main thread.
      *
-     * <p>Si falla, no lanza excepcion: deja el gateway como no disponible.
-     * El servidor de Minecraft sigue funcionando sin bloquear el arranque.
+     * <p>If it fails, does not throw an exception: leaves the gateway as unavailable.
+     * The Minecraft server continues functioning without blocking startup.
      */
     public CompletableFuture<Void> connect() {
         return CompletableFuture.runAsync(this::doConnect,
@@ -88,9 +88,9 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
     private void doConnect() {
         try {
-            // Intents MINIMOS: solo los que necesitamos
-            // GUILD_MEMBERS para saber quien tiene que roles
-            // GUILD_MESSAGES no es privilegiado; lo necesitamos para el canal de logs
+            // MINIMAL intents: only those we need
+            // GUILD_MEMBERS to know who has which roles
+            // GUILD_MESSAGES is not privileged; we need it for the log channel
             JDA jda = JDABuilder.createDefault(config.discord().token())
                     .enableIntents(EnumSet.of(
                             GatewayIntent.GUILD_MEMBERS,
@@ -111,19 +111,19 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
             Guild g = jda.getGuildById(config.discord().guildId());
             if (g == null) {
-                logger.severe("[Discord] El bot no tiene acceso al guild configurado: "
+                logger.severe("[Discord] Bot does not have access to configured guild: "
                         + config.discord().guildId());
                 shutdown();
                 return;
             }
             this.guild = g;
 
-            // Cola de operaciones con sanitizador
+            // Operation queue with sanitizer
             var executor = new JdaGuildOperationExecutor(g, config, spaces, settings, logger);
             this.operationQueue = new GuildOperationQueue(executor, logger, this::sanitizeMessage);
             operationQueue.start();
 
-            // Cola de logs con sanitizador
+            // Log queue with sanitizer
             int queueSize = config.logging().queueSize();
             this.logQueue = new LogQueue(
                     queueSize > 0 ? queueSize : 100,
@@ -133,20 +133,20 @@ public final class JdaDiscordGateway implements DiscordGateway {
             logQueue.start(config.logging().flushInterval());
 
             available = true;
-            logger.info("[Discord] Conectado al guild '" + g.getName() + "'");
+            logger.info("[Discord] Connected to guild '" + g.getName() + "'");
 
-            // Comprobar permisos fuera del hilo principal una vez conectado
+            // Check permissions off the main thread once connected
             verifyPermissions().ifPresent(msg ->
-                    logger.warning("[Discord] Advertencia de permisos: " + msg));
+                    logger.warning("[Discord] Permissions warning: " + msg));
 
         } catch (Exception e) {
             String safeMessage = sanitizeMessage(e.getMessage());
-            logger.severe("[Discord] No se pudo conectar: " + safeMessage);
+            logger.severe("[Discord] Failed to connect: " + safeMessage);
             available = false;
         }
     }
 
-    /** Apaga la conexion limpiamente. */
+    /** Shuts down the connection cleanly. */
     public void shutdown() {
         available = false;
 
@@ -161,7 +161,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
         JDA jda = jdaRef.getAndSet(null);
         if (jda != null) {
             jda.shutdown();
-            logger.info("[Discord] Conexion cerrada");
+            logger.info("[Discord] Connection closed");
         }
     }
 
@@ -176,7 +176,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
     public CompletableFuture<OperationOutcome> submit(GuildOperation operation) {
         if (!isAvailable()) {
             return CompletableFuture.completedFuture(
-                    OperationOutcome.transientFailure("Discord no esta disponible"));
+                    OperationOutcome.transientFailure("Discord is unavailable"));
         }
         return operationQueue.submit(operation);
     }
@@ -191,9 +191,9 @@ public final class JdaDiscordGateway implements DiscordGateway {
     @Override
     public Optional<String> verifyPermissions() {
         if (!isAvailable()) {
-            return Optional.of("Discord no esta conectado");
+            return Optional.of("Discord is not connected");
         }
-        // Recopilar los IDs de roles gestionados (roles de towns + rol de alcalde)
+        // Collect managed role IDs (town roles + mayor role)
         List<String> managedRoleIds = new java.util.ArrayList<>(spaces.findAll().stream()
                 .flatMap(s -> s.roleId().stream())
                 .toList());
@@ -223,36 +223,36 @@ public final class JdaDiscordGateway implements DiscordGateway {
     @Override
     public Optional<String> mayorRoleId() {
         if (!isAvailable() || guild == null) {
-            throw new IllegalStateException("Discord no esta disponible");
+            throw new IllegalStateException("Discord is unavailable");
         }
 
-        // 1. Identidad estable persistida
+        // 1. Stable persisted identity
         Optional<String> persistedId = settings.get(SettingsRepository.KEY_MAYOR_ROLE_ID);
         if (persistedId.isPresent()) {
             net.dv8tion.jda.api.entities.Role role = guild.getRoleById(persistedId.get());
             if (role != null) {
                 return Optional.of(role.getId());
             }
-            // Comprobado que el rol con ID persistido ya no existe en el guild
+            // Verified that role with persisted ID no longer exists in guild
             return Optional.empty();
         }
 
-        // 2. Si no hay ID persistido aun, consultar por nombre sin adoptar ni persistir
+        // 2. If no persisted ID yet, query by name without adopting or persisting
         List<net.dv8tion.jda.api.entities.Role> roles = guild.getRolesByName(config.roles().mayorRoleName(), true);
         if (!roles.isEmpty()) {
             return Optional.of(roles.getFirst().getId());
         }
 
-        // 3. Comprobado que no existe en el guild
+        // 3. Verified that it does not exist in guild
         return Optional.empty();
     }
 
-    /** Devuelve el guild conectado, si lo hay. Para uso interno del paquete. */
+    /** Returns the connected guild, if any. For package-internal use. */
     Optional<Guild> guild() {
         return Optional.ofNullable(guild);
     }
 
-    // -- Envio de logs a Discord --
+    // -- Sending logs to Discord --
 
     private void sendLogBatch(LogQueue.LogBatch batch) {
         Optional<String> channelId = config.discord().logChannelId();
@@ -262,9 +262,9 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
         TextChannel channel = guild.getTextChannelById(channelId.get());
         if (channel == null) {
-            // Canal no existe o no es accesible. Se avisa una vez (el LogQueue
-            // ya maneja la logica de "registrar una sola vez").
-            throw new IllegalStateException("Canal de logs no encontrado: " + channelId.get());
+            // Channel does not exist or is not accessible. Warn once (LogQueue
+            // already handles the "log only once" logic).
+            throw new IllegalStateException("Log channel not found: " + channelId.get());
         }
 
         EmbedBuilder embed = new EmbedBuilder();
@@ -283,16 +283,16 @@ public final class JdaDiscordGateway implements DiscordGateway {
             event.detail().ifPresent(d -> sb.append(" — ").append(d));
             sb.append(" `").append(TIME_FORMAT.format(event.at())).append("`\n");
 
-            // Discord embeds tienen limite de 4096 caracteres
+            // Discord embeds have a 4096-character limit
             if (sb.length() > 3800) {
-                sb.append("... (truncado)\n");
+                sb.append("... (truncated)\n");
                 break;
             }
         }
 
         if (batch.droppedSinceLastFlush() > 0) {
             sb.append("\n\u26a0\ufe0f **").append(batch.droppedSinceLastFlush())
-                    .append(" eventos descartados** por cola llena.");
+                    .append(" events dropped** due to full queue.");
         }
 
         embed.setDescription(sb.toString());
@@ -310,8 +310,8 @@ public final class JdaDiscordGateway implements DiscordGateway {
     }
 
     /**
-     * Elimina el token del mensaje de error, si aparece.
-     * El token NUNCA debe aparecer en logs (P7 de la constitucion).
+     * Removes the token from the error message, if it appears.
+     * The token must NEVER appear in logs (P7 of the constitution).
      */
     String sanitizeMessage(String message) {
         return DiscordSanitizer.sanitize(message, config.discord().token());

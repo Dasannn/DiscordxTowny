@@ -4,9 +4,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Vinculo verificado entre una cuenta de Minecraft y una de Discord.
+ * Verified link between a Minecraft account and a Discord account.
  *
- * <p>Relacion uno a uno en ambos sentidos. {@code lastKnownName} es solo para
- * mostrar: identificar por nombre de jugador es un error, los nombres cambian.
+ * <p>One-to-one relationship in both directions. {@code lastKnownName} is for
+ * display only: identifying by player name is an error, names change.
  */
 public record AccountLink(UUID uuid, String discordId, Instant linkedAt, String lastKnownName) {}

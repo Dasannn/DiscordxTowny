@@ -4,14 +4,14 @@ import com.discordtowny.model.AuditEvent;
 import java.time.Instant;
 import java.util.List;
 
-/** Registro de lo que hizo el plugin. Bloquea: ver {@link Storage}. */
+/** Record of what the plugin did. Blocks: see {@link Storage}. */
 public interface AuditRepository {
 
     void record(AuditEvent event);
 
-    /** Los mas recientes primero. Alimenta {@code /dt admin info}. */
+    /** Most recent first. Powers {@code /dt admin info}. */
     List<AuditEvent> recent(String target, int limit);
 
-    /** Borra lo anterior a la fecha dada, para que la tabla no crezca sin fin. */
+    /** Deletes entries before the given date so the table does not grow endlessly. */
     int purgeBefore(Instant cutoff);
 }

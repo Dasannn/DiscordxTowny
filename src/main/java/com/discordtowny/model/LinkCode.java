@@ -4,10 +4,10 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Codigo de un solo uso para verificar una vinculacion.
+ * Single-use code to verify a link.
  *
- * <p>Se genera en el juego y se consume en Discord. Un jugador tiene como mucho
- * un codigo vivo: generar uno nuevo invalida el anterior.
+ * <p>Generated in-game and consumed on Discord. A player has at most
+ * one active code: generating a new one invalidates the previous one.
  */
 public record LinkCode(String code, UUID uuid, Instant expiresAt, int attempts) {
 

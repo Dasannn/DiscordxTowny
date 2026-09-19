@@ -1,206 +1,206 @@
-# DiscordTowny — Plan de desarrollo
+# DiscordTowny — Development Plan
 
-Cómo se construye, en qué orden y qué se puede hacer en paralelo. Rige
-`docs/constitution.md`; implementa `docs/spec.md` según `ARCHITECTURE.md`.
+How it is built, in what order, and what can be done in parallel. Governed by
+`docs/constitution.md`; implements `docs/spec.md` according to `ARCHITECTURE.md`.
 
-Estado: **borrador v1** — pendiente de aprobación.
+Status: **draft v1** — pending approval.
 
 ---
 
-## 1. Método
+## 1. Method
 
-- Un worktree por tarea, rama con nombre propio, nadie toca `main`.
-- Cada rama pasa revisión antes de integrarse. Revisa un agente distinto del
-  autor, y la integración la hace el arquitecto.
-- Ninguna rama se abre sin que exista el contrato que necesita (ver fase 1).
-- Una tarea que necesita tocar archivos de otra tarea abierta no se lanza en
-  paralelo: se espera o se reordena.
+- One worktree per task, branch with its own name, nobody touches `main`.
+- Each branch passes review before being integrated. An agent other than the
+  author reviews, and integration is performed by the architect.
+- No branch is opened without the contract it requires in place (see Phase 1).
+- A task that needs to touch files from another open task is not launched in
+  parallel: it waits or is reordered.
 
-## 2. Reparto para trabajo en paralelo
+## 2. Breakdown for Parallel Work
 
-La regla de dependencias de la arquitectura define las fronteras. Cada zona
-pertenece a una sola tarea a la vez:
+The dependency rule of the architecture defines the boundaries. Each zone
+belongs to a single task at a time:
 
-| Zona | Paquetes | Toca a otros |
+| Zone | Packages | Touches others |
 |---|---|---|
-| Datos | `storage/` | No |
+| Data | `storage/` | No |
 | Discord | `discord/` | No |
-| Juego | `minecraft/`, `towny/` | No |
-| Dominio | `link/`, `space/`, `sync/` | Es el centro: se trabaja solo o coordinado |
-| Actualizador | `update/` | No, es independiente |
-| Configuración | `config/` | Lo consumen todos: se cierra pronto |
-| Documentación | `README.md`, `docs/guia-de-uso.md` | No |
+| Game | `minecraft/`, `towny/` | No |
+| Domain | `link/`, `space/`, `sync/` | It is the center: worked on solo or coordinated |
+| Updater | `update/` | No, it is independent |
+| Configuration | `config/` | Consumed by everyone: closed early |
+| Documentation | `README.md`, `docs/user-guide.md` | No |
 
-Zonas distintas, agentes distintos, sin conflictos de merge. El dominio es el
-cuello de botella: se construye primero y luego se toca poco.
+Different zones, different agents, no merge conflicts. The domain is the
+bottleneck: it is built first and touched little afterward.
 
-## 3. Fases
+## 3. Phases
 
-### Fase 0 — Esqueleto
+### Phase 0 — Skeleton
 
-Un solo agente. No se paraleliza nada hasta tenerlo.
+A single agent. Nothing is parallelized until this is in place.
 
-- Proyecto Gradle, Java 25, dependencias, shadow con relocalización.
-- Plugin que arranca y apaga en Paper sin hacer nada más.
-- `config.yml` y `messages.yml` de ejemplo, completos según la spec.
-- Estructura de paquetes vacía, con la regla de dependencias documentada.
-- CI que compila y corre tests en cada push.
+- Gradle project, Java 25, dependencies, shadow with relocation.
+- Plugin that starts up and shuts down in Paper without doing anything else.
+- Sample `config.yml` and `messages.yml`, complete according to the spec.
+- Empty package structure, with the dependency rule documented.
+- CI that compiles and runs tests on each push.
 
-**Termina cuando**: el jar carga en un Paper limpio con Towny y no lanza
-errores.
+**Ends when**: the jar loads on a clean Paper server with Towny and does not
+throw errors.
 
-### Fase 1 — Contratos
+### Phase 1 — Contracts
 
-Un solo agente, corto y decisivo. Define las interfaces que separan las zonas:
-almacenamiento, operaciones sobre Discord, lectura de Towny, configuración
-tipada. Sin implementaciones.
+A single agent, short and decisive. Defines the interfaces separating the zones:
+storage, Discord operations, Towny reading, typed configuration. No
+implementations.
 
-**Termina cuando**: las firmas están fijadas y revisadas. A partir de aquí,
-varias tareas pueden avanzar sin verse.
+**Ends when**: the signatures are settled and reviewed. From here on,
+multiple tasks can proceed without interfering with each other.
 
-**Es el documento vivo más importante del proyecto**: cambiar un contrato
-después obliga a coordinar varias ramas. Se piensa bien una vez.
+**It is the most important living document in the project**: changing a contract
+later forces coordinating multiple branches. Think it through once, properly.
 
-### Fase 2 — Cimientos, en paralelo
+### Phase 2 — Foundations, in Parallel
 
-Tres agentes a la vez, tres zonas sin solape:
+Three agents at once, three non-overlapping zones:
 
-| Agente | Qué construye |
+| Agent | What it builds |
 |---|---|
-| A | `storage/`: esquema, migraciones, DAOs, soporte MariaDB y SQLite |
-| B | `discord/`: conexión JDA, cola serializada de operaciones, cola de logs |
-| C | `config/` y `towny/`: carga y validación de configuración, fachada de lectura de Towny |
+| A | `storage/`: schema, migrations, DAOs, MariaDB and SQLite support |
+| B | `discord/`: JDA connection, serialized operation queue, log queue |
+| C | `config/` and `towny/`: configuration loading and validation, Towny read facade |
 
-**Termina cuando**: cada zona compila, tiene sus tests y se demuestra por
-separado. `storage` contra SQLite en memoria; `discord` contra un guild de
-pruebas; `towny` contra un servidor local.
+**Ends when**: each zone compiles, has its tests, and is verified
+independently. `storage` against in-memory SQLite; `discord` against a test
+guild; `towny` against a local server.
 
-### Fase 3 — Vinculación
+### Phase 3 — Linking
 
-Un agente, zona dominio. La primera funcionalidad de punta a punta: `/dt link`,
-`/link`, `/unlink`, códigos con caducidad y control de intentos, persistencia.
+One agent, domain zone. The first end-to-end feature: `/dt link`,
+`/link`, `/unlink`, codes with expiration and attempt tracking, persistence.
 
-**Termina cuando**: un jugador vincula su cuenta y el vínculo sobrevive a un
-reinicio. Criterio de aceptación 1.
+**Ends when**: a player links their account and the link survives a
+restart. Acceptance criterion 1.
 
-### Fase 4 — Espacios y sincronización
+### Phase 4 — Spaces and Synchronization
 
-El corazón. Se hace en dos tareas, **en secuencia** porque comparten dominio:
+The core. Done in two tasks, **in sequence** because they share the domain:
 
-1. Ciclo de vida del espacio: creación, renombrado, archivado, restauración, con
-   tareas idempotentes sobre la cola.
-2. Sincronización: listeners de Towny, cálculo de roles que corresponden,
-   reconciliación periódica y bajo demanda.
+1. Space lifecycle: creation, renaming, archiving, restoration, with
+   idempotent tasks on the queue.
+2. Synchronization: Towny listeners, calculating applicable roles,
+   periodic and on-demand reconciliation.
 
-**Termina cuando**: se cumplen los criterios de aceptación 2 a 6 y el 8.
+**Ends when**: acceptance criteria 2 through 6 and 8 are met.
 
-### Fase 5 — Superficie de comandos, en paralelo
+### Phase 5 — Command Surface, in Parallel
 
-Dos agentes, zonas separadas:
+Two agents, separate zones:
 
-| Agente | Qué construye |
+| Agent | What it builds |
 |---|---|
-| D | Comandos del juego: `help`, `status`, `delete`, `sync`, y todo el bloque `admin` |
-| E | Comandos de Discord: `/town`, `/res`, `/residents`, `/townlist`, `/mytown`, `/help`, con sus embeds y paginación |
+| D | In-game commands: `help`, `status`, `delete`, `sync`, and the entire `admin` block |
+| E | Discord commands: `/town`, `/res`, `/residents`, `/townlist`, `/mytown`, `/help`, with their embeds and pagination |
 
-Ambos consumen dominio ya construido; no lo modifican.
+Both consume domain code that is already built; they do not modify it.
 
-### Fase 6 — Independientes, en paralelo
+### Phase 6 — Independent, in Parallel
 
-| Agente | Qué construye |
+| Agent | What it builds |
 |---|---|
-| F | `update/`: comprobación, descarga verificada, avisos, `/dt admin update` |
-| G | `README.md` y `docs/guia-de-uso.md`, en lenguaje de jugador |
+| F | `update/`: checking, verified download, notifications, `/dt admin update` |
+| G | `README.md` and `docs/user-guide.md`, in player language |
 
-Ninguno toca el dominio. Pueden arrancar antes si hay agentes libres: el
-actualizador solo necesita la fase 0, y la documentación solo necesita la spec.
+Neither touches the domain. They can start earlier if agents are free: the
+updater only needs Phase 0, and documentation only needs the spec.
 
-### Fase 7 — Endurecimiento
+### Phase 7 — Hardening
 
-Un agente, o el arquitecto:
+A single agent, or the architect:
 
-- Recorrer los doce criterios de aceptación uno a uno sobre un servidor real.
-- Provocar fallos a propósito: bot caído, base de datos caída, canal borrado a
-  mano, rol asignado a mano, corte a mitad de una creación.
-- Medir que el servidor no pierde ticks con el canal de logs a tope.
-- Revisar que no se filtran secretos en ningún log ni mensaje.
+- Run through the twelve acceptance criteria one by one on a real server.
+- Cause failures intentionally: bot down, database down, channel manually
+  deleted, role manually assigned, cutoff midway through creation.
+- Measure that the server does not drop ticks with the log channel at full capacity.
+- Verify that no secrets are leaked in any log or message.
 
-### Fase 8 — Release
+### Phase 8 — Release
 
-- Versionado semántico, changelog.
-- Pipeline que publica el jar **y su checksum SHA-256** en el release de GitHub.
-  Sin checksum publicado, el actualizador de la fase 6 no funciona.
-- Licencia y guía de contribución.
+- Semantic versioning, changelog.
+- Pipeline that publishes the jar **and its SHA-256 checksum** to the GitHub release.
+  Without a published checksum, the Phase 6 updater will not work.
+- License and contributing guide.
 
-## 3.1 Revisión
+## 3.1 Review
 
-La revisión es una tarea más, con su propio agente, y no la hace quien escribió
-el código.
+Review is just another task, with its own agent, and is not done by whoever
+wrote the code.
 
 ### Roles
 
-| Rol | Qué hace | Qué no hace |
+| Role | What it does | What it does not do |
 |---|---|---|
-| Agente autor | Escribe la tarea en su worktree | No revisa su propio trabajo ni integra |
-| Agente revisor | Revisa la rama y escribe el informe en `docs/revisiones/` | **No corrige el código que revisa** |
-| Arquitecto | Lee el informe, revisa la corrección, integra a `main` | No escribe las tareas |
+| Author agent | Writes the task in their worktree | Does not review their own work or integrate |
+| Reviewer agent | Reviews the branch and writes the report in `docs/revisiones/` | **Does not fix the code being reviewed** |
+| Architect | Reads the report, reviews the fix, integrates into `main` | Does not write the tasks |
 
-### Ciclo
+### Cycle
 
-1. El agente autor termina su rama y la declara lista.
-2. El agente revisor la revisa y escribe
-   `docs/revisiones/<rama>.md`: qué revisó, qué encontró, severidad de cada
-   hallazgo y qué hay que cambiar.
-3. El agente autor corrige en su rama y responde al informe.
-4. El revisor comprueba que cada hallazgo quedó resuelto y cierra el informe.
-5. El arquitecto lee el informe cerrado, revisa los cambios de la corrección e
-   integra.
+1. The author agent finishes their branch and declares it ready.
+2. The reviewer agent reviews it and writes
+   `docs/revisiones/<branch>.md`: what was reviewed, what was found, severity of each
+   finding, and what needs to change.
+3. The author agent fixes it on their branch and replies to the report.
+4. The reviewer checks that each finding was resolved and closes the report.
+5. The architect reads the closed report, reviews the changes from the fix, and
+   integrates.
 
-El revisor no toca el código porque una corrección suya entraría sin revisar.
-La única excepción son erratas evidentes en texto o comentarios, anotadas en el
-informe.
+The reviewer does not touch the code because a fix from them would enter unreviewed.
+The only exception is obvious typos in text or comments, noted in the
+report.
 
-### Qué revisa
+### What it reviews
 
-- Cumple el criterio de aceptación de su tarea.
-- No invade zonas de otras tareas ni rompe la regla de dependencias de la
-  arquitectura.
-- Respeta el modelo de hilos: ni Towny fuera del hilo principal, ni base de
-  datos o Discord dentro de él.
-- No implementa nada que no esté en la spec.
-- No filtra secretos en logs ni en mensajes a usuarios.
-- Los fallos parciales no dejan permisos abiertos.
-- Tiene pruebas y la documentación al día.
+- Meets the acceptance criterion for its task.
+- Does not invade zones belonging to other tasks or break the architecture's
+  dependency rule.
+- Respects the threading model: no Towny outside the main thread, no database
+  or Discord inside it.
+- Implements nothing that is not in the spec.
+- Does not leak secrets in logs or user-facing messages.
+- Partial failures do not leave open permissions.
+- Has tests and up-to-date documentation.
 
-### Formato del informe
+### Report format
 
-Un hallazgo por línea, con archivo y línea, severidad (bloqueante, importante,
-menor) y la corrección propuesta. Sin elogios ni resúmenes largos: el informe se
-lee para actuar.
+One finding per line, with file and line, severity (blocking, important,
+minor), and proposed fix. No praise or lengthy summaries: the report is
+read to act.
 
-## 4. Orden y paralelismo
+## 4. Order and Parallelism
 
 ```
-Fase 0 ──> Fase 1 ──┬──> Fase 2 (A, B, C en paralelo) ──> Fase 3 ──> Fase 4 ──┬──> Fase 5 (D, E en paralelo) ──> Fase 7 ──> Fase 8
-                    └──> Fase 6 (F, G en paralelo, desde el principio) ────────┘
+Phase 0 ──> Phase 1 ──┬──> Phase 2 (A, B, C in parallel) ──> Phase 3 ──> Phase 4 ──┬──> Phase 5 (D, E in parallel) ──> Phase 7 ──> Phase 8
+                      └──> Phase 6 (F, G in parallel, from the start) ─────────────┘
 ```
 
-Pico de paralelismo: tres agentes en fase 2, más los dos independientes de la
-fase 6. Cinco autores a la vez es el techo razonable, con un agente revisor
-trabajando detrás sobre las ramas que van quedando listas.
+Concurrency peak: three agents in Phase 2, plus the two independent ones from
+Phase 6. Five authors at once is the reasonable ceiling, with a reviewer agent
+working behind them on branches as they become ready.
 
-## 5. Riesgos
+## 5. Risks
 
-| Riesgo | Qué hacemos |
+| Risk | What we do |
 |---|---|
-| Cambio de contrato a mitad de fase 2 | Fase 1 cerrada y revisada antes de abrir ramas. Un cambio obliga a parar y coordinar |
-| Rate limit de Discord en pruebas | Guild de pruebas dedicado, nunca el de producción |
-| API de Towny distinta a la esperada | La fachada de `towny/` se valida en fase 2, antes de construir nada encima |
-| Fuga de trabajo al dominio desde fases 5 y 6 | En revisión: una rama de comandos que modifica dominio se devuelve |
-| Documentación que envejece | Fase 6 en paralelo, y la revisión comprueba que un cambio de comando actualiza la doc |
+| Contract change halfway through Phase 2 | Phase 1 closed and reviewed before opening branches. A change forces stopping and coordinating |
+| Discord rate limit during testing | Dedicated test guild, never production |
+| Towny API different from expected | The `towny/` facade is validated in Phase 2, before building anything on top of it |
+| Work leakage into domain from Phases 5 and 6 | During review: a command branch that modifies domain is sent back |
+| Documentation becoming outdated | Phase 6 in parallel, and review verifies that a command change updates docs |
 
-## 6. Definición de terminado
+## 6. Definition of Done
 
-Una tarea está terminada cuando compila, tiene sus pruebas, cumple el criterio
-de aceptación que le toca, no invade zonas ajenas, no rompe la regla de
-dependencias, y su documentación está al día. No antes.
+A task is done when it compiles, has its tests, meets its assigned acceptance
+criterion, does not invade outside zones, does not break the dependency rule,
+and its documentation is up to date. Not before.

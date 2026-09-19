@@ -11,32 +11,32 @@ import org.junit.jupiter.api.Test;
 
 class YamlMessagesTest {
     @Test
-    void prefijoColoresYMarcadoresLiteralesSinSustitucionesRecursivas() {
-        var mensajes = new YamlMessages(Map.of("prefix", "&b[DT] &r", "saludo", "&aHola {town}, {mayor}!"), aviso -> {});
-        Map<String, String> valores = Map.of("town", "&cRoma {mayor}", "mayor", "Ana");
-        assertEquals("[DT] Hola &cRoma {mayor}, Ana!", mensajes.plain("saludo", valores));
-        String formato = LegacyComponentSerializer.legacySection().serialize(mensajes.get("saludo", valores));
-        assertTrue(formato.contains("\u00a7b"));
-        assertTrue(formato.contains("\u00a7a"));
-        assertFalse(formato.contains("\u00a7c"));
+    void prefixColorsAndLiteralPlaceholdersWithoutRecursiveSubstitutions() {
+        var messages = new YamlMessages(Map.of("prefix", "&b[DT] &r", "saludo", "&aHola {town}, {mayor}!"), warning -> {});
+        Map<String, String> values = Map.of("town", "&cRoma {mayor}", "mayor", "Ana");
+        assertEquals("[DT] Hola &cRoma {mayor}, Ana!", messages.plain("saludo", values));
+        String format = LegacyComponentSerializer.legacySection().serialize(messages.get("saludo", values));
+        assertTrue(format.contains("\u00a7b"));
+        assertTrue(format.contains("\u00a7a"));
+        assertFalse(format.contains("\u00a7c"));
     }
 
     @Test
-    void conservaMarcadoresSinValorYCopiaLosTextos() {
-        Map<String, String> textos = new HashMap<>(Map.of("prefix", "", "mensaje", "Hola {player}"));
-        var mensajes = new YamlMessages(textos, aviso -> {});
-        textos.put("mensaje", "cambiado");
-        assertEquals("Hola {player}", mensajes.plain("mensaje", Map.of()));
+    void preservesPlaceholdersWithoutValueAndCopiesTexts() {
+        Map<String, String> texts = new HashMap<>(Map.of("prefix", "", "mensaje", "Hola {player}"));
+        var messages = new YamlMessages(texts, warning -> {});
+        texts.put("mensaje", "cambiado");
+        assertEquals("Hola {player}", messages.plain("mensaje", Map.of()));
     }
 
     @Test
-    void mensajeOPrefijoAusenteSeIdentificaYAvisaUnaVez() {
-        List<String> avisos = new ArrayList<>();
-        var mensajes = new YamlMessages(Map.of(), avisos::add);
-        assertEquals("[mensaje ausente: prefix][mensaje ausente: general.working]",
-                mensajes.plain("general.working", Map.of()));
-        mensajes.get("general.working");
-        assertEquals(2, avisos.size());
-        assertTrue(avisos.getLast().contains("general.working"));
+    void missingMessageOrPrefixIsIdentifiedAndWarnsOnce() {
+        List<String> warnings = new ArrayList<>();
+        var messages = new YamlMessages(Map.of(), warnings::add);
+        assertEquals("[missing message: prefix][missing message: general.working]",
+                messages.plain("general.working", Map.of()));
+        messages.get("general.working");
+        assertEquals(2, warnings.size());
+        assertTrue(warnings.getLast().contains("general.working"));
     }
 }

@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Pruebas unitarias de JdaDiscordGateway sin conexion de red.
+ * Unit tests for JdaDiscordGateway without network connection.
  */
 class JdaDiscordGatewayTest {
 
@@ -47,14 +47,14 @@ class JdaDiscordGatewayTest {
     }
 
     @Test
-    @DisplayName("isAvailable es falso antes de conectar")
+    @DisplayName("isAvailable is false before connecting")
     void isAvailableFalseBeforeConnect() {
         var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
-        assertFalse(gateway.isAvailable(), "El gateway no debe estar disponible antes de conectar");
+        assertFalse(gateway.isAvailable(), "Gateway must not be available before connecting");
     }
 
     @Test
-    @DisplayName("submit() con gateway desconectado devuelve fallo transitorio sin lanzar excepcion")
+    @DisplayName("submit() with disconnected gateway returns transient failure without throwing exception")
     void submitWhenDisconnectedDoesNotThrow() {
         var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
         var op = new GuildOperation.DeleteSpace(UUID.randomUUID(), "town");
@@ -62,46 +62,46 @@ class JdaDiscordGatewayTest {
         CompletableFuture<OperationOutcome> future = gateway.submit(op);
 
         assertNotNull(future);
-        assertFalse(future.isCompletedExceptionally(), "El futuro nunca debe completarse excepcionalmente");
+        assertFalse(future.isCompletedExceptionally(), "The future must never complete exceptionally");
         OperationOutcome outcome = future.join();
         assertFalse(outcome.succeeded());
         assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, outcome.status());
-        assertTrue(outcome.reason().orElse("").contains("Discord no esta disponible"));
+        assertTrue(outcome.reason().orElse("").contains("Discord is unavailable"));
     }
 
     @Test
-    @DisplayName("verifyPermissions() con gateway desconectado devuelve aviso")
+    @DisplayName("verifyPermissions() with disconnected gateway returns warning")
     void verifyPermissionsWhenDisconnected() {
         var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
         Optional<String> error = gateway.verifyPermissions();
 
         assertTrue(error.isPresent());
-        assertTrue(error.get().contains("Discord no esta conectado"));
+        assertTrue(error.get().contains("Discord is not connected"));
     }
 
     @Test
-    @DisplayName("sanitizeMessage oculta el token si aparece en el mensaje")
+    @DisplayName("sanitizeMessage hides token if it appears in message")
     void sanitizeMessageHidesToken() {
         var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
         String raw = "Error en login con token mi-token-super-secreto-999 en servidor";
         String sanitized = gateway.sanitizeMessage(raw);
 
         assertFalse(sanitized.contains("mi-token-super-secreto-999"),
-                "El token no debe aparecer en el mensaje saneado");
+                "Token must not appear in sanitized message");
         assertTrue(sanitized.contains("[TOKEN_OCULTO]"),
-                "El token debe ser reemplazado por la mascara");
+                "Token must be replaced by mask");
     }
 
     @Test
-    @DisplayName("mayorRoleId() lanza excepcion si el gateway no esta conectado")
+    @DisplayName("mayorRoleId() throws exception if gateway is not connected")
     void mayorRoleIdThrowsWhenDisconnected() {
         var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
         assertThrows(IllegalStateException.class, gateway::mayorRoleId,
-                "No debe devolver vacio silenciosamente si no pudo resolver el rol por desconexion");
+                "Must not return empty silently if role could not be resolved due to disconnection");
     }
 
     @Test
-    @DisplayName("mayorRoleId() usa el ID persistido aunque el rol haya sido renombrado en Discord")
+    @DisplayName("mayorRoleId() uses persisted ID even if role was renamed in Discord")
     void mayorRoleIdUsesPersistedIdEvenIfRenamedInDiscord() {
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);
@@ -123,7 +123,7 @@ class JdaDiscordGatewayTest {
     }
 
     @Test
-    @DisplayName("mayorRoleId() devuelve vacio si el rol con ID persistido ya no existe en Discord")
+    @DisplayName("mayorRoleId() returns empty if role with persisted ID no longer exists in Discord")
     void mayorRoleIdReturnsEmptyWhenPersistedRoleNoLongerExistsInGuild() {
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);
@@ -135,12 +135,12 @@ class JdaDiscordGatewayTest {
 
         Optional<String> result = gateway.mayorRoleId();
 
-        assertTrue(result.isEmpty(), "Debe ser una ausencia comprobada sin buscar por nombre");
+        assertTrue(result.isEmpty(), "Must be a confirmed absence without searching by name");
         verify(guild, never()).getRolesByName(any(), anyBoolean());
     }
 
     @Test
-    @DisplayName("mayorRoleId() consulta por nombre si no habia ID previo sin adoptar ni persistir")
+    @DisplayName("mayorRoleId() queries by name if there was no prior ID without adopting or persisting")
     void mayorRoleIdResolvesByNameWithoutPersistingWhenNoPriorIdExists() {
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);
@@ -160,7 +160,7 @@ class JdaDiscordGatewayTest {
     }
 
     @Test
-    @DisplayName("verifyPermissions() solo lee y no persiste la identidad del rol de alcalde")
+    @DisplayName("verifyPermissions() only reads and does not persist the mayor role identity")
     void verifyPermissionsDoesNotPersistMayorRoleId() {
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);
@@ -184,7 +184,7 @@ class JdaDiscordGatewayTest {
     }
 
     @Test
-    @DisplayName("mayorRoleId() devuelve vacio si no hay ID persistido ni coincide por nombre en Discord")
+    @DisplayName("mayorRoleId() returns empty if no persisted ID and no match by name in Discord")
     void mayorRoleIdReturnsEmptyWhenNoPriorIdAndNotFoundByName() {
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);

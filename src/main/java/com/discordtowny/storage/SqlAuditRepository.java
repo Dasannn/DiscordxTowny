@@ -10,11 +10,11 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Implementacion de {@link AuditRepository} sobre JDBC.
+ * JDBC implementation of {@link AuditRepository}.
  *
- * <p>Todas las sentencias son preparadas. El campo {@code detail} puede ser
- * nulo si el evento no tiene informacion adicional. Nunca contiene el token
- * ni credenciales: es responsabilidad de quien crea el evento.
+ * <p>All statements are prepared statements. The {@code detail} field may be
+ * null if the event has no additional information. It never contains the token
+ * or credentials: that is the responsibility of whoever creates the event.
  */
 final class SqlAuditRepository implements AuditRepository {
 
@@ -48,13 +48,13 @@ final class SqlAuditRepository implements AuditRepository {
             }
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al registrar evento de auditoria", e);
+            throw new StorageException("Failed to record audit event", e);
         }
     }
 
     /**
-     * Devuelve los eventos mas recientes de un objetivo, en orden descendente
-     * de fecha. Alimenta {@code /dt admin info <town>}.
+     * Returns the most recent events for a target, in descending date order.
+     * Powers {@code /dt admin info <town>}.
      */
     @Override
     public List<AuditEvent> recent(String target, int limit) {
@@ -73,15 +73,15 @@ final class SqlAuditRepository implements AuditRepository {
                 return events;
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al consultar auditoria reciente", e);
+            throw new StorageException("Failed to query recent audit", e);
         }
     }
 
     /**
-     * Borra eventos anteriores a la fecha dada para que la tabla no crezca
-     * sin limite.
+     * Deletes events prior to the given timestamp so the table does not grow
+     * without bound.
      *
-     * @return numero de filas borradas.
+     * @return number of deleted rows.
      */
     @Override
     public int purgeBefore(Instant cutoff) {
@@ -91,11 +91,11 @@ final class SqlAuditRepository implements AuditRepository {
             ps.setLong(1, cutoff.toEpochMilli());
             return ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al purgar auditoria", e);
+            throw new StorageException("Failed to purge audit log", e);
         }
     }
 
-    // --- mapeo ---
+    // --- mapping ---
 
     private AuditEvent mapEvent(ResultSet rs) throws SQLException {
         long at = rs.getLong("at");

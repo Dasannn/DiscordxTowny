@@ -1,118 +1,118 @@
 # DiscordTowny
-DiscordTowny conecta Towny Advanced con Discord desde un servidor Paper.
-Cada town necesita canales privados: crearlos y mantener sus permisos a mano no escala. El alcalde pide su espacio y el bot mantiene los accesos según Towny.
+DiscordTowny connects Towny Advanced with Discord from a Paper server.
+Every town needs private channels: creating them and maintaining their permissions by hand does not scale. The mayor requests their space and the bot maintains access according to Towny.
 
-## Requisitos
+## Requirements
 
-- Paper para Minecraft **26.2**.
+- Paper for Minecraft **26.2**.
 - **Java 25**.
-- **Towny Advanced 0.103.2.7 o superior**.
-- Un servidor de Discord y un bot propio, que crearás en el paso siguiente.
-- SQLite, incluida como opción predeterminada, o una base de datos MySQL/MariaDB con sus credenciales.
+- **Towny Advanced 0.103.2.7 or higher**.
+- A Discord server and your own bot, which you will create in the next step.
+- SQLite, included as the default option, or a MySQL/MariaDB database with its credentials.
 
-Cada instalación conecta un servidor de Minecraft con un solo servidor de Discord.
+Each installation connects one Minecraft server to a single Discord server.
 
-## Crear e invitar al bot
+## Creating and inviting the bot
 
-1. Abre el [portal de aplicaciones de Discord](https://discord.com/developers/applications). Pulsa **New Application**, escribe `DiscordTowny` y crea la aplicación.
-2. En la pestaña **Bot**, genera el token con **Reset Token** y guárdalo (lo usarás en `discord.token`; no lo compartas). En esa misma pestaña, baja a la sección **Privileged Gateway Intents** y activa la casilla **Server Members Intent**. Si no se activa, Discord rechaza la conexión y el bot no funciona.
-3. En **Installation**, habilita **Guild Install**. Selecciona **Discord Provided Link** como enlace de instalación.
-4. En los ajustes de **Guild Install**, selecciona `bot` y `applications.commands`. Marca **Gestionar canales**, **Gestionar roles**, **Ver canales**, **Enviar mensajes** y **Conectar**.
-5. Abre el enlace de instalación, elige **Añadir al servidor**, selecciona tu servidor y autoriza al bot. Necesitas permiso para gestionar ese servidor.
-6. En Discord, abre **Ajustes del servidor → Roles**. **Coloca el rol del bot por encima de todos los roles que gestionará: los de las towns y `Alcalde`.** Si queda por debajo, no podrá asignarlos. El plugin avisa en consola al arrancar y no opera con esa jerarquía incorrecta.
+1. Open the [Discord developer portal](https://discord.com/developers/applications). Click **New Application**, type `DiscordTowny`, and create the application.
+2. In the **Bot** tab, generate the token with **Reset Token** and save it (you will use it in `discord.token`; do not share it). In that same tab, scroll down to the **Privileged Gateway Intents** section and check the **Server Members Intent** box. If not enabled, Discord rejects the connection and the bot will not work.
+3. Under **Installation**, enable **Guild Install**. Select **Discord Provided Link** as the install link.
+4. In the **Guild Install** settings, select `bot` and `applications.commands`. Check **Manage Channels**, **Manage Roles**, **View Channels**, **Send Messages**, and **Connect**.
+5. Open the install link, choose **Add to Server**, select your server, and authorize the bot. You need permission to manage that server.
+6. In Discord, open **Server Settings → Roles**. **Place the bot's role above all roles it will manage: town roles and `Alcalde`.** If it is placed below them, it cannot assign them. The plugin warns in console on startup and does not operate with this incorrect hierarchy.
 
-Los pasos del portal se pueden consultar en la [guía oficial de Discord](https://docs.discord.com/developers/quick-start/getting-started).
+The portal steps can be consulted in the [official Discord guide](https://docs.discord.com/developers/quick-start/getting-started).
 
-## Instalación
+## Installation
 
-1. Prepara Paper y Java con las versiones indicadas. Instala Towny Advanced y comprueba que funciona.
-2. Descarga el archivo JAR de DiscordTowny desde las publicaciones oficiales (releases).
-3. Detén Minecraft y coloca el JAR en la carpeta `plugins` del servidor.
-4. Arranca el servidor una vez para que Paper genere automáticamente la carpeta `plugins/DiscordTowny/` y el archivo `config.yml` por defecto.
-5. Abre `plugins/DiscordTowny/config.yml` y completa el token, el ID del servidor de Discord y la base de datos como se explica abajo.
-6. Reinicia el servidor y revisa la consola. Corrige cualquier aviso sobre conexión o permisos del bot.
-7. Entra al juego y ejecuta `/dt help`. Sigue la [guía de uso](docs/guia-de-uso.md) para vincularte y crear el primer espacio.
+1. Prepare Paper and Java with the specified versions. Install Towny Advanced and verify that it works.
+2. Download the DiscordTowny JAR file from the official releases.
+3. Stop Minecraft and place the JAR into the server's `plugins` folder.
+4. Start the server once so that Paper automatically generates the `plugins/DiscordTowny/` folder and the default `config.yml` file.
+5. Open `plugins/DiscordTowny/config.yml` and fill in the token, the Discord server ID, and the database as explained below.
+6. Restart the server and check the console. Fix any warnings regarding the bot's connection or permissions.
+7. Join the game and run `/dt help`. Follow the [user guide](docs/guia-de-uso.md) to link your account and create the first space.
 
-## Configuración mínima
+## Minimum configuration
 
-Edita estos valores en `plugins/DiscordTowny/config.yml`; conserva los demás bloques del archivo de ejemplo.
+Edit these values in `plugins/DiscordTowny/config.yml`; keep the other blocks from the example file.
 
-| Clave | Qué poner |
+| Key | What to put |
 |---|---|
-| `discord.token` | El token que copiaste del portal. Sustituye `PON_AQUI_TU_TOKEN`. |
-| `discord.guild-id` | El ID de tu servidor de Discord, entre comillas. Por ejemplo, `"123456789012345678"`; usa el tuyo. |
-| `database.type` | `sqlite` para empezar sin un servidor de base de datos aparte. Es el valor predeterminado. |
+| `discord.token` | The token you copied from the portal. Replace `PON_AQUI_TU_TOKEN`. |
+| `discord.guild-id` | Your Discord server ID, in quotes. For example, `"123456789012345678"`; use your own. |
+| `database.type` | `sqlite` to start without a separate database server. This is the default value. |
 
-Para copiar el ID, activa **Ajustes de usuario → Avanzado → Modo desarrollador** en Discord. Haz clic derecho sobre el icono del servidor y selecciona **Copiar ID del servidor**.
+To copy the ID, enable **User Settings → Advanced → Developer Mode** in Discord. Right-click the server icon and select **Copy Server ID**.
 
-Con `sqlite`, se ignoran los demás valores del bloque `database`. Para usar MySQL o MariaDB, selecciona `mysql` o `mariadb` y completa `host`, `port`, `name`, `user` y `password` con los datos de una base disponible. El puerto predeterminado es `3306` y el nombre, `discordtowny`.
+With `sqlite`, the other values in the `database` block are ignored. To use MySQL or MariaDB, select `mysql` or `mariadb` and fill in `host`, `port`, `name`, `user`, and `password` with the details of an available database. The default port is `3306` and the default name is `discordtowny`.
 
-No compartas el archivo de configuración: contiene el token y, si las usas, las credenciales de la base de datos.
+Do not share the configuration file: it contains the token and, if you use them, database credentials.
 
-Otros valores iniciales que afectan a los jugadores:
+Other initial values affecting players:
 
-| Opción | Valor predeterminado |
+| Option | Default value |
 |---|---|
-| Canales por town | Texto y voz, dentro de `Comunidades` |
-| Categoría para espacios archivados | `Archivo` |
-| Rol distintivo compartido por los alcaldes | `Alcalde` |
-| `limits.min-residents` | 2 residentes |
+| Channels per town | Text and voice, inside `Comunidades` |
+| Category for archived spaces | `Archivo` |
+| Distinctive role shared by mayors | `Alcalde` |
+| `limits.min-residents` | 2 residents |
 | `limits.max-towns` | 200 towns |
-| `limits.creation-cooldown-seconds` | 60 segundos |
-| `linking.code-expiry-minutes` | 10 minutos |
-| `commands.cooldown-seconds` | 5 segundos por usuario en Discord |
+| `limits.creation-cooldown-seconds` | 60 seconds |
+| `linking.code-expiry-minutes` | 10 minutes |
+| `commands.cooldown-seconds` | 5 seconds per user on Discord |
 
-## Comandos del juego
+## In-game commands
 
-Puedes sustituir `/dt` por `/discordtowny`. Los ejemplos usan la town `Robledal` y el jugador `AnaCraft`.
-«Admin» significa tener el permiso `discordtowny.admin`.
+You can substitute `/dt` with `/discordtowny`. Examples use the town `Robledal` and player `AnaCraft`.
+"Admin" means holding the `discordtowny.admin` permission.
 
-| Comando o ejemplo | Quién puede usarlo | Qué hace |
+| Command or example | Who can use it | What it does |
 |---|---|---|
-| `/dt help` | Cualquier jugador | Muestra los comandos que puede usar y su explicación. |
-| `/dt link` | Cualquier jugador | Genera un código para vincular su cuenta. |
-| `/dt unlink` | Jugador vinculado | Desvincula su cuenta y retira los roles otorgados por el plugin. |
-| `/dt status` | Cualquier jugador | Muestra la vinculación, la cuenta de Discord y si su town tiene espacio. |
-| `/dt create` | Alcalde vinculado | Crea el espacio de su town si cumple los requisitos. |
-| `/dt delete` | Alcalde | Archiva el espacio de su town, con confirmación. Conserva el historial. |
-| `/dt sync` | Alcalde | Sincroniza los roles de los residentes de su town. |
-| `/dt admin sync` | Admin | Revisa y sincroniza todos los espacios. |
-| `/dt admin sync Robledal` | Admin | Revisa y sincroniza una town concreta. |
-| `/dt admin unlink AnaCraft` | Admin | Desvincula a ese jugador. |
-| `/dt admin reload` | Admin | Recarga configuración y textos. |
-| `/dt admin list` | Admin | Lista towns, estados, canales, residentes con rol y última actividad. |
-| `/dt admin info Robledal` | Admin | Muestra el detalle del espacio, su actividad y los problemas detectados. |
-| `/dt admin purge` | Admin | Borra definitivamente los espacios archivados, con confirmación. |
-| `/dt admin update` | Admin | Comprueba y descarga la última versión. |
-| `/dt admin update status` | Admin | Muestra la versión actual, la disponible y si hay una descarga pendiente. |
+| `/dt help` | Any player | Shows the commands they can use and their description. |
+| `/dt link` | Any player | Generates a code to link their account. |
+| `/dt unlink` | Linked player | Unlinks their account and removes roles granted by the plugin. |
+| `/dt status` | Any player | Shows link status, Discord account, and whether their town has a space. |
+| `/dt create` | Linked mayor | Creates their town's space if requirements are met. |
+| `/dt delete` | Mayor | Archives their town's space, with confirmation. Preserves history. |
+| `/dt sync` | Mayor | Synchronizes roles for residents of their town. |
+| `/dt admin sync` | Admin | Checks and synchronizes all spaces. |
+| `/dt admin sync Robledal` | Admin | Checks and synchronizes a specific town. |
+| `/dt admin unlink AnaCraft` | Admin | Unlinks that player. |
+| `/dt admin reload` | Admin | Reloads configuration and messages. |
+| `/dt admin list` | Admin | Lists towns, states, channels, residents with roles, and last activity. |
+| `/dt admin info Robledal` | Admin | Shows space details, activity, and detected issues. |
+| `/dt admin purge` | Admin | Permanently deletes archived spaces, with confirmation. |
+| `/dt admin update` | Admin | Checks for and downloads the latest version. |
+| `/dt admin update status` | Admin | Shows current version, available version, and whether a download is pending. |
 
-Las actualizaciones se comprueban cada 12 horas y se descargan automáticamente por defecto. Se aplican al reiniciar el servidor. Puedes desactivar la comprobación con `updates.check-enabled` o la descarga automática con `updates.auto-download`.
+Updates are checked every 12 hours and downloaded automatically by default. They are applied when restarting the server. You can disable the check with `updates.check-enabled` or automatic download with `updates.auto-download`.
 
-## Comandos de Discord
+## Discord commands
 
-Escribe `/` y selecciona el comando del bot. En los ejemplos, introduce el valor indicado en el campo que muestra Discord; `A7K9MX` es solo un código de ejemplo.
+Type `/` and select the bot's command. In the examples, enter the value indicated in the field shown by Discord; `A7K9MX` is just an example code.
 
-| Comando o ejemplo | Quién puede usarlo | Qué muestra o hace |
+| Command or example | Who can use it | What it shows or does |
 |---|---|---|
-| `/link A7K9MX` | Jugador con un código válido del juego | Vincula su cuenta de Discord con Minecraft. |
-| `/unlink` | Usuario vinculado | Desvincula su cuenta y retira los roles del plugin. |
-| `/town Robledal` | Cualquier usuario, sin vincularse | Alcalde, residentes, fundación, parcelas, banco, nación y estado de ruina. |
-| `/town` | Usuario vinculado | Ficha de su propia town. |
-| `/residents Robledal` | Cualquier usuario, sin vincularse | Lista paginada de residentes y su estado. |
-| `/res AnaCraft` | Cualquier usuario, sin vincularse | Town, cargo, conexión y saldo si hay economía. |
-| `/res` | Usuario vinculado | Su propia ficha de residente. |
-| `/townlist` o `/townlist 2` | Cualquier usuario, sin vincularse | Listado ordenado de towns, por páginas. |
-| `/mytown` | Usuario vinculado | Ficha de su propia town. |
-| `/help` | Cualquier usuario, sin vincularse | Comandos de Discord disponibles y su explicación. |
+| `/link A7K9MX` | Player with a valid in-game code | Links their Discord account with Minecraft. |
+| `/unlink` | Linked user | Unlinks their account and removes plugin roles. |
+| `/town Robledal` | Any user, without linking | Mayor, residents, founded date, plots, bank, nation, and ruined status. |
+| `/town` | Linked user | Info card for their own town. |
+| `/residents Robledal` | Any user, without linking | Paginated list of residents and their status. |
+| `/res AnaCraft` | Any user, without linking | Town, rank, online status, and balance if economy is present. |
+| `/res` | Linked user | Their own resident info card. |
+| `/townlist` or `/townlist 2` | Any user, without linking | Sorted list of towns, by pages. |
+| `/mytown` | Linked user | Info card for their own town. |
+| `/help` | Any user, without linking | Available Discord commands and their description. |
 
-Las consultas leen los datos actuales de Towny. Los seis comandos de información se pueden desactivar en `commands`. Sus respuestas son públicas por defecto, salvo `/mytown` y `/help`, que solo ve quien los ejecuta. Cada uno tiene su opción `ephemeral`. La confirmación de vinculación también es privada.
+Queries read current Towny data. The six information commands can be disabled in `commands`. Their responses are public by default, except for `/mytown` and `/help`, which are only visible to the person running them. Each has its own `ephemeral` setting. The linking confirmation is also private.
 
-## Límites de Discord
+## Discord limits
 
-Discord admite **500 canales y 250 roles por servidor**. Con dos canales y un rol por town, el techo orientativo ronda las **240 towns**, antes de descontar otros canales, categorías, roles y espacios archivados. No es una capacidad garantizada. El límite propio del plugin empieza en 200.
+Discord allows **500 channels and 250 roles per server**. With two channels and one role per town, the estimated ceiling is around **240 towns**, before accounting for other channels, categories, roles, and archived spaces. This is not a guaranteed capacity. The plugin's own limit starts at 200.
 
-Además, Discord limita cada categoría a **50 canales**. Cuando una categoría se llena, el bot crea automáticamente categorías adicionales numeradas (`Comunidades 2`, `Comunidades 3`...) conforme hacen falta para alojar los nuevos espacios. Esto es completamente transparente: el límite real pasa a ser el del propio servidor de Discord (500 canales). Consulta los [límites oficiales de Discord](https://support.discord.com/hc/en-us/articles/33694251638295-Discord-Account-Caps-Server-Caps-and-More).
+Additionally, Discord limits each category to **50 channels**. When a category fills up, the bot automatically creates additional numbered categories (`Comunidades 2`, `Comunidades 3`...) as needed to house new spaces. This is completely transparent: the real limit becomes that of the Discord server itself (500 channels). See the [official Discord limits](https://support.discord.com/hc/en-us/articles/33694251638295-Discord-Account-Caps-Server-Caps-and-More).
 
-## Licencia
+## License
 
 [MIT](LICENSE).

@@ -11,13 +11,13 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests de {@link LinkRepository}: vinculos y codigos de vinculacion.
+ * Tests for {@link LinkRepository}: links and link codes.
  */
 class LinkRepositoryTest extends StorageTestBase {
 
     // --- helpers ---
 
-    private AccountLink nuevoLink() {
+    private AccountLink newLink() {
         return new AccountLink(
                 UUID.randomUUID(),
                 "discord_" + System.nanoTime(),
@@ -25,20 +25,20 @@ class LinkRepositoryTest extends StorageTestBase {
                 "Jugador");
     }
 
-    private LinkCode nuevoCodigo(UUID uuid, Instant expiry) {
+    private LinkCode newCode(UUID uuid, Instant expiry) {
         return new LinkCode("COD" + System.nanoTime(), uuid, expiry, 0);
     }
 
     // --- findByUuid ---
 
     @Test
-    void findByUuidRetornaVacioSiNoExiste() {
+    void findByUuidReturnsEmptyWhenDoesNotExist() {
         assertTrue(links.findByUuid(UUID.randomUUID()).isEmpty());
     }
 
     @Test
-    void findByUuidRetornaLinkGuardado() {
-        AccountLink link = nuevoLink();
+    void findByUuidReturnsSavedLink() {
+        AccountLink link = newLink();
         links.save(link);
         Optional<AccountLink> found = links.findByUuid(link.uuid());
         assertTrue(found.isPresent());
@@ -49,13 +49,13 @@ class LinkRepositoryTest extends StorageTestBase {
     // --- findByDiscordId ---
 
     @Test
-    void findByDiscordIdRetornaVacioSiNoExiste() {
+    void findByDiscordIdReturnsEmptyWhenDoesNotExist() {
         assertTrue(links.findByDiscordId("no_existe").isEmpty());
     }
 
     @Test
-    void findByDiscordIdRetornaLinkGuardado() {
-        AccountLink link = nuevoLink();
+    void findByDiscordIdReturnsSavedLink() {
+        AccountLink link = newLink();
         links.save(link);
         Optional<AccountLink> found = links.findByDiscordId(link.discordId());
         assertTrue(found.isPresent());
@@ -65,12 +65,12 @@ class LinkRepositoryTest extends StorageTestBase {
     // --- save y unicidad ---
 
     /**
-     * Requisito central de T2: la unicidad de links se garantiza en el esquema.
-     * Dos peticiones simultaneas no pueden vincular el mismo UUID porque la
-     * segunda chocara con la restriccion UNIQUE y lanzara StorageException.
+     * Central requirement of T2: link uniqueness is guaranteed in the schema.
+     * Two simultaneous requests cannot link the same UUID because the
+     * second will collide with the UNIQUE constraint and throw StorageException.
      */
     @Test
-    void saveRechazaUUIDDuplicado() {
+    void saveRejectsDuplicateUuid() {
         UUID uuid = UUID.randomUUID();
         AccountLink link1 = new AccountLink(uuid, "discord_a", Instant.now(), "A");
         AccountLink link2 = new AccountLink(uuid, "discord_b", Instant.now(), "B");
@@ -79,7 +79,7 @@ class LinkRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void saveRechazaDiscordIdDuplicado() {
+    void saveRejectsDuplicateDiscordId() {
         String discordId = "discord_" + System.nanoTime();
         AccountLink link1 = new AccountLink(UUID.randomUUID(), discordId, Instant.now(), "A");
         AccountLink link2 = new AccountLink(UUID.randomUUID(), discordId, Instant.now(), "B");
@@ -88,50 +88,50 @@ class LinkRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void saveLinkConservaFechaYNombre() {
-        Instant ahora = Instant.now();
-        AccountLink link = new AccountLink(UUID.randomUUID(), "d1", ahora, "ElJugador");
+    void saveLinkPreservesDateAndName() {
+        Instant now = Instant.now();
+        AccountLink link = new AccountLink(UUID.randomUUID(), "d1", now, "ElJugador");
         links.save(link);
         AccountLink found = links.findByUuid(link.uuid()).orElseThrow();
-        assertEquals(ahora.toEpochMilli(), found.linkedAt().toEpochMilli());
+        assertEquals(now.toEpochMilli(), found.linkedAt().toEpochMilli());
         assertEquals("ElJugador", found.lastKnownName());
     }
 
     // --- deleteByUuid ---
 
     @Test
-    void deleteByUuidRetornaTrueYBorra() {
-        AccountLink link = nuevoLink();
+    void deleteByUuidReturnsTrueAndDeletes() {
+        AccountLink link = newLink();
         links.save(link);
         assertTrue(links.deleteByUuid(link.uuid()));
         assertTrue(links.findByUuid(link.uuid()).isEmpty());
     }
 
     @Test
-    void deleteByUuidRetornaFalseSiNoExiste() {
+    void deleteByUuidReturnsFalseWhenDoesNotExist() {
         assertFalse(links.deleteByUuid(UUID.randomUUID()));
     }
 
     // --- count ---
 
     @Test
-    void countDevuelve0Inicialmente() {
+    void countReturns0Initially() {
         assertEquals(0, links.count());
     }
 
     @Test
-    void countReflejaInserciones() {
-        links.save(nuevoLink());
-        links.save(nuevoLink());
+    void countReflectsInsertions() {
+        links.save(newLink());
+        links.save(newLink());
         assertEquals(2, links.count());
     }
 
     // --- saveCode y findCode ---
 
     @Test
-    void saveCodeGuardaYFindCodeRecupera() {
+    void saveCodeSavesAndFindCodeRetrieves() {
         UUID uuid = UUID.randomUUID();
-        LinkCode code = nuevoCodigo(uuid, Instant.now().plusSeconds(600));
+        LinkCode code = newCode(uuid, Instant.now().plusSeconds(600));
         links.saveCode(code);
         Optional<LinkCode> found = links.findCode(code.code());
         assertTrue(found.isPresent());
@@ -141,29 +141,29 @@ class LinkRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void saveCodeSustituiyeCodigoAnteriorDelMismoJugador() {
+    void saveCodeReplacesPreviousCodeOfSamePlayer() {
         UUID uuid = UUID.randomUUID();
         LinkCode code1 = new LinkCode("AAA111", uuid, Instant.now().plusSeconds(600), 0);
         LinkCode code2 = new LinkCode("BBB222", uuid, Instant.now().plusSeconds(600), 0);
         links.saveCode(code1);
         links.saveCode(code2);
-        // El codigo antiguo ya no existe.
+        // Old code no longer exists.
         assertTrue(links.findCode("AAA111").isEmpty());
-        // El nuevo si.
+        // The new one does.
         assertTrue(links.findCode("BBB222").isPresent());
     }
 
     @Test
-    void findCodeRetornaVacioSiNoExiste() {
+    void findCodeReturnsEmptyWhenDoesNotExist() {
         assertTrue(links.findCode("NOEXISTE").isEmpty());
     }
 
     // --- deleteCode ---
 
     @Test
-    void deleteCodeElimina() {
+    void deleteCodeDeletes() {
         UUID uuid = UUID.randomUUID();
-        LinkCode code = nuevoCodigo(uuid, Instant.now().plusSeconds(600));
+        LinkCode code = newCode(uuid, Instant.now().plusSeconds(600));
         links.saveCode(code);
         links.deleteCode(code.code());
         assertTrue(links.findCode(code.code()).isEmpty());
@@ -172,9 +172,9 @@ class LinkRepositoryTest extends StorageTestBase {
     // --- incrementAttempts ---
 
     @Test
-    void incrementAttemptsAumentaContadorYDevuelveTotalActual() {
+    void incrementAttemptsIncrementsCounterAndReturnsCurrentTotal() {
         UUID uuid = UUID.randomUUID();
-        LinkCode code = nuevoCodigo(uuid, Instant.now().plusSeconds(600));
+        LinkCode code = newCode(uuid, Instant.now().plusSeconds(600));
         links.saveCode(code);
         assertEquals(1, links.incrementAttempts(code.code()));
         assertEquals(2, links.incrementAttempts(code.code()));
@@ -184,67 +184,67 @@ class LinkRepositoryTest extends StorageTestBase {
     // --- purgeExpiredCodes ---
 
     @Test
-    void purgeExpiredCodesBorraLosCaducados() {
+    void purgeExpiredCodesDeletesExpiredOnes() {
         UUID uuid1 = UUID.randomUUID();
         UUID uuid2 = UUID.randomUUID();
-        // Caducado hace 1 segundo.
-        LinkCode expirado = new LinkCode("EXP001", uuid1, Instant.now().minusSeconds(1), 0);
-        // Vigente por 10 minutos.
-        LinkCode vigente  = new LinkCode("VIG001", uuid2, Instant.now().plusSeconds(600), 0);
-        links.saveCode(expirado);
-        links.saveCode(vigente);
+        // Expired 1 second ago.
+        LinkCode expired = new LinkCode("EXP001", uuid1, Instant.now().minusSeconds(1), 0);
+        // Valid for 10 minutes.
+        LinkCode valid  = new LinkCode("VIG001", uuid2, Instant.now().plusSeconds(600), 0);
+        links.saveCode(expired);
+        links.saveCode(valid);
 
-        int borrados = links.purgeExpiredCodes(Instant.now());
+        int deleted = links.purgeExpiredCodes(Instant.now());
 
-        assertEquals(1, borrados);
-        assertTrue(links.findCode("EXP001").isEmpty(), "El codigo caducado debe haberse borrado");
-        assertTrue(links.findCode("VIG001").isPresent(), "El codigo vigente debe seguir");
+        assertEquals(1, deleted);
+        assertTrue(links.findCode("EXP001").isEmpty(), "The expired code must have been deleted");
+        assertTrue(links.findCode("VIG001").isPresent(), "The valid code must remain");
     }
 
     // --- isExpired en el modelo ---
 
     @Test
-    void isExpiredFuncionaCorrectamente() {
-        LinkCode expirado = new LinkCode("X", UUID.randomUUID(), Instant.now().minusSeconds(1), 0);
-        LinkCode vigente  = new LinkCode("Y", UUID.randomUUID(), Instant.now().plusSeconds(600), 0);
-        assertTrue(expirado.isExpired(Instant.now()));
-        assertFalse(vigente.isExpired(Instant.now()));
+    void isExpiredWorksCorrectly() {
+        LinkCode expired = new LinkCode("X", UUID.randomUUID(), Instant.now().minusSeconds(1), 0);
+        LinkCode valid  = new LinkCode("Y", UUID.randomUUID(), Instant.now().plusSeconds(600), 0);
+        assertTrue(expired.isExpired(Instant.now()));
+        assertFalse(valid.isExpired(Instant.now()));
     }
 
     // --- clasificacion de errores de restriccion ---
 
     @Test
-    void violacionDeNotNullNoSeReportaComoVinculoDuplicado() {
-        // SQLite lanza el codigo 19 (SQLITE_CONSTRAINT) para CUALQUIER
-        // restriccion, tambien NOT NULL. Si se trata todo el codigo 19 como
-        // choque de unicidad, un nombre nulo se reporta como "ya existe un
-        // vinculo", que es falso y manda el diagnostico en direccion contraria.
-        AccountLink sinNombre = new AccountLink(UUID.randomUUID(), "discord_sin_nombre", Instant.now(), null);
+    void notNullViolationIsNotReportedAsDuplicateLink() {
+        // SQLite throws code 19 (SQLITE_CONSTRAINT) for ANY
+        // constraint, including NOT NULL. If all code 19 is treated as
+        // a uniqueness collision, a null name is reported as "a link already exists",
+        // which is false and sends diagnosis in the opposite direction.
+        AccountLink withoutName = new AccountLink(UUID.randomUUID(), "discord_sin_nombre", Instant.now(), null);
 
-        StorageException e = assertThrows(StorageException.class, () -> links.save(sinNombre));
+        StorageException e = assertThrows(StorageException.class, () -> links.save(withoutName));
 
         assertFalse(e.getMessage().contains("Ya existe"),
-                "Un nombre nulo no es un vinculo duplicado: " + e.getMessage());
+                "A null name is not a duplicate link: " + e.getMessage());
     }
 
     // --- canje atomico ---
 
     @Test
-    void canjeAtomicoConsumeElCodigoYCreaElVinculo() {
+    void atomicRedemptionConsumesCodeAndCreatesLink() {
         UUID uuid = UUID.randomUUID();
         links.saveCode(new LinkCode("ABC123", uuid, Instant.now().plusSeconds(600), 0));
 
-        var salida = links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now());
+        var output = links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now());
 
-        assertEquals(LinkRepository.ConsumeResult.OK, salida.result());
-        assertTrue(salida.link().isPresent());
-        assertEquals(uuid, salida.link().get().uuid());
-        assertTrue(links.findCode("ABC123").isEmpty(), "El codigo debe quedar consumido");
+        assertEquals(LinkRepository.ConsumeResult.OK, output.result());
+        assertTrue(output.link().isPresent());
+        assertEquals(uuid, output.link().get().uuid());
+        assertTrue(links.findCode("ABC123").isEmpty(), "The code must be consumed");
         assertTrue(links.findByUuid(uuid).isPresent());
     }
 
     @Test
-    void elMismoCodigoNoSePuedeCanjearDosVeces() {
+    void sameCodeCannotBeRedeemedTwice() {
         UUID uuid = UUID.randomUUID();
         links.saveCode(new LinkCode("ABC123", uuid, Instant.now().plusSeconds(600), 0));
 
@@ -255,27 +255,27 @@ class LinkRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void unChoqueDeUnicidadDevuelveElCodigoASuSitio() {
-        // El jugador ya esta vinculado; su codigo no debe quemarse al fallar.
+    void uniquenessCollisionReturnsCodeToItsPlace() {
+        // The player is already linked; their code must not be burned upon failure.
         UUID uuid = UUID.randomUUID();
         links.save(new AccountLink(uuid, "discord_previo", Instant.now(), "Steve"));
         links.saveCode(new LinkCode("ABC123", uuid, Instant.now().plusSeconds(600), 0));
 
-        var salida = links.consumeCodeAndLink("ABC123", "discord_nuevo", "Steve", Instant.now());
+        var output = links.consumeCodeAndLink("ABC123", "discord_nuevo", "Steve", Instant.now());
 
-        assertEquals(LinkRepository.ConsumeResult.PLAYER_ALREADY_LINKED, salida.result());
+        assertEquals(LinkRepository.ConsumeResult.PLAYER_ALREADY_LINKED, output.result());
         assertTrue(links.findCode("ABC123").isPresent(),
-                "Un choque de unicidad no puede quemar el codigo del jugador");
+                "A uniqueness collision cannot burn the player's code");
     }
 
     @Test
-    void codigoCaducadoSeConsumeYSeRechaza() {
+    void expiredCodeIsConsumedAndRejected() {
         UUID uuid = UUID.randomUUID();
         links.saveCode(new LinkCode("ABC123", uuid, Instant.now().minusSeconds(1), 0));
 
-        var salida = links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now());
+        var output = links.consumeCodeAndLink("ABC123", "discord_1", "Steve", Instant.now());
 
-        assertEquals(LinkRepository.ConsumeResult.CODE_EXPIRED, salida.result());
+        assertEquals(LinkRepository.ConsumeResult.CODE_EXPIRED, output.result());
         assertTrue(links.findCode("ABC123").isEmpty());
         assertTrue(links.findByUuid(uuid).isEmpty());
     }
@@ -283,26 +283,26 @@ class LinkRepositoryTest extends StorageTestBase {
     // --- borrado condicional ---
 
     @Test
-    void borradoCondicionalBorraSiElVinculoCoincide() {
+    void conditionalDeletionDeletesIfLinkMatches() {
         UUID uuid = UUID.randomUUID();
-        Instant cuando = Instant.ofEpochMilli(1_700_000_000_000L);
-        links.save(new AccountLink(uuid, "discord_1", cuando, "Steve"));
+        Instant when = Instant.ofEpochMilli(1_700_000_000_000L);
+        links.save(new AccountLink(uuid, "discord_1", when, "Steve"));
 
-        assertTrue(links.deleteByUuidIfMatches(uuid, "discord_1", cuando));
+        assertTrue(links.deleteByUuidIfMatches(uuid, "discord_1", when));
         assertTrue(links.findByUuid(uuid).isEmpty());
     }
 
     @Test
-    void borradoCondicionalNoBorraUnVinculoRecreado() {
+    void conditionalDeletionDoesNotDeleteRecreatedLink() {
         UUID uuid = UUID.randomUUID();
-        Instant viejo = Instant.ofEpochMilli(1_700_000_000_000L);
-        Instant nuevo = Instant.ofEpochMilli(1_700_000_999_000L);
+        Instant oldTimestamp = Instant.ofEpochMilli(1_700_000_000_000L);
+        Instant newTimestamp = Instant.ofEpochMilli(1_700_000_999_000L);
 
-        // El vinculo que existe ahora es otro: se rompio y se recreo.
-        links.save(new AccountLink(uuid, "discord_2", nuevo, "Steve"));
+        // The link that exists now is another: it broke and was recreated.
+        links.save(new AccountLink(uuid, "discord_2", newTimestamp, "Steve"));
 
-        assertFalse(links.deleteByUuidIfMatches(uuid, "discord_1", viejo),
-                "No debe borrar un vinculo distinto del autorizado");
-        assertTrue(links.findByUuid(uuid).isPresent(), "El vinculo nuevo sigue intacto");
+        assertFalse(links.deleteByUuidIfMatches(uuid, "discord_1", oldTimestamp),
+                "Must not delete a link different from the authorized one");
+        assertTrue(links.findByUuid(uuid).isPresent(), "The new link remains intact");
     }
 }

@@ -4,29 +4,29 @@ import java.security.SecureRandom;
 import java.util.Objects;
 
 /**
- * Generador criptograficamente seguro de codigos de vinculacion.
+ * Cryptographically secure generator of link codes.
  *
- * <p>Genera codigos de 6 caracteres alfanumericos sin caracteres ambiguos
- * (se excluyen 0, O, 1, I, l, L). Usa {@link SecureRandom}, nunca {@link java.util.Random},
- * para evitar que los codigos sean predecibles.
+ * <p>Generates 6-character alphanumeric codes without ambiguous characters
+ * (0, O, 1, I, l, L are excluded). Uses {@link SecureRandom}, never {@link java.util.Random},
+ * to prevent codes from being predictable.
  *
- * <p>Analisis de entropia y riesgo residual de fuerza bruta distribuida (hallazgo 13):
- * El alfabeto consta de 31 simbolos. Un codigo de 6 simbolos produce 31^6 = 887.503.681
- * combinaciones posibles (aproximadamente 29,73 bits de entropia). Con el limite por
- * usuario de 5 intentos por ventana (AttemptTracker), la probabilidad de acertar un
- * codigo especifico es de solo 5 / 887.503.681 ≈ 5,63 x 10^-9. Sin embargo, en un
- * ataque distribuido mediante mil cuentas de Discord simultaneas, el presupuesto conjunto
- * alcanza 5.000 intentos (probabilidad ≈ 5,63 x 10^-6 contra un codigo particular,
- * multiplicada linealmente si existen M codigos vivos concurrentes). Este riesgo residual
- * queda documentado para que el arquitecto evalue si en el futuro se requiere una
- * defensa agregada global por ventana.
+ * <p>Entropy analysis and residual risk of distributed brute force (finding 13):
+ * The alphabet consists of 31 symbols. A 6-symbol code produces 31^6 = 887,503,681
+ * possible combinations (approximately 29.73 bits of entropy). With the per-user
+ * limit of 5 attempts per window (AttemptTracker), the probability of guessing a
+ * specific code is only 5 / 887,503,681 ≈ 5.63 x 10^-9. However, in a
+ * distributed attack using a thousand simultaneous Discord accounts, the collective budget
+ * reaches 5,000 attempts (probability ≈ 5.63 x 10^-6 against a particular code,
+ * multiplied linearly if there are M concurrent active codes). This residual risk
+ * is documented so that the architect can evaluate whether an aggregate global
+ * defense per window is required in the future.
  */
 public final class CodeGenerator {
 
     /**
-     * Alfabeto de 31 caracteres alfanumericos no ambiguos:
-     * Digitos: 2-9 (sin 0 ni 1)
-     * Letras: A-Z (sin I, L, O)
+     * Alphabet of 31 non-ambiguous alphanumeric characters:
+     * Digits: 2-9 (without 0 or 1)
+     * Letters: A-Z (without I, L, O)
      */
     public static final String ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
     public static final int CODE_LENGTH = 6;
@@ -42,7 +42,7 @@ public final class CodeGenerator {
     }
 
     /**
-     * Genera un nuevo codigo de vinculacion.
+     * Generates a new link code.
      */
     public String nextCode() {
         char[] chars = new char[CODE_LENGTH];
@@ -53,7 +53,7 @@ public final class CodeGenerator {
     }
 
     /**
-     * Comprueba si un caracter se considera ambiguo (0, O, 1, I, l, L).
+     * Checks whether a character is considered ambiguous (0, O, 1, I, l, L).
      */
     public static boolean isAmbiguous(char c) {
         return c == '0' || c == 'O' || c == 'o'
@@ -62,7 +62,7 @@ public final class CodeGenerator {
     }
 
     /**
-     * Comprueba si una cadena contiene algun caracter ambiguo.
+     * Checks whether a string contains any ambiguous character.
      */
     public static boolean containsAmbiguousCharacters(String code) {
         if (code == null) return false;

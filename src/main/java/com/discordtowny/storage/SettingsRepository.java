@@ -3,25 +3,25 @@ package com.discordtowny.storage;
 import java.util.Optional;
 
 /**
- * Ajustes internos del plugin, en pares clave-valor. Bloquea: ver {@link Storage}.
+ * Internal plugin settings, in key-value pairs. Blocks: see {@link Storage}.
  *
- * <p>Existe para lo poco que el plugin necesita recordar entre arranques y no
- * encaja en ninguna tabla propia. El caso que lo motivo: el ID del rol global
- * de alcalde. Reconocerlo por su nombre no sirve, porque un administrador puede
- * renombrarlo en Discord y entonces el plugin dejaria de reconocer como suyo un
- * rol que si lo es.
+ * <p>Exists for the few things the plugin needs to remember between restarts
+ * that do not fit into any dedicated table. The case that motivated it: the ID
+ * of the global mayor role. Recognizing it by its name does not work, because an
+ * administrator could rename it in Discord and then the plugin would stop
+ * recognizing as its own a role that actually is.
  *
- * <p>Esto NO es configuracion del administrador: esa vive en config.yml y se
- * edita a mano. Aqui solo va estado que el plugin se escribe a si mismo.
+ * <p>This is NOT administrator configuration: that lives in config.yml and is
+ * edited by hand. Here only goes state that the plugin writes to itself.
  */
 public interface SettingsRepository {
 
-    /** ID del rol global de alcalde. */
+    /** ID of the global mayor role. */
     String KEY_MAYOR_ROLE_ID = "mayor_role_id";
 
     Optional<String> get(String key);
 
-    /** Inserta o reemplaza. */
+    /** Inserts or replaces. */
     void put(String key, String value);
 
     void delete(String key);

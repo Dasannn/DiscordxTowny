@@ -5,14 +5,14 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * config.yml ya validado y tipado.
+ * config.yml already validated and typed.
  *
- * <p>Se carga una sola vez al arrancar y en cada {@code /dt admin reload}.
- * Nadie lee del YamlConfiguration en caliente: si un valor hace falta, se
- * anade aqui.
+ * <p>Loaded once at startup and on every {@code /dt admin reload}.
+ * Nobody reads from the live YamlConfiguration: if a value is needed, it is
+ * added here.
  *
- * <p>Una configuracion invalida no se acepta: se rechaza diciendo que clave
- * esta mal y el plugin arranca degradado, en lugar de operar con basura.
+ * <p>An invalid configuration is not accepted: it is rejected indicating which
+ * key is wrong and the plugin starts degraded, rather than operating with garbage.
  */
 public record PluginConfig(
         Discord discord,
@@ -28,13 +28,13 @@ public record PluginConfig(
         Commands commands) {
 
     /**
-     * El token es sensible: no lo incluyas en toString, en logs ni en mensajes
-     * de error. Por eso este record lo sobreescribe.
+     * The token is sensitive: do not include it in toString, logs, or error
+     * messages. That is why this record overrides it.
      */
     public record Discord(String token, String guildId, Optional<String> logChannelId) {
         @Override
         public String toString() {
-            return "Discord[guildId=" + guildId + ", token=OCULTO]";
+            return "Discord[guildId=" + guildId + ", token=REDACTED]";
         }
     }
 
@@ -58,7 +58,7 @@ public record PluginConfig(
 
         @Override
         public String toString() {
-            return "Database[type=" + type + ", host=" + host + ", name=" + name + ", password=OCULTA]";
+            return "Database[type=" + type + ", host=" + host + ", name=" + name + ", password=REDACTED]";
         }
     }
 
@@ -86,9 +86,9 @@ public record PluginConfig(
 
     public record Sync(Duration interval, Mode mode, int batchSize, Duration batchPause) {
         public enum Mode {
-            /** Aplica las correcciones. */
+            /** Applies corrections. */
             REPAIR,
-            /** Solo las registra. */
+            /** Only logs them. */
             REPORT
         }
     }

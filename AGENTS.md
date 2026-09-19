@@ -11,6 +11,7 @@ This repository may be developed by multiple AI agents concurrently.
 - Do not merge into main.
 - Do not change architecture or requirements without approval.
 - Do not implement requirements that are not documented.
+- Write code, comments, and documentation in English.
 
 ## Sources of truth
 
@@ -28,33 +29,35 @@ If required project documentation does not exist yet, do not start implementatio
 
 Help define and create the documentation first.
 
-# Estado del proyecto
+# Project Status
 
-La fase de planificación **está cerrada y aprobada**. Los cinco documentos
-existen y mandan sobre cualquier decisión: `docs/constitution.md`,
-`docs/spec.md`, `ARCHITECTURE.md`, `docs/plan.md` y `docs/tasks.md`.
+The planning phase **is closed and approved**. The five documents exist and
+govern every decision: `docs/constitution.md`, `docs/spec.md`, `ARCHITECTURE.md`,
+`docs/plan.md`, and `docs/tasks.md`.
 
-**Se implementa código.** No vuelvas a proponer planificación ni entrevistas:
-esa etapa ya pasó.
+**Code is being implemented.** Do not propose planning or interviews again:
+that stage is over.
 
-## Cómo se trabaja
+## How we work
 
-- Cada agente recibe una ficha de `docs/tasks.md` y trabaja en su propio
-  worktree, sobre una zona de archivos exclusiva.
-- No salgas de tu zona. Si necesitas algo de otro paquete, dilo en tu informe
-  en lugar de tocarlo.
-- Nadie hace merge ni toca `master`: integra el arquitecto.
-- Cada rama la revisa un agente distinto del autor, que escribe su informe en
-  `docs/revisiones/` y **no corrige el código que revisa**.
-- Si el entorno te impide compilar o hacer commit, **dilo claramente y sigue
-  con el resto del trabajo**. No supongas que algo funciona sin comprobarlo, y
-  no te detengas por ello si puedes avanzar en lo demás.
-- **No ejecutes `./gradlew` salvo que tu encargo lo pida.** Un build limpio
-  tarda entre uno y tres minutos, y varios agentes han gastado el turno entero
-  esperándolo sin llegar a escribir una línea. El arquitecto compila y verifica
-  cada rama por su cuenta antes de integrarla. Dedica tu turno a leer el código
-  y a editarlo.
+- Each agent receives a task card from `docs/tasks.md` and works in their own
+  worktree, on an exclusive file zone.
+- Do not leave your zone. If you need something from another package, state it in
+  your report instead of touching it.
+- Nobody merges or touches `master`: the architect integrates.
+- Each branch is reviewed by an agent other than the author, who writes their
+  report in `docs/revisiones/` and **does not fix the code they review**.
+- If the environment prevents you from compiling or committing, **state it
+  clearly and continue with the rest of the work**. Do not assume something works
+  without verifying it, and do not stop because of it if you can make progress on
+  the rest.
+- **Do not run `./gradlew` unless your assignment requests it.** A clean build
+  takes between one and three minutes, and several agents have burned their
+  entire turn waiting for it without writing a single line. The architect
+  compiles and verifies each branch on their own before integrating it. Spend
+  your turn reading and editing code.
+- Write code, comments, and documentation in English from here on.
 
-## Estado por tarea
+## Status by task
 
-Ver `docs/tasks.md`. Integradas: T0, T1, T2, T3, T4, T5, T11.
+See `docs/tasks.md`. Integrated: T0, T1, T2, T3, T4, T5, T11.

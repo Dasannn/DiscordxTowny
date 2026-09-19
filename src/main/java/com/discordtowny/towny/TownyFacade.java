@@ -7,32 +7,32 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Unica puerta a la API de Towny. Solo lectura.
+ * Sole gateway to the Towny API. Read-only.
  *
- * <p><b>Todos los metodos se llaman en el hilo principal del servidor.</b> La
- * API de Towny no es segura fuera de el. Lo que devuelven son copias
- * inmutables, aptas para viajar al pool.
+ * <p><b>All methods are called on the server's main thread.</b> The Towny
+ * API is not thread-safe off of it. What they return are immutable copies,
+ * suitable for dispatching to the pool.
  *
- * <p>Existe para que un cambio de API de Towny se arregle en un solo paquete.
- * Ninguna clase fuera de aqui importa nada de {@code com.palmergames}.
+ * <p>Exists so that a Towny API change is addressed in a single package.
+ * No class outside of here imports anything from {@code com.palmergames}.
  */
 public interface TownyFacade {
 
-    /** Cierto si Towny esta cargado y respondiendo. */
+    /** True if Towny is loaded and responding. */
     boolean isAvailable();
 
     Optional<TownSnapshot> town(UUID townUuid);
 
     Optional<TownSnapshot> townByName(String name);
 
-    /** La town del jugador, si pertenece a alguna. */
+    /** The player's town, if they belong to any. */
     Optional<TownSnapshot> townOf(UUID playerUuid);
 
     Optional<ResidentSnapshot> resident(UUID playerUuid);
 
     Optional<ResidentSnapshot> residentByName(String name);
 
-    /** Todas las towns, para listados y para la reconciliacion. */
+    /** All towns, for listings and for reconciliation. */
     List<TownSnapshot> allTowns();
 
     int townCount();

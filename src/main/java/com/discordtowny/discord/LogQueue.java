@@ -17,17 +17,17 @@ import java.util.function.UnaryOperator;
 import java.util.logging.Logger;
 
 /**
- * Cola de eventos de auditoria hacia el canal de logs de Discord.
+ * Audit event queue for the Discord log channel.
  *
- * <p>Agrupa mensajes y los envia cada intervalo configurable en un solo lote.
- * Tiene tamano maximo: si se llena, descarta los eventos menos relevantes
- * (INFO antes que WARNING antes que ERROR) y anota cuantos se perdieron.
+ * <p>Batches messages and sends them at a configurable interval in a single batch.
+ * Has a maximum size: if it fills up, it drops the least relevant events
+ * (INFO before WARNING before ERROR) and notes how many were lost.
  *
- * <p><b>Nunca bloquea a quien produce el evento.</b> La llamada a
- * {@link #enqueue} regresa inmediatamente, incluso si la cola esta llena.
+ * <p><b>Never blocks whoever produces the event.</b> The call to
+ * {@link #enqueue} returns immediately, even if the queue is full.
  *
- * <p>Separada de JDA: recibe un {@code Consumer<LogBatch>} como destino,
- * lo que permite probarla sin red.
+ * <p>Separated from JDA: receives a {@code Consumer<LogBatch>} as destination,
+ * which allows testing it without a network.
  */
 final class LogQueue {
 
@@ -41,13 +41,13 @@ final class LogQueue {
     private final AtomicBoolean senderFailed = new AtomicBoolean(false);
     private final UnaryOperator<String> sanitizer;
 
-    /** Lote de eventos listo para enviar. */
+    /** Batch of events ready to send. */
     record LogBatch(List<AuditEvent> events, int droppedSinceLastFlush) {}
 
     /**
-     * @param maxSize     tamano maximo de la cola; los excedentes se descartan
-     * @param sender      destino: recibe un lote y lo envia a Discord
-     * @param logger      logger del plugin
+     * @param maxSize     maximum queue size; excess events are dropped
+     * @param sender      destination: receives a batch and sends it to Discord
+     * @param logger      plugin logger
      */
     LogQueue(int maxSize, Consumer<LogBatch> sender, Logger logger) {
         this(maxSize, sender, logger, s -> s);
@@ -55,7 +55,7 @@ final class LogQueue {
 
     LogQueue(int maxSize, Consumer<LogBatch> sender, Logger logger, UnaryOperator<String> sanitizer) {
         if (maxSize <= 0) {
-            throw new IllegalArgumentException("maxSize debe ser positivo: " + maxSize);
+            throw new IllegalArgumentException("maxSize must be positive: " + maxSize);
         }
         this.maxSize = maxSize;
         this.buffer = new ArrayBlockingQueue<>(maxSize);
@@ -68,7 +68,7 @@ final class LogQueue {
         });
     }
 
-    /** Arranca el flush periodico. */
+    /** Starts the periodic flush. */
     void start(Duration flushInterval) {
         if (started.compareAndSet(false, true)) {
             scheduler.scheduleAtFixedRate(
@@ -79,76 +79,76 @@ final class LogQueue {
         }
     }
 
-    /** Detiene el scheduler y hace un ultimo flush. */
+    /** Stops the scheduler and performs a final flush. */
     void shutdown() {
         scheduler.shutdown();
         flush();
     }
 
     /**
-     * Encola un evento. No bloquea nunca.
+     * Enqueues an event. Never blocks.
      *
-     * <p>Si la cola esta llena, descarta el evento menos relevante (INFO antes
-     * que WARNING antes que ERROR) de entre los existentes, o el nuevo evento
-     * si es el menos relevante, y anota cuantos se perdieron.
+     * <p>If the queue is full, it drops the least relevant event (INFO before
+     * WARNING before ERROR) among the existing ones, or the new event
+     * if it is the least relevant, and notes how many were lost.
      */
     void enqueue(AuditEvent event) {
         boolean offered = buffer.offer(event);
         if (!offered) {
-            // Cola llena: decidir que descartar
+            // Queue full: decide what to drop
             discardLeastRelevant(event);
         }
     }
 
-    /** Cuantos eventos se descartaron desde el ultimo flush. */
+    /** How many events were dropped since the last flush. */
     int droppedCount() {
         return droppedCount.get();
     }
 
-    /** Tamano actual de la cola. */
+    /** Current size of the queue. */
     int size() {
         return buffer.size();
     }
 
-    // -- Descarte --
+    // -- Dropping --
 
     private void discardLeastRelevant(AuditEvent incoming) {
-        // Buscamos el evento menos relevante en la cola actual
-        // Si el incoming es menos relevante que todos, lo descartamos a el
-        // Si hay uno menos relevante, lo sacamos y metemos el incoming
+        // We look for the least relevant event in the current queue
+        // If incoming is less relevant than all, we drop it
+        // If there is a less relevant one, we remove it and add incoming
 
-        // Convertimos la cola a lista para inspeccionar
+        // Convert the queue to a list to inspect
         List<AuditEvent> snapshot = new ArrayList<>(buffer);
         if (snapshot.isEmpty()) {
-            // Entre tanto se vacio; intentamos de nuevo
+            // In the meantime it emptied; try again
             if (!buffer.offer(incoming)) {
                 droppedCount.incrementAndGet();
             }
             return;
         }
 
-        // Encontrar el de menor severidad
+        // Find the one with lowest severity
         AuditEvent leastRelevant = Collections.min(snapshot, SEVERITY_COMPARATOR);
 
         if (SEVERITY_COMPARATOR.compare(incoming, leastRelevant) > 0) {
-            // El incoming es mas relevante: sacamos el menos relevante
+            // Incoming is more relevant: remove the least relevant
             boolean removed = buffer.remove(leastRelevant);
             if (removed) {
                 if (!buffer.offer(incoming)) {
-                    // Concurrencia rara: no se pudo meter. Perdemos el incoming
+                    // Rare concurrency: could not insert. Lose the incoming
                     droppedCount.incrementAndGet();
                 }
             }
             droppedCount.incrementAndGet();
         } else {
-            // El incoming es igual o menos relevante: lo descartamos a el
+            // Incoming is equal or less relevant: drop it
             droppedCount.incrementAndGet();
         }
     }
 
     /**
-     * Compara por severidad: ERROR > WARNING > INFO.
-     * Los de mayor severidad son "mas relevantes" y se conservan.
+     * Compares by severity: ERROR > WARNING > INFO.
+     * Higher severity ones are "more relevant" and are kept.
      */
     private static final Comparator<AuditEvent> SEVERITY_COMPARATOR =
             Comparator.comparingInt(e -> e.severity().ordinal());
@@ -172,12 +172,12 @@ final class LogQueue {
             sender.accept(new LogBatch(Collections.unmodifiableList(batch), dropped));
             senderFailed.set(false);
         } catch (Exception e) {
-            // Un fallo al enviar a Discord no debe afectar nada.
-            // Anotamos en consola una sola vez para no saturar.
+            // A failure sending to Discord must not affect anything.
+            // Log to console once so as not to spam.
             if (senderFailed.compareAndSet(false, true)) {
-                String safeMsg = sanitizer.apply(e.getMessage() != null ? e.getMessage() : "error desconocido");
-                logger.warning("[Logs] Error al enviar logs a Discord: " + safeMsg
-                        + ". Los proximos errores se omiten hasta que funcione.");
+                String safeMsg = sanitizer.apply(e.getMessage() != null ? e.getMessage() : "unknown error");
+                logger.warning("[Logs] Failed to send logs to Discord: " + safeMsg
+                        + ". Further errors are suppressed until it works.");
             }
         }
     }

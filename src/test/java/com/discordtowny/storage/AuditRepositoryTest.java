@@ -10,13 +10,13 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests de {@link AuditRepository}: registro y consulta de eventos.
+ * Tests for {@link AuditRepository}: recording and querying events.
  */
 class AuditRepositoryTest extends StorageTestBase {
 
     // --- helpers ---
 
-    private AuditEvent evento(String target, AuditEvent.Severity severity, boolean success) {
+    private AuditEvent event(String target, AuditEvent.Severity severity, boolean success) {
         return new AuditEvent(
                 Instant.now(),
                 severity,
@@ -27,7 +27,7 @@ class AuditRepositoryTest extends StorageTestBase {
                 Optional.empty());
     }
 
-    private AuditEvent eventoConDetalle(String target, String detalle) {
+    private AuditEvent eventWithDetail(String target, String detail) {
         return new AuditEvent(
                 Instant.now(),
                 AuditEvent.Severity.INFO,
@@ -35,18 +35,18 @@ class AuditRepositoryTest extends StorageTestBase {
                 "VINCULAR",
                 target,
                 true,
-                Optional.of(detalle));
+                Optional.of(detail));
     }
 
     // --- record ---
 
     @Test
-    void recordNoLanzaExcepcionConEventoMinimo() {
-        assertDoesNotThrow(() -> audit.record(evento("town_a", AuditEvent.Severity.INFO, true)));
+    void recordDoesNotThrowExceptionWithMinimalEvent() {
+        assertDoesNotThrow(() -> audit.record(event("town_a", AuditEvent.Severity.INFO, true)));
     }
 
     @Test
-    void recordConDetalleNulo() {
+    void recordWithNullDetail() {
         AuditEvent ev = new AuditEvent(
                 Instant.now(), AuditEvent.Severity.ERROR, "bot", "ACCION",
                 "pueblo", false, Optional.empty());
@@ -54,24 +54,24 @@ class AuditRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void recordConDetallePresente() {
-        AuditEvent ev = eventoConDetalle("town_b", "Detalle informativo");
+    void recordWithPresentDetail() {
+        AuditEvent ev = eventWithDetail("town_b", "Detalle informativo");
         assertDoesNotThrow(() -> audit.record(ev));
     }
 
     // --- recent ---
 
     @Test
-    void recentDevuelveVacioSiNoHayEventos() {
+    void recentReturnsEmptyWhenThereAreNoEvents() {
         List<AuditEvent> result = audit.recent("town_inexistente", 10);
         assertTrue(result.isEmpty());
     }
 
     @Test
-    void recentFiltraPorTarget() {
-        audit.record(evento("town_a", AuditEvent.Severity.INFO, true));
-        audit.record(evento("town_a", AuditEvent.Severity.WARNING, false));
-        audit.record(evento("town_b", AuditEvent.Severity.INFO, true));
+    void recentFiltersByTarget() {
+        audit.record(event("town_a", AuditEvent.Severity.INFO, true));
+        audit.record(event("town_a", AuditEvent.Severity.WARNING, false));
+        audit.record(event("town_b", AuditEvent.Severity.INFO, true));
 
         List<AuditEvent> aTownA = audit.recent("town_a", 10);
         assertEquals(2, aTownA.size());
@@ -81,17 +81,17 @@ class AuditRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void recentRespetaElLimite() {
+    void recentRespectsTheLimit() {
         for (int i = 0; i < 5; i++) {
-            audit.record(evento("town_x", AuditEvent.Severity.INFO, true));
+            audit.record(event("town_x", AuditEvent.Severity.INFO, true));
         }
         List<AuditEvent> result = audit.recent("town_x", 3);
         assertEquals(3, result.size());
     }
 
     @Test
-    void recentDevuelveEnOrdenDescendente() {
-        // Insertamos con tiempos distintos para garantizar orden.
+    void recentReturnsInDescendingOrder() {
+        // We insert with different timestamps to ensure ordering.
         Instant t1 = Instant.ofEpochMilli(1000);
         Instant t2 = Instant.ofEpochMilli(2000);
         Instant t3 = Instant.ofEpochMilli(3000);
@@ -102,15 +102,15 @@ class AuditRepositoryTest extends StorageTestBase {
 
         List<AuditEvent> result = audit.recent("ord", 10);
         assertEquals(3, result.size());
-        // El mas reciente primero.
+        // Most recent first.
         assertEquals(t3, result.get(0).at());
         assertEquals(t2, result.get(1).at());
         assertEquals(t1, result.get(2).at());
     }
 
     @Test
-    void recentRecuperaDetalleCorrectamente() {
-        audit.record(eventoConDetalle("town_d", "Este es el detalle"));
+    void recentRetrievesDetailCorrectly() {
+        audit.record(eventWithDetail("town_d", "Este es el detalle"));
         List<AuditEvent> result = audit.recent("town_d", 1);
         assertEquals(1, result.size());
         assertTrue(result.get(0).detail().isPresent());
@@ -118,7 +118,7 @@ class AuditRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void recentConDetalleNuloDevuelveOptionalVacio() {
+    void recentWithNullDetailReturnsEmptyOptional() {
         audit.record(new AuditEvent(Instant.now(), AuditEvent.Severity.ERROR,
                 "bot", "BORRAR", "town_e", false, Optional.empty()));
         List<AuditEvent> result = audit.recent("town_e", 1);
@@ -126,7 +126,7 @@ class AuditRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void recentRecuperaDetalleCuandoSuccessEsFalso() {
+    void recentRetrievesDetailWhenSuccessIsFalse() {
         AuditEvent ev = new AuditEvent(Instant.now(), AuditEvent.Severity.ERROR,
                 "bot", "FALLO", "town_err", false, Optional.of("Causa del fallo"));
         audit.record(ev);
@@ -138,10 +138,10 @@ class AuditRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void recentConservaTodasLasSeveridades() {
-        audit.record(evento("town_f", AuditEvent.Severity.INFO, true));
-        audit.record(evento("town_f", AuditEvent.Severity.WARNING, true));
-        audit.record(evento("town_f", AuditEvent.Severity.ERROR, false));
+    void recentPreservesAllSeverities() {
+        audit.record(event("town_f", AuditEvent.Severity.INFO, true));
+        audit.record(event("town_f", AuditEvent.Severity.WARNING, true));
+        audit.record(event("town_f", AuditEvent.Severity.ERROR, false));
 
         List<AuditEvent> result = audit.recent("town_f", 10);
         long info    = result.stream().filter(e -> e.severity() == AuditEvent.Severity.INFO).count();
@@ -155,8 +155,8 @@ class AuditRepositoryTest extends StorageTestBase {
     // --- purgeBefore ---
 
     @Test
-    void purgeBeforeBorraEventosAnteriores() {
-        Instant corte = Instant.ofEpochMilli(5000);
+    void purgeBeforeDeletesEarlierEvents() {
+        Instant cutoff = Instant.ofEpochMilli(5000);
 
         audit.record(new AuditEvent(Instant.ofEpochMilli(1000), AuditEvent.Severity.INFO,
                 "bot", "A", "pur", true, Optional.empty()));
@@ -167,18 +167,18 @@ class AuditRepositoryTest extends StorageTestBase {
         audit.record(new AuditEvent(Instant.ofEpochMilli(6000), AuditEvent.Severity.INFO,
                 "bot", "D", "pur", true, Optional.empty()));
 
-        int borrados = audit.purgeBefore(corte);
+        int deleted = audit.purgeBefore(cutoff);
 
-        assertEquals(2, borrados, "Solo los dos anteriores a la fecha de corte deben borrarse");
-        List<AuditEvent> resto = audit.recent("pur", 10);
-        assertEquals(2, resto.size());
+        assertEquals(2, deleted, "Only the two prior to the cutoff date must be deleted");
+        List<AuditEvent> remainder = audit.recent("pur", 10);
+        assertEquals(2, remainder.size());
     }
 
     @Test
-    void purgeBeforeNoBorraNadaSiTodoEsReciente() {
-        audit.record(evento("town_g", AuditEvent.Severity.INFO, true));
-        int borrados = audit.purgeBefore(Instant.EPOCH);
-        assertEquals(0, borrados);
+    void purgeBeforeDeletesNothingIfEverythingIsRecent() {
+        audit.record(event("town_g", AuditEvent.Severity.INFO, true));
+        int deleted = audit.purgeBefore(Instant.EPOCH);
+        assertEquals(0, deleted);
         assertEquals(1, audit.recent("town_g", 10).size());
     }
 }

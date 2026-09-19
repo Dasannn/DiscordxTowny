@@ -10,18 +10,18 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Comprueba al arrancar que el bot puede operar:
+ * Checks at startup that the bot can operate:
  * <ul>
- *   <li>El rol del bot esta por encima de todos los roles que gestiona.</li>
- *   <li>El bot tiene los permisos necesarios en el guild.</li>
+ *   <li>The bot's role is above all roles it manages.</li>
+ *   <li>The bot has the required permissions in the guild.</li>
  * </ul>
  *
- * <p>Si alguna condicion no se cumple, devuelve la razon. El plugin no debe
- * intentar operar si esta comprobacion falla.
+ * <p>If any condition is not met, returns the reason. The plugin must not
+ * attempt to operate if this check fails.
  */
 final class PermissionVerifier {
 
-    /** Permisos que el bot necesita para operar. */
+    /** Permissions that the bot needs to operate. */
     static final EnumSet<Permission> REQUIRED_PERMISSIONS = EnumSet.of(
             Permission.MANAGE_ROLES,
             Permission.MANAGE_CHANNEL,
@@ -33,16 +33,16 @@ final class PermissionVerifier {
     private PermissionVerifier() {}
 
     /**
-     * Verifica que el bot puede operar en el guild.
+     * Verifies that the bot can operate in the guild.
      *
-     * @param guild  el guild donde opera el plugin
-     * @param managedRoleIds los IDs de los roles que gestiona el plugin
-     * @return vacio si todo esta bien, o la razon por la que no puede operar
+     * @param guild  the guild where the plugin operates
+     * @param managedRoleIds the IDs of the roles managed by the plugin
+     * @return empty if all is well, or the reason why it cannot operate
      */
     static Optional<String> verify(Guild guild, List<String> managedRoleIds) {
         Member self = guild.getSelfMember();
 
-        // 1. Comprobar permisos
+        // 1. Check permissions
         List<Permission> missing = new ArrayList<>();
         for (Permission perm : REQUIRED_PERMISSIONS) {
             if (!self.hasPermission(perm)) {
@@ -50,13 +50,13 @@ final class PermissionVerifier {
             }
         }
         if (!missing.isEmpty()) {
-            return Optional.of("Al bot le faltan permisos en el guild: " + missing);
+            return Optional.of("The bot is missing permissions in the guild: " + missing);
         }
 
-        // 2. Comprobar que el rol del bot esta por encima de los que gestiona
+        // 2. Check that the bot's role is above the ones it manages
         List<Role> selfRoles = self.getRoles();
         if (selfRoles.isEmpty()) {
-            return Optional.of("El bot no tiene ningun rol asignado en el guild");
+            return Optional.of("The bot has no assigned roles in the guild");
         }
         int highestBotPosition = selfRoles.stream()
                 .mapToInt(Role::getPosition)
@@ -67,13 +67,13 @@ final class PermissionVerifier {
         for (String roleId : managedRoleIds) {
             Role managed = guild.getRoleById(roleId);
             if (managed != null && managed.getPosition() >= highestBotPosition) {
-                problemRoles.add(managed.getName() + " (posicion " + managed.getPosition() + ")");
+                problemRoles.add(managed.getName() + " (position " + managed.getPosition() + ")");
             }
         }
         if (!problemRoles.isEmpty()) {
             return Optional.of(
-                    "El rol del bot (posicion " + highestBotPosition
-                    + ") no esta por encima de los roles que gestiona: " + problemRoles);
+                    "The bot's role (position " + highestBotPosition
+                    + ") is not above the roles it manages: " + problemRoles);
         }
 
         return Optional.empty();

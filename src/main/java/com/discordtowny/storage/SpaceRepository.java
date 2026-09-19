@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Espacios de Discord registrados. Bloquea: ver {@link Storage}. */
+/** Registered Discord spaces. Blocks: see {@link Storage}. */
 public interface SpaceRepository {
 
     Optional<TownSpace> findByTownUuid(UUID townUuid);
@@ -19,11 +19,11 @@ public interface SpaceRepository {
     List<TownSpace> findAll();
 
     /**
-     * Inserta o actualiza.
+     * Inserts or updates.
      *
-     * <p>La creacion de un espacio guarda cada identificador en cuanto existe,
-     * sin esperar a terminar: si el servidor cae a mitad, la reconciliacion
-     * sabe que se creo y que falta.
+     * <p>The creation of a space saves each identifier as soon as it exists,
+     * without waiting until completion: if the server crashes halfway through,
+     * reconciliation knows what was created and what is missing.
      */
     void save(TownSpace space);
 
@@ -33,6 +33,6 @@ public interface SpaceRepository {
 
     void touchActivity(UUID townUuid, Instant at);
 
-    /** Espacios activos. Se compara con {@code limits.max-towns}. */
+    /** Active spaces. Compared against {@code limits.max-towns}. */
     int countActive();
 }

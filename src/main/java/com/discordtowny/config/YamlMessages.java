@@ -9,32 +9,32 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
-/** Textos inmutables; los valores de marcadores nunca se interpretan como formato. */
+/** Immutable texts; placeholder values are never interpreted as formatting. */
 public final class YamlMessages implements Messages {
-    private static final Pattern MARCADOR = Pattern.compile("\\{([^{}]+)}");
-    private final Map<String, String> textos;
-    private final Consumer<String> aviso;
-    private final Set<String> ausentes = ConcurrentHashMap.newKeySet();
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{([^{}]+)}");
+    private final Map<String, String> texts;
+    private final Consumer<String> warning;
+    private final Set<String> missing = ConcurrentHashMap.newKeySet();
 
-    public YamlMessages(Map<String, String> textos, Consumer<String> aviso) {
-        this.textos = Map.copyOf(textos);
-        this.aviso = aviso;
+    public YamlMessages(Map<String, String> texts, Consumer<String> warning) {
+        this.texts = Map.copyOf(texts);
+        this.warning = warning;
     }
 
-    private String texto(String clave) {
-        String valor = textos.get(clave);
-        if (valor != null) return valor;
-        if (ausentes.add(clave)) aviso.accept("messages.yml: falta el mensaje " + clave);
-        return "[mensaje ausente: " + clave + "]";
+    private String text(String key) {
+        String value = texts.get(key);
+        if (value != null) return value;
+        if (missing.add(key)) warning.accept("messages.yml: missing message " + key);
+        return "[missing message: " + key + "]";
     }
 
     @Override
     public Component get(String key, Map<String, String> placeholders) {
-        Component mensaje = LegacyComponentSerializer.legacyAmpersand()
-                .deserialize(texto("prefix") + texto(key));
-        return mensaje.replaceText(regla -> regla.match(MARCADOR).replacement((coincidencia, original) -> {
-            String valor = placeholders.get(coincidencia.group(1));
-            return valor == null ? original.build() : Component.text(valor);
+        Component message = LegacyComponentSerializer.legacyAmpersand()
+                .deserialize(text("prefix") + text(key));
+        return message.replaceText(rule -> rule.match(PLACEHOLDER).replacement((match, original) -> {
+            String value = placeholders.get(match.group(1));
+            return value == null ? original.build() : Component.text(value);
         }));
     }
 

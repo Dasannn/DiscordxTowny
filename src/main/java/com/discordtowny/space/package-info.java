@@ -1,8 +1,8 @@
 /**
- * Ciclo de vida del espacio de Discord de una town.
+ * Lifecycle of a town's Discord space.
  *
- * <p><b>Regla de dependencias:</b> dominio: no importa JDA ni Bukkit.
+ * <p><b>Dependency rule:</b> domain: does not import JDA or Bukkit.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.space;

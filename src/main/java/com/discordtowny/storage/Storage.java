@@ -1,38 +1,37 @@
 package com.discordtowny.storage;
 
 /**
- * Acceso a la base de datos.
+ * Database access.
  *
- * <p><b>Todos los metodos de los repositorios bloquean.</b> Se llaman desde el
- * pool del plugin, nunca desde el hilo principal del servidor ni desde un hilo
- * de JDA. Se prefiere esto a devolver futuros en todas partes: el codigo que
- * los consume ya corre fuera del hilo principal, y encadenar futuros solo
- * anadiria ruido.
+ * <p><b>All repository methods block.</b> They are called from the plugin's
+ * pool, never from the server's main thread nor from a JDA thread. This is
+ * preferred over returning futures everywhere: the code that consumes them
+ * already runs off the main thread, and chaining futures would only add noise.
  *
- * <p>Una implementacion sirve tanto para MySQL/MariaDB como para SQLite: el
- * codigo es el mismo, cambia la cadena de conexion.
+ * <p>A single implementation serves both MySQL/MariaDB and SQLite: the code is
+ * the same, only the connection string changes.
  */
 public interface Storage extends AutoCloseable {
 
     /**
-     * Abre el pool y aplica las migraciones pendientes.
+     * Opens the pool and applies pending migrations.
      *
-     * @throws StorageException si no se puede conectar o una migracion falla.
-     *     Sin base de datos el plugin no opera sobre Discord: no se toca el
-     *     guild sin poder persistir el resultado.
+     * @throws StorageException if connecting fails or a migration fails.
+     *     Without a database the plugin does not operate on Discord: the guild
+     *     is not touched without being able to persist the result.
      */
     void initialize() throws StorageException;
 
     LinkRepository links();
 
     /**
-     * Ajustes internos del plugin, como pares clave-valor.
+     * Internal plugin settings, as key-value pairs.
      *
-     * <p>Para lo poco que el plugin necesita recordar y no encaja en ninguna
-     * tabla: por ejemplo el ID del rol global de alcalde, que debe sobrevivir a
-     * un renombrado en Discord y a un reinicio del servidor.
+     * <p>For the few things the plugin needs to remember and does not fit in any
+     * table: for example the ID of the global mayor role, which must survive a
+     * rename in Discord and a server restart.
      *
-     * <p>No es para configuracion del administrador, que vive en config.yml.
+     * <p>Not for administrator configuration, which lives in config.yml.
      */
     SettingsRepository settings();
 
@@ -40,7 +39,7 @@ public interface Storage extends AutoCloseable {
 
     AuditRepository audit();
 
-    /** Cierto si el pool responde. Lo consultan los comandos antes de operar. */
+    /** True if the pool responds. Consulted by commands before operating. */
     boolean isHealthy();
 
     @Override

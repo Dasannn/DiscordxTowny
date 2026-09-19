@@ -1,8 +1,8 @@
 /**
- * Comprobacion y descarga de nuevas versiones publicadas en GitHub.
+ * Checking and downloading new versions published on GitHub.
  *
- * <p><b>Regla de dependencias:</b> independiente: puede fallar entero sin afectar al resto.
+ * <p><b>Dependency rule:</b> independent: can fail completely without affecting the rest.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.update;

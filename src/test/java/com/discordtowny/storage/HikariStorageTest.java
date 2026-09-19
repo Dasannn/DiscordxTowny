@@ -15,16 +15,16 @@ import java.util.logging.Logger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests de ciclo de vida y configuracion de {@link HikariStorage}.
+ * Tests for lifecycle and configuration of {@link HikariStorage}.
  */
 class HikariStorageTest {
 
     private static final Logger LOGGER = Logger.getLogger("HikariStorageTest");
 
     @Test
-    void sqliteConservaPoolDeUnaConexionAunqueConfigTengaValoresSuperiores() throws IOException, SQLException {
-        // En config.yml el valor por defecto de poolMaximumSize es 10 y poolMinimumIdle es 2.
-        // Para SQLite estos valores nunca deben sobreescribir el limite de 1 conexion.
+    void sqlitePreservesSingleConnectionPoolEvenIfConfigHasHigherValues() throws IOException, SQLException {
+        // In config.yml the default value of poolMaximumSize is 10 and poolMinimumIdle is 2.
+        // For SQLite these values must never overwrite the 1 connection limit.
         Path tmpDb = Files.createTempFile("discordtowny-pool-test-", ".db");
         try {
             PluginConfig.Database dbConfig = new PluginConfig.Database(
@@ -41,27 +41,27 @@ class HikariStorageTest {
 
             HikariStorage storage = new HikariStorage(dbConfig, LOGGER);
 
-            // 1. Verificacion a nivel de HikariConfig
+            // 1. Verification at HikariConfig level
             HikariConfig config = storage.buildConfig();
             assertEquals(1, config.getMaximumPoolSize(),
-                    "SQLite debe forzar maximumPoolSize a 1 independientemente de config.yml");
+                    "SQLite must force maximumPoolSize to 1 regardless of config.yml");
             assertEquals(1, config.getMinimumIdle(),
-                    "SQLite debe forzar minimumIdle a 1 independientemente de config.yml");
+                    "SQLite must force minimumIdle to 1 regardless of config.yml");
 
-            // 2. Verificacion en el DataSource activo tras inicializar
+            // 2. Verification on active DataSource after initializing
             storage.initialize();
             assertNotNull(storage.dataSource());
             assertEquals(1, storage.dataSource().getMaximumPoolSize(),
-                    "El pool activo de SQLite debe tener tamano maximo 1");
+                    "Active SQLite pool must have maximum size 1");
             assertEquals(1, storage.dataSource().getMinimumIdle(),
-                    "El pool activo de SQLite debe tener minimo idle 1");
+                    "Active SQLite pool must have minimum idle 1");
 
-            // 3. Verificacion operacional de concurrencia: al tomar la unica conexion,
-            // pedir una segunda debe fallar por timeout al no haber mas conexiones.
+            // 3. Concurrency operational verification: upon taking the only connection,
+            // requesting a second one must fail due to timeout as there are no more connections.
             try (Connection conn1 = storage.dataSource().getConnection()) {
                 assertNotNull(conn1);
                 assertThrows(SQLException.class, () -> storage.dataSource().getConnection(),
-                        "No se debe permitir obtener mas de 1 conexion simultanea en SQLite");
+                        "Getting more than 1 concurrent connection must not be allowed in SQLite");
             }
 
             storage.close();
@@ -73,8 +73,8 @@ class HikariStorageTest {
     }
 
     @Test
-    void mysqlYMariaDbRespetanPoolConfigurado() throws StorageException {
-        // Para MySQL y MariaDB, los valores configurados deben asignarse al pool sin forzarse a 1.
+    void mysqlAndMariaDbRespectConfiguredPool() throws StorageException {
+        // For MySQL and MariaDB, configured values must be assigned to the pool without being forced to 1.
         PluginConfig.Database mysqlConfig = new PluginConfig.Database(
                 PluginConfig.Database.Type.MYSQL,
                 "localhost",
@@ -90,9 +90,9 @@ class HikariStorageTest {
         HikariStorage mysqlStorage = new HikariStorage(mysqlConfig, LOGGER);
         HikariConfig builtMysql = mysqlStorage.buildConfig();
         assertEquals(10, builtMysql.getMaximumPoolSize(),
-                "MySQL debe respetar poolMaximumSize configurado");
+                "MySQL must respect configured poolMaximumSize");
         assertEquals(2, builtMysql.getMinimumIdle(),
-                "MySQL debe respetar poolMinimumIdle configurado");
+                "MySQL must respect configured poolMinimumIdle");
 
         PluginConfig.Database mariaConfig = new PluginConfig.Database(
                 PluginConfig.Database.Type.MARIADB,
@@ -109,13 +109,13 @@ class HikariStorageTest {
         HikariStorage mariaStorage = new HikariStorage(mariaConfig, LOGGER);
         HikariConfig builtMaria = mariaStorage.buildConfig();
         assertEquals(15, builtMaria.getMaximumPoolSize(),
-                "MariaDB debe respetar poolMaximumSize configurado");
+                "MariaDB must respect configured poolMaximumSize");
         assertEquals(4, builtMaria.getMinimumIdle(),
-                "MariaDB debe respetar poolMinimumIdle configurado");
+                "MariaDB must respect configured poolMinimumIdle");
     }
 
     @Test
-    void initializeLanzaIllegalStateExceptionSiYaEstaInicializado() throws IOException {
+    void initializeThrowsIllegalStateExceptionIfAlreadyInitialized() throws IOException {
         Path tmpDb = Files.createTempFile("discordtowny-double-init-", ".db");
         try {
             PluginConfig.Database dbConfig = new PluginConfig.Database(
@@ -133,10 +133,10 @@ class HikariStorageTest {
             HikariStorage storage = new HikariStorage(dbConfig, LOGGER);
             storage.initialize();
 
-            // Llamar a initialize por segunda vez sin cerrar debe lanzar IllegalStateException
-            // para evitar fugar el DataSource anterior.
+            // Calling initialize a second time without closing must throw IllegalStateException
+            // to avoid leaking the previous DataSource.
             assertThrows(IllegalStateException.class, storage::initialize,
-                    "Reinicializar un storage ya abierto debe lanzar IllegalStateException");
+                    "Reinitializing an already opened storage must throw IllegalStateException");
 
             storage.close();
         } finally {
@@ -147,7 +147,7 @@ class HikariStorageTest {
     }
 
     @Test
-    void initializePermitidoTrasCerrar() throws IOException {
+    void initializeAllowedAfterClosing() throws IOException {
         Path tmpDb = Files.createTempFile("discordtowny-reinit-", ".db");
         try {
             PluginConfig.Database dbConfig = new PluginConfig.Database(
@@ -166,12 +166,12 @@ class HikariStorageTest {
             storage.initialize();
             assertTrue(storage.isHealthy());
 
-            // Al cerrar el storage, debe permitirse inicializar nuevamente sin lanzar excepcion.
+            // When closing the storage, initializing again must be allowed without throwing an exception.
             storage.close();
             assertFalse(storage.isHealthy());
 
             assertDoesNotThrow(storage::initialize,
-                    "Debe ser posible inicializar el storage tras haber sido cerrado");
+                    "It must be possible to initialize the storage after having been closed");
             assertTrue(storage.isHealthy());
 
             storage.close();

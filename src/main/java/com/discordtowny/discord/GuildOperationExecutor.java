@@ -1,29 +1,29 @@
 package com.discordtowny.discord;
 
 /**
- * Ejecuta una {@link GuildOperation} contra el guild de Discord.
+ * Executes a {@link GuildOperation} against the Discord guild.
  *
- * <p>Esta interfaz separa la logica de la cola (reintentos, serializacion) de
- * las llamadas reales a JDA, lo que permite probar la cola sin red.
+ * <p>This interface separates the queue logic (retries, serialization) from
+ * the actual calls to JDA, allowing the queue to be tested without a network.
  *
- * <p>Cada implementacion debe ser <b>idempotente</b>: antes de crear algo se
- * comprueba si ya existe por su identificador guardado. Reintentar una
- * operacion a medias no puede duplicar canales ni roles.
+ * <p>Each implementation must be <b>idempotent</b>: before creating anything,
+ * it checks whether it already exists by its saved identifier. Retrying a
+ * half-finished operation cannot duplicate channels or roles.
  */
 @FunctionalInterface
 interface GuildOperationExecutor {
 
     /**
-     * Ejecuta la operacion y devuelve el resultado.
+     * Executes the operation and returns the outcome.
      *
-     * <p>Nunca lanza excepcion: los fallos se representan en
-     * {@link OperationOutcome}. El llamador decide si reintentar.
+     * <p>Never throws an exception: failures are represented in
+     * {@link OperationOutcome}. The caller decides whether to retry.
      */
     OperationOutcome execute(GuildOperation operation);
 
     /**
-     * Notifica cuando una operacion ha fallado definitivamente o ha agotado
-     * sus reintentos. Permite marcar espacios como inconsistentes.
+     * Notifies when an operation has failed permanently or has exhausted
+     * its retries. Allows marking spaces as inconsistent.
      */
     default void onOperationFailed(GuildOperation operation, OperationOutcome outcome) {}
 }
