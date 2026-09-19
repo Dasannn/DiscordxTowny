@@ -15,10 +15,21 @@ import java.util.UUID;
  *
  * <p>Exists so that a Towny API change is addressed in a single package.
  * No class outside of here imports anything from {@code com.palmergames}.
+ *
+ * <p><b>An empty result means the entity is confirmed not to exist.</b> A read
+ * that could not be completed throws {@link TownyReadException} instead, so
+ * that a failure is never mistaken for an answer. A caller that reconciles must
+ * treat the exception as "unknown" and leave access alone: removing a role or
+ * archiving a town on a failed read punishes a town that is perfectly alive.
  */
 public interface TownyFacade {
 
-    /** True if Towny is loaded and responding. */
+    /**
+     * True if Towny is loaded and responding.
+     *
+     * <p>The only method here that never throws: answering "not available" is
+     * the whole point of asking.
+     */
     boolean isAvailable();
 
     Optional<TownSnapshot> town(UUID townUuid);
