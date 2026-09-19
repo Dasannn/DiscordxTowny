@@ -35,6 +35,9 @@ public final class JdkHttpTransport implements HttpTransport {
 
     public JdkHttpTransport(HttpClient httpClient) {
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient cannot be null");
+        if (httpClient.followRedirects() != HttpClient.Redirect.NEVER) {
+            throw new IllegalArgumentException("HttpClient must have followRedirects set to NEVER to allow per-hop destination validation");
+        }
     }
 
     @Override

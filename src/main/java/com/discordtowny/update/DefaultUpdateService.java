@@ -69,6 +69,12 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return hex != null && STRICT_HEX_64.matcher(hex.trim()).matches();
     }
 
+    private sealed interface ChecksumOutcome {
+        record Valid(String sha256) implements ChecksumOutcome {}
+        record None() implements ChecksumOutcome {}
+        record InvalidOrAmbiguous(String reason) implements ChecksumOutcome {}
+    }
+
     private static final class ActiveTransfer {
         final Thread workerThread;
         final AtomicReference<AutoCloseable> resource = new AtomicReference<>(null);
@@ -79,14 +85,14 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
 
         void abort() {
+            if (workerThread != null) {
+                workerThread.interrupt();
+            }
             AutoCloseable res = resource.getAndSet(null);
             if (res != null) {
                 try {
                     res.close();
                 } catch (Exception ignored) {}
-            }
-            if (workerThread != null) {
-                workerThread.interrupt();
             }
             Path tmp = tempFile.getAndSet(null);
             if (tmp != null) {
@@ -114,6 +120,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
     // Lifecycle & active I/O tracking
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private final Object lifecycleLock = new Object();
     private final Set<ActiveTransfer> activeTransfers = ConcurrentHashMap.newKeySet();
 
     // Rate limiting & caching
@@ -318,18 +325,20 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     /**
      * Stops background periodic checks and cleans up resources.
      */
-    public synchronized void stop() {
-        stopped.set(true);
-        if (periodicTask != null) {
-            periodicTask.cancel(true);
-            periodicTask = null;
-        }
-        for (ActiveTransfer transfer : activeTransfers) {
-            transfer.abort();
-        }
-        activeTransfers.clear();
-        if (ownsScheduler && scheduler != null) {
-            scheduler.shutdownNow();
+    public void stop() {
+        synchronized (lifecycleLock) {
+            stopped.set(true);
+            if (periodicTask != null) {
+                periodicTask.cancel(true);
+                periodicTask = null;
+            }
+            for (ActiveTransfer transfer : activeTransfers) {
+                transfer.abort();
+            }
+            activeTransfers.clear();
+            if (ownsScheduler && scheduler != null) {
+                scheduler.shutdownNow();
+            }
         }
     }
 
@@ -368,12 +377,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         if (latestSemVer.major() != currentSemVer.major()) {
             return true;
         }
-        if (release.notes() != null) {
-            for (String rawLine : release.notes().split("\\r?\\n")) {
-                if ("[breaking]".equalsIgnoreCase(rawLine.trim())) {
-                    return true;
-                }
-            }
+        if (release.notes() != null && release.notes().toLowerCase(Locale.ROOT).contains("[breaking]")) {
+            return true;
         }
         return false;
     }
@@ -391,10 +396,16 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         List<String> lines = new ArrayList<>();
         for (String rawLine : notes.split("\\r?\\n")) {
             String line = rawLine.trim();
-            if (line.isEmpty() || "[breaking]".equalsIgnoreCase(line)
+            if (line.isEmpty()
                     || SHA256_LABEL_PATTERN.matcher(line).matches()
                     || STRICT_HEX_64.matcher(line).matches()) {
                 continue;
+            }
+            if (line.toLowerCase(Locale.ROOT).contains("[breaking]")) {
+                line = line.replaceAll("(?i)\\[breaking\\]", "").trim();
+                if (line.isEmpty()) {
+                    continue;
+                }
             }
             lines.add(line);
         }
@@ -449,6 +460,12 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     }
 
     private Optional<Release> doCheckForUpdate() {
+        if (stopped.get()) {
+            return Optional.empty();
+        }
+
+        Instant deadline = Instant.now().plus(requestTimeout);
+
         // Respect rate limits: if rate limit was exceeded, do not query until reset
         Instant resetTime = rateLimitResetTime.get();
         if (resetTime != null && Instant.now().isBefore(resetTime)) {
@@ -464,109 +481,130 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             headers.put("If-None-Match", etag);
         }
 
-        try (HttpTransport.HttpResponse response = httpTransport.executeGet(URI.create(GITHUB_RELEASES_API), headers, requestTimeout)) {
-            int status = response.statusCode();
+        ActiveTransfer activeOp = new ActiveTransfer(Thread.currentThread());
+        activeTransfers.add(activeOp);
 
-            // Handle GitHub Rate Limiting headers (including secondary limits 429/403 and Retry-After)
-            updateRateLimit(response);
+        try {
+            Duration remaining = Duration.between(Instant.now(), deadline);
+            if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                return Optional.empty();
+            }
 
-            // 304 Not Modified: release has not changed, use cache
-            if (status == 304) {
-                networkErrorLogged.set(false);
-                Release release = cachedRelease.get();
-                if (release != null) {
-                    latestAvailableUpdate = release;
-                    // Unchanged metadata still drives unfinished auto-download to completion (F8)
-                    if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
-                        triggerAutoDownload(release);
-                    }
+            try (HttpTransport.HttpResponse response = httpTransport.executeGet(URI.create(GITHUB_RELEASES_API), headers, remaining)) {
+                activeOp.resource.set(response);
+
+                if (stopped.get()) {
+                    return Optional.empty();
                 }
-                return Optional.ofNullable(release);
-            }
 
-            // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
-            if (status == 403 || status == 429) {
-                return Optional.ofNullable(cachedRelease.get());
-            }
+                int status = response.statusCode();
 
-            if (status != 200) {
-                logger.log(Level.FINE, "GitHub releases API returned unexpected status {0}", status);
-                return Optional.empty();
-            }
+                // Handle GitHub Rate Limiting headers (including secondary limits 429/403 and Retry-After)
+                updateRateLimit(response);
 
-            String newEtag = response.getHeader("ETag");
+                // 304 Not Modified: release has not changed, use cache
+                if (status == 304) {
+                    networkErrorLogged.set(false);
+                    Release release = cachedRelease.get();
+                    if (release != null) {
+                        latestAvailableUpdate = release;
+                        // Unchanged metadata still drives unfinished auto-download to completion (F8)
+                        if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
+                            triggerAutoDownload(release);
+                        }
+                    }
+                    return Optional.ofNullable(release);
+                }
 
-            // Read JSON body (capped to 1 MB for metadata, with timeout watchdog)
-            String json = readStringCapped(response.body(), 1024 * 1024, requestTimeout);
-            Optional<Release> releaseOpt = parseRelease(json);
+                // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
+                if (status == 403 || status == 429) {
+                    return Optional.ofNullable(cachedRelease.get());
+                }
 
-            if (releaseOpt.isEmpty()) {
-                return Optional.empty();
-            }
+                if (status != 200) {
+                    logger.log(Level.FINE, "GitHub releases API returned unexpected status {0}", status);
+                    return Optional.empty();
+                }
 
-            Release release = releaseOpt.get();
-            SemanticVersion latestSemVer = SemanticVersion.parse(release.version());
-            SemanticVersion currentSemVer = SemanticVersion.parse(currentVersion);
+                String newEtag = response.getHeader("ETag");
 
-            if (!latestSemVer.isNewerThan(currentSemVer)) {
-                // Not newer: running current or newer version
-                cachedRelease.set(null);
-                latestAvailableUpdate = null;
+                remaining = Duration.between(Instant.now(), deadline);
+                if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                    return Optional.empty();
+                }
+
+                // Read JSON body (capped to 1 MB for metadata, with timeout watchdog)
+                String json = readStringCapped(response.body(), 1024 * 1024, remaining);
+                Optional<Release> releaseOpt = parseRelease(json, deadline);
+
+                if (releaseOpt.isEmpty() || stopped.get()) {
+                    return Optional.empty();
+                }
+
+                Release release = releaseOpt.get();
+                SemanticVersion latestSemVer = SemanticVersion.parse(release.version());
+                SemanticVersion currentSemVer = SemanticVersion.parse(currentVersion);
+
+                if (!latestSemVer.isNewerThan(currentSemVer)) {
+                    // Not newer: running current or newer version
+                    cachedRelease.set(null);
+                    latestAvailableUpdate = null;
+                    if (newEtag != null) {
+                        cachedEtag.set(newEtag);
+                    }
+                    networkErrorLogged.set(false);
+                    return Optional.empty();
+                }
+
+                // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9)
+                networkErrorLogged.set(false);
                 if (newEtag != null) {
                     cachedEtag.set(newEtag);
                 }
-                networkErrorLogged.set(false);
-                return Optional.empty();
-            }
+                cachedRelease.set(release);
+                latestAvailableUpdate = release;
 
-            // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9)
-            networkErrorLogged.set(false);
-            if (newEtag != null) {
-                cachedEtag.set(newEtag);
-            }
-            cachedRelease.set(release);
-            latestAvailableUpdate = release;
-
-            // Notice in console on startup (once per version, stays English)
-            if (consoleNotifiedVersions.add(release.version())) {
-                logger.info("There is a new version of DiscordTowny: " + release.version() + " (you have " + currentVersion + ").");
-                if (isBreaking(release)) {
-                    logger.warning("Release " + release.version() + " contains breaking changes. Automatic download is suppressed; confirmation is required.");
+                // Notice in console on startup (once per version, stays English)
+                if (consoleNotifiedVersions.add(release.version())) {
+                    logger.info("There is a new version of DiscordTowny: " + release.version() + " (you have " + currentVersion + ").");
+                    if (isBreaking(release)) {
+                        logger.warning("Release " + release.version() + " contains breaking changes. Automatic download is suppressed; confirmation is required.");
+                    }
+                    String summary = extractSummary(release.notes());
+                    if (!summary.isBlank()) {
+                        logger.info("Changes summary: " + summary);
+                    }
                 }
-                String summary = extractSummary(release.notes());
-                if (!summary.isBlank()) {
-                    logger.info("Changes summary: " + summary);
-                }
-            }
 
-            // Notice in Discord log channel (once per version, localized via catalog)
-            if (logChannelNotifiedVersions.add(release.version()) && auditLogger != null) {
-                Messages msgs = messagesSupplier.get();
-                StringBuilder detail = new StringBuilder(msgs.label("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
-                if (isBreaking(release)) {
-                    detail.append(" ").append(msgs.label("updates.breaking", Map.of("latest", release.version())));
+                // Notice in Discord log channel (once per version, localized via catalog)
+                if (logChannelNotifiedVersions.add(release.version()) && auditLogger != null) {
+                    Messages msgs = messagesSupplier.get();
+                    StringBuilder detail = new StringBuilder(msgs.label("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
+                    if (isBreaking(release)) {
+                        detail.append(" ").append(msgs.label("updates.breaking", Map.of("latest", release.version())));
+                    }
+                    String summary = extractSummary(release.notes());
+                    if (!summary.isBlank()) {
+                        detail.append(" ").append(msgs.label("updates.summary", Map.of("summary", summary)));
+                    }
+                    auditLogger.accept(new AuditEvent(
+                            Instant.now(),
+                            AuditEvent.Severity.INFO,
+                            "Updater",
+                            "update_available",
+                            release.version(),
+                            true,
+                            Optional.of(detail.toString())
+                    ));
                 }
-                String summary = extractSummary(release.notes());
-                if (!summary.isBlank()) {
-                    detail.append(" ").append(msgs.label("updates.summary", Map.of("summary", summary)));
+
+                // Auto-download if enabled, not already pending, and NOT breaking (F6)
+                if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
+                    triggerAutoDownload(release);
                 }
-                auditLogger.accept(new AuditEvent(
-                        Instant.now(),
-                        AuditEvent.Severity.INFO,
-                        "Updater",
-                        "update_available",
-                        release.version(),
-                        true,
-                        Optional.of(detail.toString())
-                ));
-            }
 
-            // Auto-download if enabled, not already pending, and NOT breaking (F6)
-            if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
-                triggerAutoDownload(release);
+                return Optional.of(release);
             }
-
-            return Optional.of(release);
         } catch (IOException e) {
             handleNetworkFailure(e);
             return Optional.empty();
@@ -578,6 +616,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             // Malformed JSON or parsing errors do not throw out of service
             logger.log(Level.FINE, "Failed to parse update release", e);
             return Optional.empty();
+        } finally {
+            activeTransfers.remove(activeOp);
         }
     }
 
@@ -634,7 +674,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
-    private Optional<Release> parseRelease(String json) throws IOException {
+    private Optional<Release> parseRelease(String json, Instant deadline) throws IOException {
         try {
             SimpleJson.JsonObject obj = SimpleJson.parseObject(json);
             String tag = obj.getString("tag_name");
@@ -715,24 +755,32 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             String selectedJarName = selectedJar.getString("name");
             String jarDownloadUrl = selectedJar.getString("browser_download_url");
 
-            // Extract SHA-256 bound to selected jar
-            String checksumFromAsset = extractChecksumFromAssets(checksumAssets, selectedJarName);
-            String checksumFromBody = extractSha256FromBody(notes, selectedJarName);
+            // Extract SHA-256 bound to selected jar with 3 distinct outcomes (F2)
+            ChecksumOutcome assetOutcome = extractChecksumFromAssets(checksumAssets, selectedJarName, deadline);
+            if (assetOutcome instanceof ChecksumOutcome.InvalidOrAmbiguous inv) {
+                logger.warning("Invalid or ambiguous checksum evidence in assets for " + selectedJarName + ": " + inv.reason() + "; refusing without fallback.");
+                return Optional.empty();
+            }
 
-            // Refuse ambiguous or conflicting checksums
+            ChecksumOutcome bodyOutcome = extractSha256FromBody(notes, selectedJarName);
+            if (bodyOutcome instanceof ChecksumOutcome.InvalidOrAmbiguous inv) {
+                logger.warning("Invalid or ambiguous checksum evidence in body for " + selectedJarName + ": " + inv.reason() + "; refusing without fallback.");
+                return Optional.empty();
+            }
+
             String finalSha256;
-            if (checksumFromAsset != null && checksumFromBody != null) {
-                if (!checksumFromAsset.equalsIgnoreCase(checksumFromBody)) {
-                    logger.warning("Conflicting checksums in release body and checksum asset for " + selectedJarName + "; refusing.");
+            if (assetOutcome instanceof ChecksumOutcome.Valid vAsset && bodyOutcome instanceof ChecksumOutcome.Valid vBody) {
+                if (!vAsset.sha256().equalsIgnoreCase(vBody.sha256())) {
+                    logger.warning("Conflicting checksums between release body and checksum asset for " + selectedJarName + "; refusing.");
                     return Optional.empty();
                 }
-                finalSha256 = checksumFromAsset;
-            } else if (checksumFromAsset != null) {
-                finalSha256 = checksumFromAsset;
-            } else if (checksumFromBody != null) {
-                finalSha256 = checksumFromBody;
+                finalSha256 = vAsset.sha256();
+            } else if (assetOutcome instanceof ChecksumOutcome.Valid vAsset) {
+                finalSha256 = vAsset.sha256();
+            } else if (bodyOutcome instanceof ChecksumOutcome.Valid vBody) {
+                finalSha256 = vBody.sha256();
             } else {
-                // Missing checksum: refuse without staging
+                logger.warning("No published checksum found for " + selectedJarName + "; refusing without staging.");
                 return Optional.empty();
             }
 
@@ -750,7 +798,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
-    private String extractChecksumFromAssets(List<SimpleJson.JsonObject> checksumAssets, String targetJarName) throws IOException {
+    private ChecksumOutcome extractChecksumFromAssets(List<SimpleJson.JsonObject> checksumAssets, String targetJarName, Instant deadline) throws IOException {
+        if (checksumAssets == null || checksumAssets.isEmpty()) {
+            return new ChecksumOutcome.None();
+        }
+
         String dedicatedCandidate = null;
         String multiFileCandidate = null;
 
@@ -765,61 +817,102 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
             // Dedicated asset: e.g. DiscordTowny-1.10.0.jar.sha256
             if (lowerName.equals(lowerTarget + ".sha256") || lowerName.equals(lowerTarget + ".sha256.txt")) {
-                String sha = fetchChecksumFromAsset(downloadUrl, targetJarName, true);
-                if (sha != null) {
-                    if (dedicatedCandidate != null && !dedicatedCandidate.equalsIgnoreCase(sha)) {
-                        return null; // Ambiguous conflicting hashes
+                ChecksumOutcome outcome = fetchChecksumFromAsset(downloadUrl, targetJarName, true, deadline);
+                if (outcome instanceof ChecksumOutcome.InvalidOrAmbiguous) {
+                    return outcome;
+                }
+                if (outcome instanceof ChecksumOutcome.Valid v) {
+                    if (dedicatedCandidate != null && !dedicatedCandidate.equalsIgnoreCase(v.sha256())) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Conflicting dedicated checksum hashes for " + targetJarName);
                     }
-                    dedicatedCandidate = sha;
+                    dedicatedCandidate = v.sha256();
                 }
             } else if (lowerName.equals("checksums.txt") || lowerName.equals("sha256sums") || lowerName.equals("sha256sums.txt")) {
-                String sha = fetchChecksumFromAsset(downloadUrl, targetJarName, false);
-                if (sha != null) {
-                    if (multiFileCandidate != null && !multiFileCandidate.equalsIgnoreCase(sha)) {
-                        return null; // Ambiguous conflicting hashes
+                ChecksumOutcome outcome = fetchChecksumFromAsset(downloadUrl, targetJarName, false, deadline);
+                if (outcome instanceof ChecksumOutcome.InvalidOrAmbiguous) {
+                    return outcome;
+                }
+                if (outcome instanceof ChecksumOutcome.Valid v) {
+                    if (multiFileCandidate != null && !multiFileCandidate.equalsIgnoreCase(v.sha256())) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Conflicting multi-file checksum hashes for " + targetJarName);
                     }
-                    multiFileCandidate = sha;
+                    multiFileCandidate = v.sha256();
                 }
             }
         }
 
         if (dedicatedCandidate != null && multiFileCandidate != null) {
             if (!dedicatedCandidate.equalsIgnoreCase(multiFileCandidate)) {
-                return null; // Conflicting checksum assets
+                return new ChecksumOutcome.InvalidOrAmbiguous("Conflicting checksums between dedicated asset (" + dedicatedCandidate + ") and multi-file asset (" + multiFileCandidate + ")");
             }
-            return dedicatedCandidate;
+            return new ChecksumOutcome.Valid(dedicatedCandidate);
         }
-        return dedicatedCandidate != null ? dedicatedCandidate : multiFileCandidate;
+        if (dedicatedCandidate != null) {
+            return new ChecksumOutcome.Valid(dedicatedCandidate);
+        }
+        if (multiFileCandidate != null) {
+            return new ChecksumOutcome.Valid(multiFileCandidate);
+        }
+
+        return new ChecksumOutcome.None();
     }
 
-    private String fetchChecksumFromAsset(String assetUrl, String targetJarName, boolean isDedicated) throws IOException {
-        URI uri = URI.create(assetUrl);
-        if (!UpdateSourcePolicy.isAllowedAssetUri(uri)) {
-            return null;
+    private ChecksumOutcome fetchChecksumFromAsset(String assetUrl, String targetJarName, boolean isDedicated, Instant deadline) throws IOException {
+        URI uri;
+        try {
+            uri = URI.create(assetUrl);
+        } catch (Exception e) {
+            return new ChecksumOutcome.InvalidOrAmbiguous("Invalid checksum asset URL: " + assetUrl);
         }
-        try (HttpTransport.HttpResponse response = httpTransport.executeGet(uri, Map.of("User-Agent", "DiscordTowny-Updater"), requestTimeout)) {
-            if (response.statusCode() == 200) {
-                String content = readStringCapped(response.body(), 65536, requestTimeout);
-                return parseChecksumFileContent(content, targetJarName, isDedicated);
-            } else if (response.statusCode() == 404) {
-                return null;
-            } else {
-                throw new IOException("HTTP error fetching checksum asset from " + uri + ": status " + response.statusCode());
+        if (!UpdateSourcePolicy.isAllowedAssetUri(uri)) {
+            return new ChecksumOutcome.InvalidOrAmbiguous("Untrusted checksum asset destination rejected by policy: " + uri);
+        }
+
+        ActiveTransfer activeOp = new ActiveTransfer(Thread.currentThread());
+        activeTransfers.add(activeOp);
+
+        try {
+            Duration remaining = Duration.between(Instant.now(), deadline);
+            if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                return new ChecksumOutcome.InvalidOrAmbiguous("Checksum fetch timed out before contacting " + uri);
+            }
+
+            try (HttpTransport.HttpResponse response = httpTransport.executeGet(uri, Map.of("User-Agent", "DiscordTowny-Updater"), remaining)) {
+                activeOp.resource.set(response);
+
+                if (stopped.get()) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Service stopped during checksum fetch");
+                }
+
+                if (response.statusCode() == 200) {
+                    remaining = Duration.between(Instant.now(), deadline);
+                    if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Checksum body read timed out");
+                    }
+                    String content = readStringCapped(response.body(), 65536, remaining);
+                    return parseChecksumFileContent(content, targetJarName, isDedicated);
+                } else if (response.statusCode() == 404) {
+                    return new ChecksumOutcome.None();
+                } else {
+                    throw new IOException("HTTP error fetching checksum asset from " + uri + ": status " + response.statusCode());
+                }
             }
         } catch (InterruptedException e) {
-            // The flag belongs to whoever owns this thread, not to us.
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while fetching the checksum asset from " + uri, e);
+        } finally {
+            activeTransfers.remove(activeOp);
         }
     }
 
-    private String parseChecksumFileContent(String content, String targetJarName, boolean isDedicated) {
+    private ChecksumOutcome parseChecksumFileContent(String content, String targetJarName, boolean isDedicated) {
         if (content == null || content.isBlank()) {
-            return null;
+            return new ChecksumOutcome.None();
         }
 
         String[] lines = content.split("\\r?\\n");
         String matchedSha = null;
+        boolean hasConflict = false;
 
         for (String rawLine : lines) {
             String line = rawLine.trim();
@@ -827,76 +920,170 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 continue;
             }
 
-            // Pattern 1: standard sha256sum: "<64hex> [* ]<filename>"
-            Matcher m1 = Pattern.compile("^([a-fA-F0-9]{64})\\s+[*]?(.+)$").matcher(line);
+            // Pattern 1: standard sha256sum: "<hex> [* ]<filename>"
+            Matcher m1 = Pattern.compile("^(\\S+)\\s+[*]?(.+)$").matcher(line);
             if (m1.matches()) {
-                String hex = m1.group(1);
+                String candidateHex = m1.group(1);
                 String file = m1.group(2).trim();
                 Path p = Path.of(file);
                 String filename = p.getFileName() != null ? p.getFileName().toString() : file;
                 if (filename.equalsIgnoreCase(targetJarName)) {
-                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(hex)) {
-                        return null; // Ambiguous multiple hashes for same target
+                    if (!isValidSha256(candidateHex)) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 for " + targetJarName + ": " + candidateHex);
                     }
-                    matchedSha = hex;
+                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(candidateHex)) {
+                        hasConflict = true;
+                    }
+                    matchedSha = candidateHex;
                 }
                 continue;
             }
 
-            // Pattern 2: BSD style: "SHA256 (filename) = <64hex>"
-            Matcher m2 = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*([a-fA-F0-9]{64})$").matcher(line);
+            // Pattern 2: BSD style: "SHA256 (filename) = <hex>"
+            Matcher m2 = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*(\\S+)$").matcher(line);
             if (m2.matches()) {
                 String file = m2.group(1).trim();
-                String hex = m2.group(2);
+                String candidateHex = m2.group(2).trim();
                 Path p = Path.of(file);
                 String filename = p.getFileName() != null ? p.getFileName().toString() : file;
                 if (filename.equalsIgnoreCase(targetJarName)) {
-                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(hex)) {
-                        return null;
+                    if (!isValidSha256(candidateHex)) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 for " + targetJarName + ": " + candidateHex);
                     }
-                    matchedSha = hex;
+                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(candidateHex)) {
+                        hasConflict = true;
+                    }
+                    matchedSha = candidateHex;
                 }
                 continue;
             }
 
             // Pattern 3: dedicated single-checksum file containing standalone 64-hex string
-            if (isDedicated && isValidSha256(line)) {
-                if (matchedSha != null && !matchedSha.equalsIgnoreCase(line)) {
-                    return null;
+            if (isDedicated) {
+                if (isValidSha256(line)) {
+                    if (matchedSha != null && !matchedSha.equalsIgnoreCase(line)) {
+                        hasConflict = true;
+                    }
+                    matchedSha = line;
+                } else {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 in dedicated checksum file: " + line);
                 }
-                matchedSha = line;
             }
         }
 
-        return matchedSha != null ? matchedSha.toLowerCase(Locale.ROOT) : null;
+        if (hasConflict) {
+            return new ChecksumOutcome.InvalidOrAmbiguous("Multiple conflicting hashes for " + targetJarName + " in checksum asset");
+        }
+
+        return matchedSha != null ? new ChecksumOutcome.Valid(matchedSha.toLowerCase(Locale.ROOT)) : new ChecksumOutcome.None();
     }
 
-    private String extractSha256FromBody(String body, String targetJarName) {
+    private ChecksumOutcome extractSha256FromBody(String body, String targetJarName) {
         if (body == null || body.isBlank()) {
-            return null;
+            return new ChecksumOutcome.None();
         }
 
-        // Check if there is any malformed "SHA-256: <hex>" that is not 64 hex characters
-        Matcher malformedCheck = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)([a-f0-9]+)").matcher(body);
-        while (malformedCheck.find()) {
-            String candidate = malformedCheck.group(1);
-            if (candidate.length() != 64) {
-                return null;
+        List<String> boundHashes = new ArrayList<>();
+        List<String> otherArtifactHashes = new ArrayList<>();
+        boolean foundChecksumKeyword = false;
+
+        for (String rawLine : body.split("\\r?\\n")) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+
+            // Check if line refers to SHA-256
+            Matcher keywordMatcher = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
+            if (keywordMatcher.find()) {
+                foundChecksumKeyword = true;
+
+                // Check for label pattern: sha256[:=\s]+<token>
+                Matcher labelMatcher = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)(\\S+)").matcher(line);
+                if (labelMatcher.find()) {
+                    String candidateToken = labelMatcher.group(1);
+
+                    // Check if candidate is valid 64 hex characters
+                    if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
+                    }
+
+                    // Check if this line is bound to a specific file
+                    Matcher jarMatcher = Pattern.compile("(?i)\\b([a-zA-Z0-9_.-]+\\.jar)\\b").matcher(line);
+                    if (jarMatcher.find()) {
+                        String namedJar = jarMatcher.group(1);
+                        if (namedJar.equalsIgnoreCase(targetJarName)) {
+                            boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                        } else {
+                            otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                        }
+                    } else {
+                        // Unbound label line (e.g. "SHA-256: <hex>")
+                        boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                    }
+                    continue;
+                } else {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 declaration in body: " + line);
+                }
+            }
+
+            // Also check BSD format on line: SHA256 (filename) = <token>
+            Matcher bsdMatcher = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*(\\S+)$").matcher(line);
+            if (bsdMatcher.matches()) {
+                foundChecksumKeyword = true;
+                String file = bsdMatcher.group(1).trim();
+                String candidateToken = bsdMatcher.group(2).trim();
+                if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD SHA-256 token in body: " + candidateToken);
+                }
+                Path p = Path.of(file);
+                String filename = p.getFileName() != null ? p.getFileName().toString() : file;
+                if (filename.equalsIgnoreCase(targetJarName)) {
+                    boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                } else {
+                    otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                }
+                continue;
+            }
+
+            // Also check sha256sum format on line: <token>  <file.jar>
+            Matcher sumMatcher = Pattern.compile("^(\\S+)\\s+[*]?(.+\\.jar)$").matcher(line);
+            if (sumMatcher.matches()) {
+                String candidateToken = sumMatcher.group(1);
+                String file = sumMatcher.group(2).trim();
+                foundChecksumKeyword = true;
+                if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum token in body: " + candidateToken);
+                }
+                Path p = Path.of(file);
+                String filename = p.getFileName() != null ? p.getFileName().toString() : file;
+                if (filename.equalsIgnoreCase(targetJarName)) {
+                    boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                } else {
+                    otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                }
             }
         }
 
-        // Look for exact 64-hex labeled hash
-        Matcher labeled = SHA256_LABEL_PATTERN.matcher(body);
-        String found = null;
-        while (labeled.find()) {
-            String hex = labeled.group(1).toLowerCase(Locale.ROOT);
-            if (found != null && !found.equals(hex)) {
-                return null; // Ambiguous multiple different labeled hashes
-            }
-            found = hex;
+        // Deduplicate boundHashes
+        Set<String> distinctBound = new HashSet<>(boundHashes);
+        if (distinctBound.size() > 1) {
+            return new ChecksumOutcome.InvalidOrAmbiguous("Multiple conflicting SHA-256 hashes bound to " + targetJarName + " in body: " + distinctBound);
         }
 
-        return found;
+        if (distinctBound.size() == 1) {
+            return new ChecksumOutcome.Valid(distinctBound.iterator().next());
+        }
+
+        if (!otherArtifactHashes.isEmpty()) {
+            return new ChecksumOutcome.InvalidOrAmbiguous("Release body contains checksum evidence for other artifacts, but none bound to " + targetJarName);
+        }
+
+        if (foundChecksumKeyword) {
+            return new ChecksumOutcome.InvalidOrAmbiguous("Unparseable or incomplete SHA-256 declaration in release body");
+        }
+
+        return new ChecksumOutcome.None();
     }
 
     @Override
@@ -939,6 +1126,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             return DownloadResult.IO_ERROR;
         }
 
+        Instant deadline = Instant.now().plus(requestTimeout);
+
         Path tempFile = null;
         ActiveTransfer activeTransfer = new ActiveTransfer(Thread.currentThread());
         activeTransfers.add(activeTransfer);
@@ -951,7 +1140,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             Map<String, String> headers = Map.of("User-Agent", "DiscordTowny-Updater");
             URI downloadUri = URI.create(release.downloadUrl());
 
-            try (HttpTransport.HttpResponse response = httpTransport.executeGet(downloadUri, headers, requestTimeout)) {
+            Duration remaining = Duration.between(Instant.now(), deadline);
+            if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                cleanupTemp(tempFile);
+                return DownloadResult.NETWORK_ERROR;
+            }
+
+            try (HttpTransport.HttpResponse response = httpTransport.executeGet(downloadUri, headers, remaining)) {
                 activeTransfer.resource.set(response);
 
                 if (stopped.get()) {
@@ -976,12 +1171,18 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     } catch (NumberFormatException ignored) {}
                 }
 
-                // Setup watchdog on requestTimeout to abort if body stalls (F5)
+                remaining = Duration.between(Instant.now(), deadline);
+                if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                    cleanupTemp(tempFile);
+                    return DownloadResult.NETWORK_ERROR;
+                }
+
+                // Setup watchdog on remaining duration of single operation deadline (F5)
                 AtomicBoolean timedOut = new AtomicBoolean(false);
                 ScheduledFuture<?> watchdog = TIMEOUT_WATCHDOG.schedule(() -> {
                     timedOut.set(true);
                     activeTransfer.abort();
-                }, requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+                }, Math.max(1, remaining.toMillis()), TimeUnit.MILLISECONDS);
 
                 MessageDigest digest;
                 try {
@@ -994,7 +1195,6 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 long totalBytes = 0;
                 byte[] buffer = new byte[8192];
-                Instant deadline = Instant.now().plus(requestTimeout);
 
                 try (InputStream in = response.body();
                      OutputStream out = Files.newOutputStream(tempFile, StandardOpenOption.WRITE)) {
@@ -1041,7 +1241,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     cleanupTemp(tempFile);
                     return DownloadResult.IO_ERROR;
                 }
-                if (timedOut.get()) {
+                if (timedOut.get() || Instant.now().isAfter(deadline)) {
                     cleanupTemp(tempFile);
                     return DownloadResult.NETWORK_ERROR;
                 }
@@ -1069,15 +1269,17 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     return DownloadResult.IO_ERROR;
                 }
 
-                if (stopped.get()) {
-                    cleanupTemp(tempFile);
-                    logger.warning("Download completed after service stopped; publication discarded.");
-                    return DownloadResult.IO_ERROR;
-                }
+                // F3 & F5: Publication synchronized with lifecycle to prevent publishing after stop()
+                synchronized (lifecycleLock) {
+                    if (stopped.get()) {
+                        cleanupTemp(tempFile);
+                        logger.warning("Download completed after service stopped; publication discarded.");
+                        return DownloadResult.IO_ERROR;
+                    }
 
-                // F3: Safe publication - atomic move with safe backup/rollback fallback
-                publishExecutable(tempFile, destination);
-                tempFile = null; // Successfully published
+                    publishExecutable(tempFile, destination);
+                    tempFile = null; // Successfully published
+                }
 
                 logger.info("Version " + release.version() + " is downloaded. Restart the server to apply it.");
 
@@ -1117,38 +1319,53 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
-    private void publishExecutable(Path source, Path destination) throws IOException {
-        try {
-            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            publishExecutableNonAtomic(source, destination);
+    void publishExecutable(Path source, Path destination) throws IOException {
+        Path destinationDir = destination.getParent();
+        if (destinationDir != null) {
+            Files.createDirectories(destinationDir);
         }
-    }
 
-    private void publishExecutableNonAtomic(Path source, Path destination) throws IOException {
         Path backup = null;
-        if (Files.exists(destination)) {
-            backup = destination.resolveSibling(targetJarName + ".backup-" + UUID.randomUUID());
-            Files.move(destination, backup, StandardCopyOption.REPLACE_EXISTING);
-        }
-
+        boolean published = false;
         try {
-            Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
-            if (backup != null) {
-                cleanupTemp(backup);
-            }
-        } catch (Exception moveError) {
-            // Failed move: ensure no partial file remains at destination
-            cleanupTemp(destination);
-            // Restore previous verified update if present
-            if (backup != null && Files.exists(backup)) {
+            if (Files.exists(destination)) {
+                backup = destination.resolveSibling(targetJarName + ".backup-" + UUID.randomUUID());
                 try {
-                    Files.move(backup, destination, StandardCopyOption.REPLACE_EXISTING);
-                } catch (Exception restoreError) {
-                    logger.log(Level.SEVERE, "Failed to restore backup update jar after move failure", restoreError);
+                    Files.move(destination, backup, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(destination, backup, StandardCopyOption.REPLACE_EXISTING);
                 }
             }
-            throw (moveError instanceof IOException ioe ? ioe : new IOException(moveError));
+
+            try {
+                Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(source, destination);
+            }
+            published = true;
+        } catch (Exception moveError) {
+            // Rollback: if publication failed, destination must NEVER have a partial/corrupt file
+            if (!published) {
+                cleanupTemp(destination);
+            }
+            // Restore previous verified update if backup was created
+            if (backup != null && Files.exists(backup)) {
+                try {
+                    try {
+                        Files.move(backup, destination, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (AtomicMoveNotSupportedException e) {
+                        Files.move(backup, destination, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } catch (Exception restoreError) {
+                    logger.log(Level.SEVERE, "Failed to restore backup update jar after move failure: " + backup, restoreError);
+                    moveError.addSuppressed(restoreError);
+                }
+            }
+            throw (moveError instanceof IOException ioe ? ioe : new IOException("Failed to publish executable", moveError));
+        } finally {
+            if (published && backup != null) {
+                cleanupTemp(backup);
+            }
         }
     }
 
@@ -1182,11 +1399,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         AtomicBoolean timedOut = new AtomicBoolean(false);
         ScheduledFuture<?> watchdog = timeout != null ? TIMEOUT_WATCHDOG.schedule(() -> {
             timedOut.set(true);
+            callerThread.interrupt();
             try {
                 in.close();
             } catch (Exception ignored) {}
-            callerThread.interrupt();
-        }, timeout.toMillis(), TimeUnit.MILLISECONDS) : null;
+        }, Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS) : null;
 
         byte[] buffer = new byte[Math.min(8192, maxBytes)];
         int total = 0;

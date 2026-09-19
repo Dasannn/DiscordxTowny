@@ -43,7 +43,7 @@ public interface UpdateService {
      * Returns true if the release contains breaking configuration changes or requires migration.
      *
      * <p>A release counts as breaking when either its major version differs from the
-     * running version, or its release notes contain the line {@code [breaking]}.
+     * running version, or its release notes contain {@code [breaking]}.
      */
     boolean isBreaking(Release release);
 

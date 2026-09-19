@@ -20,8 +20,12 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -32,6 +36,9 @@ import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class DefaultUpdateServiceTest {
 
@@ -595,6 +602,22 @@ class DefaultUpdateServiceTest {
         // Crucial F3 guarantee: previously verified pending update was NOT destroyed or partially overwritten!
         assertTrue(Files.isRegularFile(target), "Previously verified update must still exist");
         assertEquals(prevPendingContent, Files.readString(target), "Previously verified update must remain completely intact");
+
+        // F3 & F13: Exercise publishExecutable failure rollback when previous pending jar exists
+        Path nonExistentStaging = updateFolder.resolve("non_existent_staging.tmp");
+        assertThrows(IOException.class, () -> serviceNext.publishExecutable(nonExistentStaging, target));
+        assertTrue(Files.isRegularFile(target), "Previous verified pending update must remain restored after publication failure");
+        assertEquals(prevPendingContent, Files.readString(target), "Content of pending update must be intact after publication failure");
+
+        try (Stream<Path> stream = Files.list(updateFolder)) {
+            List<Path> leftOvers = stream.filter(p -> p.getFileName().toString().contains(".backup")).toList();
+            assertTrue(leftOvers.isEmpty(), "No backup files must remain in update folder after rollback");
+        }
+
+        // F3 & F13: Destination cleanup - if destination did not exist prior to publication, failure leaves no partial file
+        Path nonExistentTarget = updateFolder.resolve("UnpublishedDiscordTowny.jar");
+        assertThrows(IOException.class, () -> serviceNext.publishExecutable(nonExistentStaging, nonExistentTarget));
+        assertFalse(Files.exists(nonExistentTarget), "Destination file must not exist if publication failed and no prior file existed");
     }
 
     @Test
@@ -917,9 +940,11 @@ class DefaultUpdateServiceTest {
 
         // F1 & F13: Observe destinations actually contacted or refused
         AtomicInteger transportHitCount = new AtomicInteger(0);
+        List<URI> requestedUris = new CopyOnWriteArrayList<>();
         HttpTransport transport = (uri, headers, timeout) -> {
             transportHitCount.incrementAndGet();
-            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(new byte[0]));
+            requestedUris.add(uri);
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream("{}".getBytes(StandardCharsets.UTF_8)));
         };
 
         DefaultUpdateService service = new DefaultUpdateService(
@@ -938,45 +963,130 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        String validSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // 1. Verify checkForUpdate contacts GITHUB_RELEASES_API
+        service.checkForUpdate().join();
+        assertEquals(1, requestedUris.size());
+        assertEquals(URI.create(DefaultUpdateService.GITHUB_RELEASES_API), requestedUris.getFirst(),
+                "checkForUpdate must strictly contact GITHUB_RELEASES_API");
 
-        // Attempt download from untrusted external domain
+        String validSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        transportHitCount.set(0);
+
+        // 2. Attempt download from untrusted external domain
         UpdateService.Release untrustedHostRelease = new UpdateService.Release(
                 "1.10.0", "https://evil.com/malicious.jar", validSha, "Notes");
         UpdateService.DownloadResult untrustedResult = service.download(untrustedHostRelease).join();
         assertEquals(UpdateService.DownloadResult.IO_ERROR, untrustedResult);
         assertEquals(0, transportHitCount.get(), "Transport must NEVER be contacted for untrusted destination!");
 
-        // Attempt download via plain HTTP
+        // 3. Attempt download via plain HTTP
         UpdateService.Release plainHttpRelease = new UpdateService.Release(
                 "1.10.0", "http://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar", validSha, "Notes");
         UpdateService.DownloadResult httpResult = service.download(plainHttpRelease).join();
         assertEquals(UpdateService.DownloadResult.IO_ERROR, httpResult);
         assertEquals(0, transportHitCount.get(), "Transport must NEVER be contacted for plain HTTP!");
 
-        // Attempt download from a different repository
+        // 4. Attempt download from a different repository
         UpdateService.Release wrongRepoRelease = new UpdateService.Release(
                 "1.10.0", "https://github.com/Attacker/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar", validSha, "Notes");
         UpdateService.DownloadResult wrongRepoResult = service.download(wrongRepoRelease).join();
         assertEquals(UpdateService.DownloadResult.IO_ERROR, wrongRepoResult);
         assertEquals(0, transportHitCount.get(), "Transport must NEVER be contacted for untrusted repository!");
+
+        // 5. Attempt download from arbitrary raw.githubusercontent.com path
+        UpdateService.Release rawGithubRelease = new UpdateService.Release(
+                "1.10.0", "https://raw.githubusercontent.com/Attacker/Repo/main/payload.jar", validSha, "Notes");
+        UpdateService.DownloadResult rawResult = service.download(rawGithubRelease).join();
+        assertEquals(UpdateService.DownloadResult.IO_ERROR, rawResult);
+        assertEquals(0, transportHitCount.get(), "Transport must NEVER be contacted for raw.githubusercontent without official provenance!");
+
+        // 6. Attempt download with path traversal escape
+        UpdateService.Release traversalRelease = new UpdateService.Release(
+                "1.10.0", "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/../../Attacker/Repo/releases/download/v1.10.0/payload.jar", validSha, "Notes");
+        UpdateService.DownloadResult traversalResult = service.download(traversalRelease).join();
+        assertEquals(UpdateService.DownloadResult.IO_ERROR, traversalResult);
+        assertEquals(0, transportHitCount.get(), "Transport must NEVER be contacted for path traversal escape!");
+
+        // 7. Verify untrusted checksum asset URL in release response is rejected before contacting
+        String untrustedChecksumAssetJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "Release without body hash",
+                  "assets": [
+                    {"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"},
+                    {"name": "checksums.txt", "browser_download_url": "https://raw.githubusercontent.com/Attacker/Repo/main/checksums.txt"}
+                  ]
+                }
+                """;
+        HttpTransport checksumTestTransport = (uri, headers, timeout) -> {
+            transportHitCount.incrementAndGet();
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(untrustedChecksumAssetJson.getBytes(StandardCharsets.UTF_8)));
+        };
+        DefaultUpdateService serviceWithUntrustedAsset = new DefaultUpdateService(
+                "0.1.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                checksumTestTransport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+        transportHitCount.set(0);
+        Optional<UpdateService.Release> untrustedCheckResult = serviceWithUntrustedAsset.checkForUpdate().join();
+        assertTrue(untrustedCheckResult.isEmpty(), "Release with untrusted checksum asset URL must be refused");
+        assertEquals(1, transportHitCount.get(), "Untrusted checksum asset must NEVER be contacted over network!");
     }
 
     @Test
-    @DisplayName("Published SHA-256 with 65 hex digits is refused (F2)")
+    @DisplayName("Published SHA-256 with 65 hex digits, non-hex suffix, or wrong artifact is refused without fallback (F2)")
     void publishedSha256With65HexDigitsIsRefused() {
-        // 65-digit digest: valid 64 digits + 1 extra digit '9'
-        String wrongLengthSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef9";
+        String baseValidSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        // 1. 65-digit digest: valid 64 digits + 1 extra digit '9'
+        assertReleaseRefusedWithBody("SHA-256: " + baseValidSha + "9", null);
+
+        // 2. Non-hex suffix: valid 64 hex digits + non-hex 'Hg'
+        assertReleaseRefusedWithBody("SHA-256: " + baseValidSha + "Hg", null);
+
+        // 3. Digest bound to wrong artifact
+        assertReleaseRefusedWithBody("SHA-256: " + baseValidSha + " for OtherPlugin.jar", null);
+        assertReleaseRefusedWithBody("SHA-256: " + baseValidSha + " OtherPlugin.jar", null);
+
+        // 4. Invalid or ambiguous body digest must NEVER fall back to valid checksum asset!
+        String validAssetContent = baseValidSha + "  DiscordTowny-1.10.0.jar\n";
+        assertReleaseRefusedWithBody("SHA-256: " + baseValidSha + "Hg", validAssetContent);
+    }
+
+    private void assertReleaseRefusedWithBody(String bodyText, String checksumAssetContent) {
+        String assetEntries = """
+                {"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"}
+                """;
+        if (checksumAssetContent != null) {
+            assetEntries += """
+                    , {"name": "checksums.txt", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"}
+                    """;
+        }
+
         String releaseJson = """
                 {
                   "tag_name": "v1.10.0",
-                  "body": "SHA-256: %s",
-                  "assets": [{"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"}]
+                  "body": "%s",
+                  "assets": [%s]
                 }
-                """.formatted(wrongLengthSha);
+                """.formatted(bodyText.replace("\n", "\\n").replace("\"", "\\\""), assetEntries);
 
-        HttpTransport transport = (uri, headers, timeout) ->
-                new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt") && checksumAssetContent != null) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(checksumAssetContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
 
         DefaultUpdateService service = new DefaultUpdateService(
                 "0.1.0",
@@ -995,14 +1105,15 @@ class DefaultUpdateServiceTest {
         );
 
         Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
-        assertTrue(releaseOpt.isEmpty(), "A 65-digit published checksum must be refused without staging!");
+        assertTrue(releaseOpt.isEmpty(), "Release with malformed, wrong-artifact, or ambiguous digest must be refused: " + bodyText);
     }
 
     @Test
-    @DisplayName("checksums.txt with sources jar first correctly binds to runnable jar (F2)")
+    @DisplayName("checksums.txt with sources jar first correctly binds to runnable jar, and conflicts refuse without fallback (F2)")
     void checksumsTxtWithSourcesJarFirstExtractsRunnableJarSha() {
         String sourcesSha = "1111111111111111111111111111111111111111111111111111111111111111";
         String runnableSha = "2222222222222222222222222222222222222222222222222222222222222222";
+        String conflictingSha = "3333333333333333333333333333333333333333333333333333333333333333";
 
         String checksumsContent = """
                 %s  DiscordTowny-1.10.0-sources.jar
@@ -1047,6 +1158,87 @@ class DefaultUpdateServiceTest {
         Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
         assertTrue(releaseOpt.isPresent(), "Release with checksums.txt should be parsed successfully");
         assertEquals(runnableSha, releaseOpt.get().sha256(), "Must extract runnable jar SHA, NOT sources jar SHA!");
+
+        // 1. Conflicting checksum assets must refuse without falling back to body
+        String conflictingSha256Sums = conflictingSha + "  DiscordTowny-1.10.0.jar\n";
+        String multiAssetJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: %s",
+                  "assets": [
+                    {"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"},
+                    {"name": "checksums.txt", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"},
+                    {"name": "SHA256SUMS", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/SHA256SUMS"}
+                  ]
+                }
+                """.formatted(runnableSha);
+
+        HttpTransport conflictingAssetsTransport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(checksumsContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            if (uri.toString().endsWith("SHA256SUMS")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(conflictingSha256Sums.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(multiAssetJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService serviceConflictingAssets = new DefaultUpdateService(
+                "0.1.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                conflictingAssetsTransport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        Optional<UpdateService.Release> conflictingResult = serviceConflictingAssets.checkForUpdate().join();
+        assertTrue(conflictingResult.isEmpty(), "Conflicting checksum assets must refuse without falling back to body digest!");
+
+        // 2. Conflicting body digests must refuse without falling back to asset
+        String conflictingBodyJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: %s DiscordTowny-1.10.0.jar\\nSHA-256: %s DiscordTowny-1.10.0.jar",
+                  "assets": [
+                    {"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"},
+                    {"name": "checksums.txt", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"}
+                  ]
+                }
+                """.formatted(runnableSha, conflictingSha);
+
+        HttpTransport conflictingBodyTransport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(checksumsContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(conflictingBodyJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService serviceConflictingBody = new DefaultUpdateService(
+                "0.1.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                conflictingBodyTransport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        Optional<UpdateService.Release> conflictingBodyResult = serviceConflictingBody.checkForUpdate().join();
+        assertTrue(conflictingBodyResult.isEmpty(), "Conflicting body digests must refuse without falling back to checksum asset!");
     }
 
     @Test
@@ -1130,7 +1322,7 @@ class DefaultUpdateServiceTest {
 
     @Test
     @DisplayName("Stalled body streaming times out and cleans up temporary file (F5)")
-    void stalledBodyStreamingTimesOutAndCleansTempFile() {
+    void stalledBodyStreamingTimesOutAndCleansTempFile() throws IOException {
         byte[] payload = "SOME_PAYLOAD".getBytes(StandardCharsets.UTF_8);
         String sha = sha256Hex(payload);
 
@@ -1185,13 +1377,13 @@ class DefaultUpdateServiceTest {
         if (Files.exists(updateFolder)) {
             try (Stream<Path> stream = Files.list(updateFolder)) {
                 assertTrue(stream.toList().isEmpty(), "Stalled download must clean up all temporary files on timeout");
-            } catch (IOException ignored) {}
+            }
         }
     }
 
     @Test
     @DisplayName("Stalled body streaming unblocks when stream is closed and cleans up temporary file (F5)")
-    void stalledBodyStreamingHonouringCloseTimesOutAndCleansTempFile() {
+    void stalledBodyStreamingHonouringCloseTimesOutAndCleansTempFile() throws IOException {
         byte[] payload = "SOME_PAYLOAD".getBytes(StandardCharsets.UTF_8);
         String sha = sha256Hex(payload);
 
@@ -1254,30 +1446,37 @@ class DefaultUpdateServiceTest {
         if (Files.exists(updateFolder)) {
             try (Stream<Path> stream = Files.list(updateFolder)) {
                 assertTrue(stream.toList().isEmpty(), "Stalled download must clean up all temporary files on close");
-            } catch (IOException ignored) {}
+            }
         }
     }
 
     @Test
     @DisplayName("service.stop() cancels in-flight download and prevents publication (F5)")
     void serviceStopCancelsInFlightDownloadAndPreventsPublication() throws Exception {
-        byte[] payload = "SOME_PAYLOAD".getBytes(StandardCharsets.UTF_8);
+        byte[] payload = "SOME_VALID_PAYLOAD_FOR_STOP_TEST".getBytes(StandardCharsets.UTF_8);
         String sha = sha256Hex(payload);
 
-        InputStream slowStream = new InputStream() {
+        CountDownLatch readStarted = new CountDownLatch(1);
+        CountDownLatch stopCalled = new CountDownLatch(1);
+        InputStream controlledStream = new InputStream() {
+            private int index = 0;
             @Override
             public int read() throws IOException {
+                readStarted.countDown();
                 try {
-                    Thread.sleep(500);
+                    stopCalled.await();
                 } catch (InterruptedException e) {
-                    throw new IOException("Interrupted", e);
+                    throw new IOException("Interrupted by abort during stop", e);
                 }
-                return 0x41;
+                if (index < payload.length) {
+                    return payload[index++] & 0xFF;
+                }
+                return -1;
             }
         };
 
         HttpTransport transport = (uri, headers, timeout) ->
-                new HttpTransport.HttpResponse(200, Map.of(), slowStream);
+                new HttpTransport.HttpResponse(200, Map.of("Content-Length", String.valueOf(payload.length)), controlledStream);
 
         DefaultUpdateService service = new DefaultUpdateService(
                 "0.1.0",
@@ -1303,14 +1502,21 @@ class DefaultUpdateServiceTest {
         );
 
         var downloadFuture = service.download(release);
-        Thread.sleep(100);
+        // Ensure worker has actively started reading before calling stop
+        assertTrue(readStarted.await(5, TimeUnit.SECONDS), "Worker thread must start reading stream");
+
+        long stopStart = System.currentTimeMillis();
         service.stop(); // Stop service during active download
+        long stopDuration = System.currentTimeMillis() - stopStart;
+        assertTrue(stopDuration < 2000, "service.stop() must execute promptly: took " + stopDuration + "ms");
+
+        stopCalled.countDown(); // unblock stream if still waiting
 
         UpdateService.DownloadResult result = downloadFuture.join();
         assertNotEquals(UpdateService.DownloadResult.SUCCESS, result, "Stopped service must never report download SUCCESS");
 
         Path target = updateFolder.resolve("DiscordTowny.jar");
-        assertFalse(Files.exists(target), "Stopped service must never publish executable jar");
+        assertFalse(Files.exists(target), "Stopped service must never publish executable jar even with valid payload");
         if (Files.exists(updateFolder)) {
             try (Stream<Path> stream = Files.list(updateFolder)) {
                 assertTrue(stream.toList().isEmpty(), "No temp files should remain after stop");
@@ -1321,19 +1527,68 @@ class DefaultUpdateServiceTest {
     @Test
     @DisplayName("JdkHttpTransport rejects untrusted redirect destination (F1)")
     void jdkHttpTransportRejectsUntrustedRedirect() {
+        // 1. Direct constructor rejection of auto-redirecting HttpClient
+        HttpClient autoRedirectClient = mock(HttpClient.class);
+        when(autoRedirectClient.followRedirects()).thenReturn(HttpClient.Redirect.NORMAL);
+        assertThrows(IllegalArgumentException.class, () -> new JdkHttpTransport(autoRedirectClient),
+                "JdkHttpTransport must reject auto-redirecting HttpClient");
+
+        // 2. Direct calls to untrusted destinations reject with specific policy violation messages
         JdkHttpTransport transport = new JdkHttpTransport();
 
         // Testing direct call to untrusted domain
-        assertThrows(IOException.class, () ->
+        IOException evilEx = assertThrows(IOException.class, () ->
                 transport.executeGet(URI.create("https://evil.com/malicious.jar"), Map.of(), Duration.ofSeconds(1)));
+        assertTrue(evilEx.getMessage().contains("Untrusted destination rejected by official source policy"),
+                "Must be refused by policy upfront: " + evilEx.getMessage());
 
         // Testing direct call to plain HTTP
-        assertThrows(IOException.class, () ->
+        IOException httpEx = assertThrows(IOException.class, () ->
                 transport.executeGet(URI.create("http://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"), Map.of(), Duration.ofSeconds(1)));
+        assertTrue(httpEx.getMessage().contains("Untrusted destination rejected by official source policy"),
+                "Must be refused due to policy: " + httpEx.getMessage());
 
         // Testing direct call to wrong GitHub repository
-        assertThrows(IOException.class, () ->
+        IOException repoEx = assertThrows(IOException.class, () ->
                 transport.executeGet(URI.create("https://github.com/Other/Repo/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"), Map.of(), Duration.ofSeconds(1)));
+        assertTrue(repoEx.getMessage().contains("Untrusted destination rejected by official source policy"),
+                "Must be refused due to policy: " + repoEx.getMessage());
+
+        // 3. Follow redirect chain: 302 to untrusted destination must be intercepted and rejected
+        HttpClient mockClient = mock(HttpClient.class);
+        when(mockClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
+
+        @SuppressWarnings("unchecked")
+        java.net.http.HttpResponse<InputStream> mockResponse = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(mockResponse.statusCode()).thenReturn(302);
+        HttpHeaders headersEvil = HttpHeaders.of(
+                Map.of("Location", List.of("https://evil.com/malicious.jar")),
+                (k, v) -> true
+        );
+        when(mockResponse.headers()).thenReturn(headersEvil);
+        try {
+            when(mockClient.<InputStream>send(any(), any())).thenReturn(mockResponse);
+        } catch (IOException | InterruptedException ignored) {}
+
+        JdkHttpTransport redirectTransport = new JdkHttpTransport(mockClient);
+        URI officialUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar");
+
+        IOException redirEx = assertThrows(IOException.class, () ->
+                redirectTransport.executeGet(officialUri, Map.of(), Duration.ofSeconds(1)));
+        assertTrue(redirEx.getMessage().contains("Untrusted destination rejected by official source policy"),
+                "Redirect to untrusted destination must be refused: " + redirEx.getMessage());
+
+        // 4. Follow redirect chain: 302 to raw.githubusercontent.com without official provenance
+        HttpHeaders headersRaw = HttpHeaders.of(
+                Map.of("Location", List.of("https://raw.githubusercontent.com/Attacker/Repo/main/payload.jar")),
+                (k, v) -> true
+        );
+        when(mockResponse.headers()).thenReturn(headersRaw);
+
+        IOException redirRawEx = assertThrows(IOException.class, () ->
+                redirectTransport.executeGet(officialUri, Map.of(), Duration.ofSeconds(1)));
+        assertTrue(redirRawEx.getMessage().contains("Untrusted destination rejected by official source policy"),
+                "Redirect to raw.githubusercontent without provenance must be refused: " + redirRawEx.getMessage());
     }
 
     @Test
@@ -1351,8 +1606,14 @@ class DefaultUpdateServiceTest {
                 }
                 """.formatted(sha, downloadUrl);
 
-        HttpTransport transport = (uri, headers, timeout) ->
-                new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        AtomicInteger jarRequestCount = new AtomicInteger(0);
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".jar")) {
+                jarRequestCount.incrementAndGet();
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(payload));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
 
         DefaultUpdateService service = new DefaultUpdateService(
                 "1.9.0", // Major 1 vs release Major 2
@@ -1377,6 +1638,7 @@ class DefaultUpdateServiceTest {
         assertTrue(service.isBreaking(release), "Major version bump (1.x -> 2.x) must be recognized as breaking");
         assertTrue(service.isAwaitingConfirmation(), "Breaking release must await admin confirmation");
         assertFalse(service.isUpdatePending(), "Auto-download must be suppressed for breaking release");
+        assertEquals(0, jarRequestCount.get(), "Transport must NEVER be contacted for jar download when auto-download is suppressed");
 
         Path target = updateFolder.resolve("DiscordTowny.jar");
         assertFalse(Files.exists(target), "Target jar must not be staged during suppressed auto-download");
@@ -1395,16 +1657,23 @@ class DefaultUpdateServiceTest {
         String sha = sha256Hex(payload);
         String downloadUrl = "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar";
 
+        // Supply inline [breaking] marker in release notes
         String releaseJson = """
                 {
                   "tag_name": "v1.10.0",
-                  "body": "Important fixes\\n[breaking]\\nSHA-256: %s",
+                  "body": "[breaking] Migrate your database configuration\\nSHA-256: %s",
                   "assets": [{"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "%s"}]
                 }
                 """.formatted(sha, downloadUrl);
 
-        HttpTransport transport = (uri, headers, timeout) ->
-                new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        AtomicInteger jarRequestCount = new AtomicInteger(0);
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".jar")) {
+                jarRequestCount.incrementAndGet();
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(payload));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
 
         DefaultUpdateService service = new DefaultUpdateService(
                 "1.9.0", // Same major version
@@ -1426,9 +1695,17 @@ class DefaultUpdateServiceTest {
         assertTrue(releaseOpt.isPresent());
         UpdateService.Release release = releaseOpt.get();
 
-        assertTrue(service.isBreaking(release), "Release notes with [breaking] tag must be recognized as breaking");
+        assertTrue(service.isBreaking(release), "Release notes containing inline [breaking] tag must be recognized as breaking");
         assertTrue(service.isAwaitingConfirmation());
         assertFalse(service.isUpdatePending(), "Auto-download must be suppressed for [breaking] tagged release");
+        assertEquals(0, jarRequestCount.get(), "Transport must NEVER be contacted for jar download when auto-download is suppressed");
+
+        Path target = updateFolder.resolve("DiscordTowny.jar");
+        assertFalse(Files.exists(target), "Target jar must not be staged during suppressed auto-download");
+
+        // Verify that isBreaking recognizes [breaking] anywhere in notes case-insensitively
+        UpdateService.Release inlineRelease = new UpdateService.Release("1.10.0", downloadUrl, sha, "Notes contain [BREAKING] change in middle");
+        assertTrue(service.isBreaking(inlineRelease), "isBreaking must return true when [breaking] is inline case-insensitively");
     }
 
     @Test
