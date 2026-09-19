@@ -39,4 +39,41 @@ class YamlMessagesTest {
         assertEquals(2, warnings.size());
         assertTrue(warnings.getLast().contains("general.working"));
     }
+
+    @Test
+    void keyMissingFromSelectedFileFallsBackToEnglishAndWarnsOnce() {
+        List<String> warnings = new ArrayList<>();
+        Map<String, String> selected = Map.of("prefix", "[ES] ", "general.known", "Texto en espanol");
+        Map<String, String> fallback = Map.of("prefix", "[EN] ", "general.known", "English text", "space.created", "Space for {town} is ready.");
+        var messages = new YamlMessages(selected, fallback, "messages_es.yml", warnings::add);
+
+        // Key in selected language returns selected text without warnings
+        assertEquals("[ES] Texto en espanol", messages.plain("general.known", Map.of()));
+        assertTrue(warnings.isEmpty());
+
+        // Key missing from selected falls back to English and warns once naming key and file
+        assertEquals("[ES] Space for Roma is ready.", messages.plain("space.created", Map.of("town", "Roma")));
+        assertEquals(1, warnings.size());
+        assertEquals("messages_es.yml: missing message space.created", warnings.getFirst());
+
+        // Repeated call returns fallback text without warning again
+        assertEquals("[ES] Space for Roma is ready.", messages.plain("space.created", Map.of("town", "Roma")));
+        assertEquals(1, warnings.size());
+    }
+
+    @Test
+    void keyMissingFromBothSelectedAndFallbackReturnsVisiblePlaceholder() {
+        List<String> warnings = new ArrayList<>();
+        Map<String, String> selected = Map.of("prefix", "[ES] ");
+        Map<String, String> fallback = Map.of("prefix", "[EN] ");
+        var messages = new YamlMessages(selected, fallback, "messages_es.yml", warnings::add);
+
+        assertEquals("[ES] [missing message: unknown.key]", messages.plain("unknown.key", Map.of()));
+        assertEquals(1, warnings.size());
+        assertEquals("messages_es.yml: missing message unknown.key", warnings.getFirst());
+
+        // Repeated call does not warn again
+        assertEquals("[ES] [missing message: unknown.key]", messages.plain("unknown.key", Map.of()));
+        assertEquals(1, warnings.size());
+    }
 }

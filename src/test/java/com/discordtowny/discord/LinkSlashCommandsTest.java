@@ -98,7 +98,7 @@ class LinkSlashCommandsTest {
         SlashCommandData linkData = data.stream().filter(d -> d.getName().equals("link")).findFirst().orElseThrow();
         assertEquals("link", linkData.getName());
         assertEquals(1, linkData.getOptions().size());
-        assertEquals("codigo", linkData.getOptions().getFirst().getName());
+        assertEquals("code", linkData.getOptions().getFirst().getName());
         assertEquals(OptionType.STRING, linkData.getOptions().getFirst().getType());
         assertTrue(linkData.getOptions().getFirst().isRequired());
 
@@ -283,5 +283,22 @@ class LinkSlashCommandsTest {
         List<SlashCommandData> filtered = LinkSlashCommands.getCommandData(disabledConfig);
         assertEquals(1, filtered.size());
         assertEquals("unlink", filtered.getFirst().getName());
+    }
+
+    @Test
+    void handleLinkWithCodeOptionNameDirectly() {
+        when(event.getName()).thenReturn("link");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("XYZ789");
+        when(event.getOption("code")).thenReturn(opt);
+
+        when(linkService.redeem("XYZ789", "123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+        when(messages.plain(eq("linking.link-success"), any())).thenReturn("Linked successfully");
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(event).deferReply(true);
+        verify(hook).editOriginal("Linked successfully");
     }
 }

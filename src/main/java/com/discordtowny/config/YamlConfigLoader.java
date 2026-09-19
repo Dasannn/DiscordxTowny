@@ -1,6 +1,7 @@
 package com.discordtowny.config;
 
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,21 +30,63 @@ import org.bukkit.configuration.file.YamlConfiguration;
 public final class YamlConfigLoader implements ConfigLoader {
     private final Path dataFolder;
     private final Consumer<String> warning;
+    private final Map<String, String> bundledEnglish;
     private volatile Messages messages;
 
     public YamlConfigLoader(Path dataFolder, Consumer<String> warning) {
         this.dataFolder = dataFolder;
         this.warning = warning;
-        this.messages = new YamlMessages(Map.of(), warning);
+        this.bundledEnglish = loadBundledEnglish();
+        saveDefaultMessages();
+        this.messages = new YamlMessages(Map.of(), bundledEnglish, "messages_en.yml", warning);
+    }
+
+    public void saveDefaultMessages() {
+        saveDefaultFile("messages_en.yml");
+        saveDefaultFile("messages_es.yml");
+    }
+
+    private void saveDefaultFile(String name) {
+        Path target = dataFolder.resolve(name);
+        if (Files.notExists(target)) {
+            try {
+                Files.createDirectories(dataFolder);
+                try (var in = getClass().getResourceAsStream("/" + name)) {
+                    if (in != null) {
+                        Files.copy(in, target);
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private Map<String, String> loadBundledEnglish() {
+        YamlConfiguration yaml = new YamlConfiguration();
+        try (var in = getClass().getResourceAsStream("/messages_en.yml")) {
+            if (in != null) {
+                try (var reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+                    yaml.load(reader);
+                }
+            }
+        } catch (IOException | InvalidConfigurationException e) {
+            // Bundled resource is valid and packaged in jar
+        }
+        Map<String, String> map = new HashMap<>();
+        for (String key : yaml.getKeys(true)) {
+            if (yaml.isString(key)) map.put(key, yaml.getString(key));
+        }
+        return Map.copyOf(map);
     }
 
     @Override
     public synchronized PluginConfig load() {
+        saveDefaultMessages();
         ReadResult readResult = read();
         if (!readResult.problems.isEmpty()) {
             throw new ConfigException(String.join("; ", readResult.problems));
         }
-        messages = new YamlMessages(readResult.texts, warning);
+        messages = new YamlMessages(readResult.texts, bundledEnglish, readResult.fileName, warning);
         return readResult.config;
     }
 
@@ -60,13 +103,26 @@ public final class YamlConfigLoader implements ConfigLoader {
     private ReadResult read() {
         List<String> problems = new ArrayList<>();
         YamlConfiguration yaml = file("config.yml", problems);
-        YamlConfiguration texts = file("messages.yml", problems);
+
+        String language = "en";
+        Object rawLang = yaml.get("language");
+        if (rawLang != null) {
+            if (rawLang instanceof String str && (str.equalsIgnoreCase("en") || str.equalsIgnoreCase("es"))) {
+                language = str.toLowerCase(Locale.ROOT);
+            } else {
+                warning.accept("language: unrecognized value '" + rawLang + "', accepted languages: [en, es]; falling back to en");
+                language = "en";
+            }
+        }
+
+        String messageFileName = "messages_" + language + ".yml";
+        YamlConfiguration texts = file(messageFileName, problems);
         Map<String, String> map = new HashMap<>();
         for (String key : texts.getKeys(true)) {
             if (texts.isString(key)) map.put(key, texts.getString(key));
         }
-        PluginConfig config = new Values(yaml, problems).config();
-        return new ReadResult(config, map, problems);
+        PluginConfig config = new Values(yaml, problems, language).config();
+        return new ReadResult(config, map, messageFileName, problems);
     }
 
     private YamlConfiguration file(String name, List<String> problems) {
@@ -80,15 +136,17 @@ public final class YamlConfigLoader implements ConfigLoader {
         return yaml;
     }
 
-    private record ReadResult(PluginConfig config, Map<String, String> texts, List<String> problems) {}
+    private record ReadResult(PluginConfig config, Map<String, String> texts, String fileName, List<String> problems) {}
 
     private static final class Values {
         private final YamlConfiguration yaml;
         private final List<String> problems;
+        private final String language;
 
-        private Values(YamlConfiguration yaml, List<String> problems) {
+        private Values(YamlConfiguration yaml, List<String> problems, String language) {
             this.yaml = yaml;
             this.problems = problems;
+            this.language = language;
         }
 
         private void require(boolean condition, String key, String expected) {
@@ -236,7 +294,7 @@ public final class YamlConfigLoader implements ConfigLoader {
             }
             var commands = new PluginConfig.Commands(seconds("commands.cooldown-seconds"), List.copyOf(commandsList));
             integer("config-version", 1, 1);
-            return new PluginConfig(discord, database, structure, roles, limits, lifecycle, sync, linking, logging, updates, commands);
+            return new PluginConfig(language, discord, database, structure, roles, limits, lifecycle, sync, linking, logging, updates, commands);
         }
     }
 }

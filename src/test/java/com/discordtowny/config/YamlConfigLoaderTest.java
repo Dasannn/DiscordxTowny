@@ -2,14 +2,20 @@ package com.discordtowny.config;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,9 +37,11 @@ class YamlConfigLoaderTest {
     @BeforeEach
     void prepare() throws Exception {
         try (var config = getClass().getResourceAsStream("/config.yml");
-             var messages = getClass().getResourceAsStream("/messages.yml")) {
+             var messagesEn = getClass().getResourceAsStream("/messages_en.yml");
+             var messagesEs = getClass().getResourceAsStream("/messages_es.yml")) {
             Files.copy(config, folder.resolve("config.yml"));
-            Files.copy(messages, folder.resolve("messages.yml"));
+            Files.copy(messagesEn, folder.resolve("messages_en.yml"));
+            Files.copy(messagesEs, folder.resolve("messages_es.yml"));
         }
         yaml = new YamlConfiguration();
         yaml.load(folder.resolve("config.yml").toFile());
@@ -52,6 +60,7 @@ class YamlConfigLoaderTest {
     void loadsAllBlocksAndDoesNotExposeSecrets() {
         assertTrue(loader.validate().isEmpty());
         PluginConfig config = loader.load();
+        assertEquals("en", config.language());
         assertEquals(TOKEN, config.discord().token());
         assertTrue(config.discord().logChannelId().isEmpty());
         assertEquals(PluginConfig.Database.Type.SQLITE, config.database().type());
@@ -201,7 +210,7 @@ class YamlConfigLoaderTest {
         Messages messages = loader.messages();
         yaml.set("limits.max-towns", 100);
         save();
-        Files.writeString(folder.resolve("messages.yml"), "prefix: '[nuevo] '\ngeneral:\n  working: nuevo\n");
+        Files.writeString(folder.resolve("messages_en.yml"), "prefix: '[nuevo] '\ngeneral:\n  working: nuevo\n");
         assertTrue(loader.validate().isEmpty());
         assertSame(messages, loader.messages());
         assertEquals(200, previous.limits().maxTowns());
@@ -210,7 +219,7 @@ class YamlConfigLoaderTest {
         Messages valid = loader.messages();
         yaml.set("discord.token", "");
         save();
-        Files.writeString(folder.resolve("messages.yml"), "prefix: cambiado\n");
+        Files.writeString(folder.resolve("messages_en.yml"), "prefix: cambiado\n");
         assertThrows(ConfigException.class, loader::load);
         assertSame(valid, loader.messages());
     }
@@ -230,10 +239,155 @@ class YamlConfigLoaderTest {
     @Test
     void missingFilesOrMalformedTextsAreRejected() throws Exception {
         Files.delete(folder.resolve("config.yml"));
-        Files.writeString(folder.resolve("messages.yml"), "prefix: [sin cerrar");
+        Files.writeString(folder.resolve("messages_en.yml"), "prefix: [sin cerrar");
         List<String> problems = loader.validate();
         assertTrue(problems.stream().anyMatch(p -> p.startsWith("config.yml:")));
-        assertTrue(problems.stream().anyMatch(p -> p.startsWith("messages.yml:")));
+        assertTrue(problems.stream().anyMatch(p -> p.startsWith("messages_en.yml:")));
         assertThrows(ConfigException.class, loader::load);
+    }
+
+    @Test
+    void missingKeyInSpanishFileFallsBackToEnglishAndWarnsOnce() throws Exception {
+        yaml.set("language", "es");
+        save();
+        // Remove a key from messages_es.yml on disk
+        YamlConfiguration esConfig = new YamlConfiguration();
+        esConfig.load(folder.resolve("messages_es.yml").toFile());
+        esConfig.set("space.created", null);
+        esConfig.save(folder.resolve("messages_es.yml").toFile());
+
+        loader.load();
+        Messages messages = loader.messages();
+
+        // First call: falls back to bundled English text and warns once naming key and file
+        String text1 = messages.plain("space.created", Map.of("town", "Roma"));
+        assertTrue(text1.contains("Roma"));
+        assertTrue(text1.contains("ready on Discord"));
+        assertEquals(1, warnings.stream().filter(w -> w.contains("messages_es.yml") && w.contains("space.created")).count());
+
+        // Second call: does not warn again
+        String text2 = messages.plain("space.created", Map.of("town", "Roma"));
+        assertEquals(text1, text2);
+        assertEquals(1, warnings.stream().filter(w -> w.contains("messages_es.yml") && w.contains("space.created")).count());
+    }
+
+    @Test
+    void invalidLanguageStartsInEnglishAndNamesKey() throws Exception {
+        yaml.set("language", "fr");
+        save();
+
+        PluginConfig config = loader.load();
+        assertEquals("en", config.language());
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("language") && w.contains("fr")));
+
+        // Messages are loaded in English
+        String text = loader.messages().plain("general.no-permission", Map.of());
+        assertTrue(text.contains("You do not have permission"));
+    }
+
+    @Test
+    void enAndEsReturnDifferentTextForSameKey() throws Exception {
+        yaml.set("language", "en");
+        save();
+        loader.load();
+        String enText = loader.messages().plain("general.no-permission", Map.of());
+
+        yaml.set("language", "es");
+        save();
+        loader.load();
+        String esText = loader.messages().plain("general.no-permission", Map.of());
+
+        assertNotEquals(enText, esText);
+        assertTrue(enText.contains("You do not have permission"));
+        assertTrue(esText.contains("No tienes permiso"));
+    }
+
+    @Test
+    void bundledMessagesHaveIdenticalKeySets() throws Exception {
+        YamlConfiguration en = new YamlConfiguration();
+        YamlConfiguration es = new YamlConfiguration();
+        try (var inEn = getClass().getResourceAsStream("/messages_en.yml");
+             var inEs = getClass().getResourceAsStream("/messages_es.yml")) {
+            assertNotNull(inEn, "messages_en.yml bundled resource must exist");
+            assertNotNull(inEs, "messages_es.yml bundled resource must exist");
+            en.load(new InputStreamReader(inEn, StandardCharsets.UTF_8));
+            es.load(new InputStreamReader(inEs, StandardCharsets.UTF_8));
+        }
+        Set<String> enKeys = new TreeSet<>();
+        for (String key : en.getKeys(true)) {
+            if (en.isString(key)) enKeys.add(key);
+        }
+        Set<String> esKeys = new TreeSet<>();
+        for (String key : es.getKeys(true)) {
+            if (es.isString(key)) esKeys.add(key);
+        }
+        assertEquals(enKeys, esKeys, "Every key in messages_en.yml must be in messages_es.yml and vice versa");
+    }
+
+    @Test
+    void bundledMessagesHaveMatchingPlaceholders() throws Exception {
+        YamlConfiguration en = new YamlConfiguration();
+        YamlConfiguration es = new YamlConfiguration();
+        try (var inEn = getClass().getResourceAsStream("/messages_en.yml");
+             var inEs = getClass().getResourceAsStream("/messages_es.yml")) {
+            en.load(new InputStreamReader(inEn, StandardCharsets.UTF_8));
+            es.load(new InputStreamReader(inEs, StandardCharsets.UTF_8));
+        }
+        Pattern placeholder = Pattern.compile("\\{([^{}]+)}");
+        for (String key : en.getKeys(true)) {
+            if (en.isString(key)) {
+                var matcherEn = placeholder.matcher(en.getString(key));
+                Set<String> enPlaceholders = new HashSet<>();
+                while (matcherEn.find()) enPlaceholders.add(matcherEn.group(1));
+
+                var matcherEs = placeholder.matcher(es.getString(key));
+                Set<String> esPlaceholders = new HashSet<>();
+                while (matcherEs.find()) esPlaceholders.add(matcherEs.group(1));
+
+                assertEquals(esPlaceholders, enPlaceholders, "Placeholders for key " + key + " must match between en and es");
+            }
+        }
+    }
+
+    @Test
+    void firstRunWritesBothFilesAndNeverOverwritesAfterwards(@TempDir Path freshFolder) throws Exception {
+        Files.copy(folder.resolve("config.yml"), freshFolder.resolve("config.yml"));
+        assertFalse(Files.exists(freshFolder.resolve("messages_en.yml")));
+        assertFalse(Files.exists(freshFolder.resolve("messages_es.yml")));
+
+        YamlConfigLoader freshLoader = new YamlConfigLoader(freshFolder, w -> {});
+        freshLoader.load();
+
+        assertTrue(Files.exists(freshFolder.resolve("messages_en.yml")));
+        assertTrue(Files.exists(freshFolder.resolve("messages_es.yml")));
+
+        // Server owner modifies file
+        Files.writeString(freshFolder.resolve("messages_en.yml"), "prefix: '[custom] '\n");
+        freshLoader.load();
+
+        // Ensure owner edit was not overwritten
+        // The file still holds exactly what the owner wrote, byte for byte.
+        assertEquals("prefix: '[custom] '\n",
+                Files.readString(freshFolder.resolve("messages_en.yml")));
+    }
+
+    @Test
+    void reloadingAfterEditingLanguageChangesTextsWithoutRestart() throws Exception {
+        yaml.set("language", "en");
+        save();
+        loader.load();
+        assertTrue(loader.messages().plain("general.working", Map.of()).contains("Working on it"));
+
+        // Change to es and reload
+        yaml.set("language", "es");
+        save();
+        loader.load();
+        assertTrue(loader.messages().plain("general.working", Map.of()).contains("Trabajando en ello"));
+
+        // Change back to en and reload
+        yaml.set("language", "en");
+        save();
+        loader.load();
+        assertTrue(loader.messages().plain("general.working", Map.of()).contains("Working on it"));
     }
 }

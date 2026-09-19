@@ -3,7 +3,7 @@ package com.discordtowny.config;
 import net.kyori.adventure.text.Component;
 import java.util.Map;
 
-/** Texts from messages.yml, with their placeholders resolved. */
+/** Texts from message files, with their placeholders resolved. */
 public interface Messages {
 
     /**

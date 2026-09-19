@@ -2,7 +2,7 @@ package com.discordtowny.config;
 
 import java.util.List;
 
-/** Loads and validates config.yml and messages.yml. */
+/** Loads and validates config.yml and message files. */
 public interface ConfigLoader {
 
     /**
