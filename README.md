@@ -61,6 +61,12 @@ Other initial values affecting players:
 | `limits.creation-cooldown-seconds` | 60 seconds |
 | `linking.code-expiry-minutes` | 10 minutes |
 | `commands.cooldown-seconds` | 5 seconds per user on Discord |
+| `language` | `en`. Set it to `es` for Spanish |
+
+Texts live in `messages_en.yml` and `messages_es.yml` next to `config.yml`, and
+`language` chooses between them. Both files are yours to edit; the plugin never
+overwrites them. The console stays in English whichever you pick, so a log is
+the same for everyone reporting a problem.
 
 ## In-game commands
 

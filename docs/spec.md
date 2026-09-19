@@ -250,6 +250,38 @@ in a separate file from `config.yml`.
 Not configurable: the channel permission model, the database
 schema, and the use of a single role per town.
 
+### 9.1 Language
+
+`config.yml` carries a `language` key that selects the language of every text
+the plugin shows. It accepts two values, `en` and `es`. The default is `en`.
+
+The plugin ships one message file per language, `messages_en.yml` and
+`messages_es.yml`, and writes both to its folder on first run. There is no
+single `messages.yml` any more. Both files belong to the server owner: once
+written they are never overwritten, and the owner may edit any text in them.
+
+The setting covers everything that reaches a person, in game and in Discord
+alike: command replies, error messages, and the text of the embeds the bot
+publishes. It does not reach the console, which stays in English so that logs
+are the same for everyone reporting a problem.
+
+Resolution of a text follows a fixed order, and it never ends in a blank:
+
+1. The key in the selected language file.
+2. The key in the bundled English file, when the selected file lacks it. This
+   is what an edited or outdated file falls back to. The plugin warns once per
+   missing key, naming the key and the file.
+3. A visible placeholder naming the key, when English lacks it too. That means
+   the plugin shipped incomplete, and it must be obvious rather than silent.
+
+An unrecognized value does not stop the server. The plugin reports the exact
+key, states which languages exist, falls back to `en`, and carries on: the
+language of a message is not a reason to refuse to operate, and this is the
+degraded mode the rest of the configuration already promises.
+
+`/dt admin reload` re-reads the language and the message files, so changing
+`language` takes effect without restarting the server.
+
 ## 10. Errors and failures
 
 - If the bot cannot connect, the Minecraft server operates
@@ -335,6 +367,9 @@ war plugins, and more than one guild.
     never deleted without an administrator ordering it.
 11. With the log channel active and many consecutive operations, the server does not
     drop ticks.
+12. With `language: es` every text reaching a player is in Spanish, in game and
+    in Discord; switching to `en` and running `/dt admin reload` changes all of
+    them, with nothing left in the previous language.
 
 ## 13. Public documentation
 

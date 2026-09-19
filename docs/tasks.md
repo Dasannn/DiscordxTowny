@@ -354,6 +354,39 @@ correctly by the updater on an instance running the previous version.
 
 ---
 
+## T14 — Configurable Language
+
+- **Branch**: `feat/language` · **Phase** 6 · **Depends on**: T4
+- **Parallel to**: almost everything · **Status**: pending · **Zone**:
+  `config/`, `src/main/resources/messages_*.yml`, `src/main/resources/config.yml`
+
+**Builds**
+
+- A `language` key in `config.yml` accepting `en` and `es`, default `en`.
+- Two bundled message files, `messages_en.yml` and `messages_es.yml`, written
+  to the plugin folder on first run and never overwritten afterwards. The
+  current `messages.yml` becomes `messages_es.yml`; the English file is a
+  translation of it, key for key.
+- The loader picks the file from the configured language and keeps the bundled
+  English texts as the fallback for keys the selected file lacks, warning once
+  per missing key with the key and the file named.
+- An unrecognized value reports the key, lists the accepted languages, falls
+  back to `en` and lets the plugin start.
+- `/dt admin reload` re-reads the language and both files.
+- `/link` registers its Discord option as `code`. It already reads `codigo` as
+  a fallback, so guilds that registered the old name keep working.
+
+**Acceptance**: acceptance criterion 12 of the spec. Plus: a message file with
+a key deleted falls back to English for that key and warns once, not once per
+call; an invalid `language` starts the plugin in English naming the key; and
+`/dt admin reload` after editing `language` changes the texts without a restart.
+
+**Do not touch**: the wording of any existing message, the `Messages` interface
+seen by its callers, and any package other than `config/`. If a text is missing
+from `messages.yml` altogether, report it instead of inventing it.
+
+---
+
 ## Quick Map
 
 | Task | Phase | Depends on | Parallel to | Zone |
@@ -372,3 +405,4 @@ correctly by the updater on an instance running the previous version.
 | T11 Documentation | 6 | spec | almost everything | `README`, guide |
 | T12 Hardening | 7 | T8, T9, T10 | — | all |
 | T13 Release | 8 | T12 | — | pipeline |
+| T14 Language | 6 | T4 | almost everything | `config/`, messages |
