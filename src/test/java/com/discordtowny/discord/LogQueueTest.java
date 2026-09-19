@@ -18,14 +18,14 @@ import java.util.logging.Logger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Pruebas de la cola de logs.
+ * Tests for the log queue.
  *
- * <p>Demuestra sin red:
+ * <p>Demonstrates without network:
  * <ul>
- *   <li>que descarta con recuento al llenarse, en vez de crecer sin limite,</li>
- *   <li>que nunca bloquea a quien produce el evento,</li>
- *   <li>que agrupa y envia por lotes,</li>
- *   <li>que conserva los eventos mas relevantes al descartar.</li>
+ *   <li>that it drops with a count when full, instead of growing without bound,</li>
+ *   <li>that it never blocks the event producer,</li>
+ *   <li>that it batches and sends in groups,</li>
+ *   <li>that it preserves the most relevant events when dropping.</li>
  * </ul>
  */
 @Timeout(value = 15, unit = TimeUnit.SECONDS)
@@ -39,60 +39,60 @@ class LogQueueTest {
     }
 
     @Test
-    @DisplayName("La cola descarta con recuento al llenarse, en vez de crecer sin limite")
+    @DisplayName("Queue drops with a count when full, instead of growing without bound")
     void discardsWhenFull() {
         int maxSize = 3;
         List<LogQueue.LogBatch> batches = new CopyOnWriteArrayList<>();
 
         var queue = new LogQueue(maxSize, batches::add, LOGGER);
-        // No arrancamos el scheduler; flusheamos manual
+        // We do not start the scheduler; we flush manually
 
-        // Llenar la cola
+        // Fill the queue
         queue.enqueue(event(AuditEvent.Severity.INFO, "a1"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "a2"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "a3"));
-        assertEquals(3, queue.size(), "La cola debe estar llena");
+        assertEquals(3, queue.size(), "Queue must be full");
 
-        // Uno mas: debe descartar
+        // One more: must drop
         queue.enqueue(event(AuditEvent.Severity.INFO, "a4"));
-        assertEquals(3, queue.size(), "La cola no debe crecer mas alla del maximo");
-        assertTrue(queue.droppedCount() > 0, "Debe haber descartado al menos uno");
+        assertEquals(3, queue.size(), "Queue must not grow beyond the maximum");
+        assertTrue(queue.droppedCount() > 0, "Must have dropped at least one");
     }
 
     @Test
-    @DisplayName("Conserva los eventos mas relevantes al descartar")
+    @DisplayName("Preserves the most relevant events when dropping")
     void keepsMoreRelevantEvents() {
         int maxSize = 2;
         List<LogQueue.LogBatch> batches = new CopyOnWriteArrayList<>();
 
         var queue = new LogQueue(maxSize, batches::add, LOGGER);
 
-        // Llenar con un ERROR y un WARNING
+        // Fill with an ERROR and a WARNING
         queue.enqueue(event(AuditEvent.Severity.ERROR, "error1"));
         queue.enqueue(event(AuditEvent.Severity.WARNING, "warn1"));
         assertEquals(2, queue.size());
 
-        // Intentar meter un INFO: debe descartar el INFO (no el ERROR ni el WARNING)
+        // Try to insert an INFO: must drop the INFO (not the ERROR or the WARNING)
         queue.enqueue(event(AuditEvent.Severity.INFO, "info1"));
         assertEquals(2, queue.size());
         assertEquals(1, queue.droppedCount());
 
-        // Intentar meter otro ERROR: debe descartar el WARNING (menos relevante que ERROR)
+        // Try to insert another ERROR: must drop the WARNING (less relevant than ERROR)
         queue.enqueue(event(AuditEvent.Severity.ERROR, "error2"));
         assertEquals(2, queue.size());
         assertEquals(2, queue.droppedCount());
     }
 
     @Test
-    @DisplayName("enqueue nunca bloquea")
+    @DisplayName("enqueue never blocks")
     void enqueueNeverBlocks() {
         int maxSize = 2;
         var queue = new LogQueue(maxSize, batch -> {
-            // Consumidor lento para forzar que la cola se llene
+            // Slow consumer to force queue to fill
             try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
         }, LOGGER);
 
-        // No arrancamos el scheduler para que la cola no se vacia
+        // We do not start the scheduler so the queue does not empty
 
         long start = System.nanoTime();
         for (int i = 0; i < 100; i++) {
@@ -100,15 +100,15 @@ class LogQueueTest {
         }
         long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
 
-        // 100 enqueues deben tomar menos de 1 segundo (sin bloqueo)
+        // 100 enqueues must take less than 1 second (no blocking)
         assertTrue(elapsed < 1000,
-                "enqueue no debe bloquear; tardo " + elapsed + "ms para 100 inserciones");
-        assertEquals(2, queue.size(), "La cola debe estar en su maximo");
-        assertTrue(queue.droppedCount() > 0, "Debe haber descartado");
+                "enqueue must not block; took " + elapsed + "ms for 100 insertions");
+        assertEquals(2, queue.size(), "Queue must be at its maximum");
+        assertTrue(queue.droppedCount() > 0, "Must have dropped");
     }
 
     @Test
-    @DisplayName("El flush agrupa los eventos y reporta descartados")
+    @DisplayName("Flush groups events and reports dropped count")
     void flushGroupsAndReportsDropped() throws Exception {
         int maxSize = 5;
         List<LogQueue.LogBatch> batches = new CopyOnWriteArrayList<>();
@@ -119,47 +119,47 @@ class LogQueueTest {
             latch.countDown();
         }, LOGGER);
 
-        // Meter 3 eventos y 2 que se descarten
+        // Insert 3 events and 2 that get dropped
         queue.enqueue(event(AuditEvent.Severity.INFO, "e1"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "e2"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "e3"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "e4"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "e5"));
-        // Cola llena, meter uno mas
+        // Queue full, insert one more
         queue.enqueue(event(AuditEvent.Severity.WARNING, "w1"));
 
-        // Flush con intervalo corto
+        // Flush with short interval
         queue.start(Duration.ofMillis(100));
 
-        assertTrue(latch.await(5, TimeUnit.SECONDS), "Debe haber hecho flush");
+        assertTrue(latch.await(5, TimeUnit.SECONDS), "Must have flushed");
         queue.shutdown();
 
-        assertFalse(batches.isEmpty(), "Debe haber al menos un batch");
+        assertFalse(batches.isEmpty(), "Must have at least one batch");
         LogQueue.LogBatch first = batches.getFirst();
-        assertTrue(first.events().size() <= maxSize, "No debe exceder el maximo");
-        // Reporta los descartados
+        assertTrue(first.events().size() <= maxSize, "Must not exceed the maximum");
+        // Reports dropped ones
         assertTrue(first.droppedSinceLastFlush() >= 1,
-                "Debe reportar al menos 1 evento descartado");
+                "Must report at least 1 dropped event");
     }
 
     @Test
-    @DisplayName("Si el sender falla, no bloquea ni crece sin limite")
+    @DisplayName("If the sender fails, it does not block nor grow without bound")
     void senderFailureDoesNotBlock() {
         int maxSize = 5;
         var queue = new LogQueue(maxSize, batch -> {
-            throw new RuntimeException("Discord esta caido");
+            throw new RuntimeException("Discord is down");
         }, LOGGER);
 
         queue.enqueue(event(AuditEvent.Severity.INFO, "e1"));
         queue.enqueue(event(AuditEvent.Severity.INFO, "e2"));
 
-        // Flush con intervalo muy corto, para que intente enviar
+        // Flush with very short interval, so that it attempts to send
         queue.start(Duration.ofMillis(50));
 
-        // Esperar un poco para que falle
+        // Wait a bit for it to fail
         try { Thread.sleep(300); } catch (InterruptedException ignored) {}
 
-        // Meter mas eventos: no debe bloquear
+        // Insert more events: must not block
         long start = System.nanoTime();
         for (int i = 0; i < 10; i++) {
             queue.enqueue(event(AuditEvent.Severity.INFO, "post-error-" + i));
@@ -169,11 +169,11 @@ class LogQueueTest {
         queue.shutdown();
 
         assertTrue(elapsed < 500,
-                "enqueue no debe bloquear aunque el sender falle; tardo " + elapsed + "ms");
+                "enqueue must not block even if sender fails; took " + elapsed + "ms");
     }
 
     @Test
-    @DisplayName("Tamano maximo cero o negativo lanza IllegalArgumentException")
+    @DisplayName("Maximum size zero or negative throws IllegalArgumentException")
     void invalidMaxSizeThrows() {
         assertThrows(IllegalArgumentException.class,
                 () -> new LogQueue(0, batch -> {}, LOGGER));
@@ -182,7 +182,7 @@ class LogQueueTest {
     }
 
     @Test
-    @DisplayName("Cola vacia no genera batches")
+    @DisplayName("Empty queue does not generate batches")
     void emptyQueueNoFlush() throws Exception {
         List<LogQueue.LogBatch> batches = new CopyOnWriteArrayList<>();
         var queue = new LogQueue(10, batches::add, LOGGER);
@@ -191,6 +191,6 @@ class LogQueueTest {
         Thread.sleep(200);
         queue.shutdown();
 
-        assertTrue(batches.isEmpty(), "No debe haber batches si la cola esta vacia");
+        assertTrue(batches.isEmpty(), "Must not have batches if queue is empty");
     }
 }

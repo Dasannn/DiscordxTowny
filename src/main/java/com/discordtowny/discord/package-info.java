@@ -1,8 +1,8 @@
 /**
- * Adaptador de Discord: cliente JDA, cola serializada de operaciones, comandos slash y canal de logs.
+ * Discord adapter: JDA client, serialized operation queue, slash commands, and log channel.
  *
- * <p><b>Regla de dependencias:</b> depende del dominio; el dominio nunca depende de el.
+ * <p><b>Dependency rule:</b> depends on the domain; the domain never depends on it.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.discord;

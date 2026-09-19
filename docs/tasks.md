@@ -1,376 +1,374 @@
-# DiscordTowny — Tareas
+# DiscordTowny — Tasks
 
-Unidad de trabajo del proyecto. Cada ficha es el encargo completo de un agente:
-una rama, un worktree, una zona de archivos.
+Project work unit. Each task card is the complete assignment for an agent:
+a branch, a worktree, a zone of files.
 
-Rige `docs/constitution.md`. Implementa `docs/spec.md` según `ARCHITECTURE.md`,
-en el orden de `docs/plan.md`.
+Governed by `docs/constitution.md`. Implements `docs/spec.md` according to `ARCHITECTURE.md`,
+in the order of `docs/plan.md`.
 
-Estado: **borrador v1** — pendiente de aprobación.
-
----
-
-## Reglas para todo agente
-
-Antes de escribir una línea, lee: `docs/constitution.md`, `docs/spec.md`,
-`ARCHITECTURE.md` y tu ficha.
-
-- Trabaja **solo** en los archivos de tu zona. Si necesitas tocar otra, para y
-  avisa al arquitecto.
-- No implementes nada que no esté en la spec. Si falta algo, avisa; no
-  improvises.
-- Respeta el modelo de hilos de la arquitectura. Es la fuente de la mitad de los
-  bugs de este tipo de plugin.
-- Deja pruebas de lo que escribes. La lógica sin prueba no está terminada.
-- No integres a `main`. No revises tu propio trabajo.
-- Cuando termines, declara la rama lista e indica qué quedó fuera y por qué.
-
-Estado de cada tarea: `pendiente`, `en curso`, `en revisión`, `corrigiendo`,
-`lista`, `integrada`.
+Status: **draft v1** — pending approval.
 
 ---
 
-## T0 — Esqueleto del proyecto
+## Rules for Every Agent
 
-- **Rama**: `feat/esqueleto` · **Fase** 0 · **Depende de**: nada
-- **Responsable**: arquitecto · **Estado**: integrada
-- **Zona**: raíz del proyecto, `build.gradle.kts`, recursos, CI
+Before writing a single line, read: `docs/constitution.md`, `docs/spec.md`,
+`ARCHITECTURE.md`, and your task card.
 
-**Construye**
+- Work **only** on the files in your zone. If you need to touch another, stop and
+  notify the architect.
+- Do not implement anything not in the spec. If something is missing, notify; do
+  not improvise.
+- Respect the architecture's threading model. It is the source of half the bugs
+  in this kind of plugin.
+- Leave tests for what you write. Untested logic is not finished.
+- Do not integrate into `main`. Do not review your own work.
+- When done, declare the branch ready and state what was left out and why.
 
-- Proyecto Gradle con Kotlin DSL, Java 25, plugin de shadow con relocalización
-  de JDA y HikariCP.
-- Clase principal que arranca y apaga limpio en Paper, con Towny como
-  dependencia dura.
-- `config.yml` y `messages.yml` de ejemplo, completos según la sección de
-  configuración de la spec.
-- Árbol de paquetes vacío de `ARCHITECTURE.md`, con la regla de dependencias
-  escrita en un `package-info` o equivalente.
-- CI que compila y corre tests en cada push.
-- `.gitignore`, licencia.
-
-**Aceptación**: el jar carga en un Paper limpio con Towny, arranca y se apaga
-sin errores ni advertencias.
-
-**No toques**: nada de lógica funcional.
+Task status values: `pending`, `in progress`, `in review`, `fixing`,
+`ready`, `integrated`.
 
 ---
 
-## T1 — Contratos
+## T0 — Project Skeleton
 
-- **Rama**: `feat/contratos` · **Fase** 1 · **Depende de**: T0
-- **Responsable**: arquitecto · **Estado**: integrada
-- **Zona**: interfaces en cada paquete, sin implementaciones
+- **Branch**: `feat/esqueleto` · **Phase** 0 · **Depends on**: nothing
+- **Responsible**: architect · **Status**: integrated
+- **Zone**: project root, `build.gradle.kts`, resources, CI
 
-**Construye** las firmas que separan las zonas:
+**Builds**
 
-- Almacenamiento: operaciones sobre vínculos, códigos, espacios y auditoría.
-- Discord: encolar una operación sobre el guild, consultar su resultado,
-  publicar en el canal de logs.
-- Towny: lectura de town, residentes, alcalde, estado de ruina.
-- Configuración: objetos tipados de cada bloque de `config.yml`.
-- Dominio: los tipos que cruzan fronteras, inmutables.
+- Gradle project with Kotlin DSL, Java 25, shadow plugin with relocation
+  of JDA and HikariCP.
+- Main class that starts up and shuts down cleanly on Paper, with Towny as a
+  hard dependency.
+- Sample `config.yml` and `messages.yml`, complete according to the
+  configuration section of the spec.
+- Empty package tree from `ARCHITECTURE.md`, with the dependency rule
+  written in a `package-info` or equivalent.
+- CI that compiles and runs tests on each push.
+- `.gitignore`, license.
 
-**Aceptación**: las firmas compilan, están documentadas y revisadas. Ninguna
-interfaz de dominio menciona tipos de JDA, Bukkit ni JDBC.
+**Acceptance**: the jar loads on a clean Paper server with Towny, starts up, and shuts
+down without errors or warnings.
 
-**Importante**: cambiar un contrato después obliga a coordinar varias ramas.
-Piénsalo bien una vez.
-
----
-
-## T2 — Almacenamiento
-
-- **Rama**: `feat/storage` · **Fase** 2 · **Depende de**: T1
-- **Paralela a**: T3, T4 · **Estado**: integrada
-- **Zona**: `storage/`
-
-**Construye**
-
-- Conexión con HikariCP, MariaDB/MySQL y SQLite con un único camino de código.
-- Migraciones numeradas que corren al arrancar, con tabla de versión de esquema.
-- Tablas `links`, `link_codes`, `spaces`, `audit_log` según la arquitectura, con
-  prefijo configurable.
-- Implementación de los contratos de almacenamiento, toda fuera del hilo
-  principal.
-
-**Aceptación**: tests con SQLite en memoria que cubren cada operación y la
-cadena completa de migraciones. Las mismas pruebas pasan contra MariaDB.
-
-**No toques**: dominio, Discord, Bukkit.
+**Do not touch**: any functional logic.
 
 ---
 
-## T3 — Cliente de Discord y colas
+## T1 — Contracts
 
-- **Rama**: `feat/discord-core` · **Fase** 2 · **Depende de**: T1
-- **Paralela a**: T2, T4 · **Estado**: integrada
-- **Zona**: `discord/`, sin los comandos slash
+- **Branch**: `feat/contratos` · **Phase** 1 · **Depends on**: T0
+- **Responsible**: architect · **Status**: integrated
+- **Zone**: interfaces in each package, without implementations
 
-**Construye**
+**Builds** the signatures separating the zones:
 
-- Conexión JDA con los intents mínimos necesarios, arranque y apagado limpios.
-- Cola serializada de mutaciones del guild: un consumidor, pasos idempotentes,
-  reintentos con espera creciente, distinción entre fallo transitorio y
-  permanente.
-- Comprobación al arrancar de que el rol del bot está por encima de los roles
-  que gestiona y de que tiene los permisos necesarios.
-- Cola de logs: agrupa mensajes, envía por intervalo, tamaño máximo, descarta
-  con recuento cuando se llena, nunca bloquea al productor.
-- Modo degradado: si no hay conexión, el resto del plugin puede preguntarlo y
-  seguir.
+- Storage: operations on links, codes, spaces, and audit logging.
+- Discord: enqueue an operation on the guild, query its result,
+  publish to the log channel.
+- Towny: reading town, residents, mayor, ruined status.
+- Configuration: typed objects for each block in `config.yml`.
+- Domain: immutable types crossing boundaries.
 
-**Aceptación**: contra un guild de pruebas, crear y borrar canales y roles
-funciona; interrumpir una operación a medias y reintentarla no duplica nada; el
-canal de logs aguanta una ráfaga sin crecer sin límite.
+**Acceptance**: the signatures compile, are documented, and reviewed. No
+domain interface mentions JDA, Bukkit, or JDBC types.
 
-**No toques**: dominio, almacenamiento, Bukkit.
+**Important**: changing a contract later forces coordinating multiple branches.
+Think it through once, properly.
 
 ---
 
-## T4 — Configuración y fachada de Towny
+## T2 — Storage
 
-- **Rama**: `feat/config-towny` · **Fase** 2 · **Depende de**: T1
-- **Paralela a**: T2, T3 · **Estado**: integrada
-- **Zona**: `config/`, `towny/`
+- **Branch**: `feat/storage` · **Phase** 2 · **Depends on**: T1
+- **Parallel to**: T3, T4 · **Status**: integrated
+- **Zone**: `storage/`
 
-**Construye**
+**Builds**
 
-- Carga de `config.yml` y `messages.yml` a objetos tipados, una sola vez, con
-  recarga.
-- Validación al arrancar: IDs con formato válido, intervalos positivos,
-  plantillas con marcadores conocidos. Configuración inválida se rechaza
-  señalando qué está mal, y el plugin arranca degradado.
-- El token y las credenciales nunca aparecen en logs ni en volcados.
-- Fachada de lectura sobre Towny: town por UUID y por nombre, residentes,
-  alcalde, estado de ruina, nación. Solo lectura, solo hilo principal.
+- Connection pooling with HikariCP, MariaDB/MySQL, and SQLite with a single code path.
+- Numbered migrations that run on startup, with a schema version table.
+- Tables `links`, `link_codes`, `spaces`, `audit_log` per the architecture, with
+  a configurable prefix.
+- Implementation of storage contracts, entirely off the main thread.
 
-**Aceptación**: tests de validación con configuraciones válidas e inválidas.
-La fachada devuelve datos correctos contra un servidor local con Towny.
+**Acceptance**: tests with in-memory SQLite covering every operation and the
+full migration chain. The same tests pass against MariaDB.
 
-**No toques**: dominio, Discord, almacenamiento.
+**Do not touch**: domain, Discord, Bukkit.
 
 ---
 
-## T5 — Vinculación de cuentas
+## T3 — Discord Client and Queues
 
-- **Rama**: `feat/vinculacion` · **Fase** 3 · **Depende de**: T2, T3, T4
-- **Estado**: integrada · **Zona**: `link/`, más sus comandos en `minecraft/` y
+- **Branch**: `feat/discord-core` · **Phase** 2 · **Depends on**: T1
+- **Parallel to**: T2, T4 · **Status**: integrated
+- **Zone**: `discord/`, without slash commands
+
+**Builds**
+
+- JDA connection with minimal required intents, clean startup and shutdown.
+- Serialized guild mutation queue: single consumer, idempotent steps,
+  retries with increasing delay, distinction between transient and
+  permanent failure.
+- Startup check ensuring the bot's role is above the roles it manages
+  and that it has the required permissions.
+- Log queue: batches messages, flushes on interval, maximum size, discards
+  with drop count when full, never blocks the producer.
+- Degraded mode: if there is no connection, the rest of the plugin can query it
+  and continue.
+
+**Acceptance**: against a test guild, creating and deleting channels and roles
+works; interrupting an operation midway and retrying duplicates nothing; the
+log channel withstands a burst without growing unbounded.
+
+**Do not touch**: domain, storage, Bukkit.
+
+---
+
+## T4 — Configuration and Towny Facade
+
+- **Branch**: `feat/config-towny` · **Phase** 2 · **Depends on**: T1
+- **Parallel to**: T2, T3 · **Status**: integrated
+- **Zone**: `config/`, `towny/`
+
+**Builds**
+
+- Loading `config.yml` and `messages.yml` into typed objects, once, with
+  reload support.
+- Startup validation: IDs with valid format, positive intervals, templates
+  with known placeholders. Invalid configuration is rejected pointing out
+  what is wrong, and the plugin starts degraded.
+- Token and credentials never appear in logs or dumps.
+- Read facade over Towny: town by UUID and by name, residents,
+  mayor, ruined status, nation. Read-only, main thread only.
+
+**Acceptance**: validation tests with valid and invalid configurations.
+The facade returns correct data against a local server with Towny.
+
+**Do not touch**: domain, Discord, storage.
+
+---
+
+## T5 — Account Linking
+
+- **Branch**: `feat/vinculacion` · **Phase** 3 · **Depends on**: T2, T3, T4
+- **Status**: integrated · **Zone**: `link/`, plus its commands in `minecraft/` and
   `discord/`
 
-**Construye**
+**Builds**
 
-- Generación de códigos de 6 caracteres sin caracteres ambiguos, con generador
-  criptográficamente seguro, caducidad configurable y un código vivo por
-  jugador.
-- `/dt link`, `/dt unlink`, `/link`, `/unlink`, `/dt admin unlink <jugador>`.
-- Un UUID a un Discord ID y viceversa; intento sobre cuenta ya vinculada se
-  rechaza explicando cómo desvincular.
-- Límite de intentos fallidos por usuario de Discord.
-- Al vincular, se dispara la sincronización de esa cuenta.
-- Desvincular retira todos los roles otorgados por el plugin.
+- Generation of 6-character codes without ambiguous characters, using a
+  cryptographically secure generator, configurable expiration, and one active
+  code per player.
+- `/dt link`, `/dt unlink`, `/link`, `/unlink`, `/dt admin unlink <player>`.
+- One UUID to one Discord ID and vice versa; attempt on an already-linked account
+  is rejected explaining how to unlink.
+- Failed attempt budget per Discord user.
+- Upon linking, synchronization is triggered for that account.
+- Unlinking removes all roles granted by the plugin.
 
-**Aceptación**: criterio 1 de la spec. Un vínculo sobrevive a un reinicio. Un
-código caducado o ya usado se rechaza.
+**Acceptance**: criterion 1 of the spec. A link survives a restart. An
+expired or already-used code is rejected.
 
-**No toques**: `space/`, `sync/`.
-
----
-
-## T6 — Ciclo de vida del espacio
-
-- **Rama**: `feat/espacios` · **Fase** 4 · **Depende de**: T5
-- **Secuencial con**: T7 · **Estado**: pendiente · **Zona**: `space/`
-
-**Construye**
-
-- `/dt create` con todas sus validaciones: es alcalde, está vinculado, no hay
-  espacio ya, mínimo de residentes, `max_towns`, cooldown, bot disponible.
-- Tarea de creación idempotente: categoría contenedora si falta, rol, canal de
-  texto, canal de voz, permisos, asignación inicial de roles. Cada ID se
-  persiste antes de seguir.
-- Permisos exactos de la spec: `@everyone` sin ver, rol de town con acceso.
-- Renombrado de town: renombra canales y rol.
-- Archivado: canal a solo lectura, movido a la categoría de archivo, rol
-  eliminado. Nada se borra solo.
-- Restauración si la town revive estando archivada.
-- `/dt delete` con confirmación.
-
-**Aceptación**: criterios 2, 3, 10. Cortar el servidor a mitad de una creación y
-reconciliar deja el espacio completo, sin duplicados.
-
-**No toques**: `sync/`, comandos ajenos a los de esta ficha.
+**Do not touch**: `space/`, `sync/`.
 
 ---
 
-## T7 — Sincronización y reconciliación
+## T6 — Space Lifecycle
 
-- **Rama**: `feat/sincronizacion` · **Fase** 4 · **Depende de**: T6
-- **Estado**: pendiente · **Zona**: `sync/`, listeners en `minecraft/`
+- **Branch**: `feat/espacios` · **Phase** 4 · **Depends on**: T5
+- **Sequential with**: T7 · **Status**: pending · **Zone**: `space/`
 
-**Construye**
+**Builds**
 
-- Listeners de Towny: entrada y salida de residentes, expulsión, cambio de
-  alcalde, renombrado, eliminación y ruina. Cada uno lee y delega; nada pesado
-  en el hilo principal.
-- Cálculo de «roles que le corresponden a este jugador» como conjunto, y
-  aplicación de la diferencia. Solo se tocan roles gestionados por el plugin.
-- Sincronización al entrar al servidor y al vincular.
-- Job periódico de reconciliación: canales desaparecidos, roles borrados,
-  espacios registrados sin canales, miembros con roles que no les tocan,
-  espacios `INCONSISTENTE`. Modo reparar o solo informar. Por lotes, con pausas.
-- `/dt sync` y `/dt admin sync [town]`.
+- `/dt create` with all its validations: is mayor, is linked, no existing
+  space, minimum residents, `max_towns`, cooldown, bot available.
+- Idempotent creation task: parent category if missing, role, text channel,
+  voice channel, permissions, initial role assignment. Each ID is
+  persisted before proceeding.
+- Exact permissions from the spec: `@everyone` without view, town role with access.
+- Town rename: renames channels and role.
+- Archiving: channel set to read-only, moved to archive category, role
+  deleted. Nothing deletes itself.
+- Restoration if the town is revived while archived.
+- `/dt delete` with confirmation.
 
-**Aceptación**: criterios 4, 5, 6, 8. Un rol dado a mano se retira en la
-siguiente pasada. Un canal borrado a mano se detecta y se repara.
+**Acceptance**: criteria 2, 3, 10. Cutting the server off midway through creation and
+reconciling leaves the space complete, without duplicates.
 
-**No toques**: `space/` salvo consumirlo.
+**Do not touch**: `sync/`, commands outside this task card.
 
 ---
 
-## T8 — Comandos del juego
+## T7 — Synchronization and Reconciliation
 
-- **Rama**: `feat/comandos-juego` · **Fase** 5 · **Depende de**: T7
-- **Paralela a**: T9 · **Estado**: pendiente · **Zona**: `minecraft/`
+- **Branch**: `feat/sincronizacion` · **Phase** 4 · **Depends on**: T6
+- **Status**: pending · **Zone**: `sync/`, listeners in `minecraft/`
 
-**Construye**
+**Builds**
 
-- `/dt help`, filtrado por lo que puede usar quien lo ejecuta.
+- Towny listeners: resident join and leave, kick, mayor change, rename,
+  deletion, and ruin. Each reads and delegates; nothing heavy on the
+  main thread.
+- Calculation of "roles applicable to this player" as a set, and
+  applying the difference. Only roles managed by the plugin are touched.
+- Synchronization upon joining the server and upon linking.
+- Periodic reconciliation job: missing channels, deleted roles,
+  registered spaces without channels, members with roles they shouldn't have,
+  `INCONSISTENTE` spaces. Repair mode or report-only mode. Batched, with pauses.
+- `/dt sync` and `/dt admin sync [town]`.
+
+**Acceptance**: criteria 4, 5, 6, 8. A manually granted role is removed on the
+next pass. A manually deleted channel is detected and repaired.
+
+**Do not touch**: `space/` except to consume it.
+
+---
+
+## T8 — In-Game Commands
+
+- **Branch**: `feat/comandos-juego` · **Phase** 5 · **Depends on**: T7
+- **Parallel to**: T9 · **Status**: pending · **Zone**: `minecraft/`
+
+**Builds**
+
+- `/dt help`, filtered by what the executor has permission to use.
 - `/dt status`.
-- Bloque admin: `list`, `info <town>`, `purge` con confirmación, `reload`.
-- Árbol de permisos completo y autocompletado de argumentos.
-- Respuesta inmediata en operaciones asíncronas, con confirmación posterior.
+- Admin block: `list`, `info <town>`, `purge` with confirmation, `reload`.
+- Full permission tree and argument autocompletion.
+- Immediate response on asynchronous operations, with subsequent confirmation.
 
-**Aceptación**: cada comando responde correctamente con y sin permisos, con y
-sin Discord disponible, dentro y fuera de una town.
+**Acceptance**: each command responds correctly with and without permissions, with and
+without Discord available, inside and outside a town.
 
-**No toques**: dominio. Si necesitas algo que no expone, avisa.
+**Do not touch**: domain. If you need something it does not expose, notify.
 
 ---
 
-## T9 — Comandos de Discord
+## T9 — Discord Commands
 
-- **Rama**: `feat/comandos-discord` · **Fase** 5 · **Depende de**: T7
-- **Paralela a**: T8 · **Estado**: pendiente · **Zona**: comandos slash en
+- **Branch**: `feat/comandos-discord` · **Phase** 5 · **Depends on**: T7
+- **Parallel to**: T8 · **Status**: pending · **Zone**: slash commands in
   `discord/`
 
-**Construye**
+**Builds**
 
 - `/town`, `/res`, `/residents`, `/townlist`, `/mytown`, `/help`.
-- Embeds ricos, paginación donde hace falta, datos leídos en vivo de Towny.
-- Activación, cooldown y visibilidad efímera o pública configurables por
-  comando.
-- Errores claros ante town o jugador inexistente, y ante autor no vinculado en
-  los comandos que lo requieren.
+- Rich embeds, pagination where needed, live data read from Towny.
+- Per-command configurable activation, cooldown, and ephemeral or public visibility.
+- Clear errors for non-existent town or player, and for unlinked author on
+  commands that require it.
 
-**Aceptación**: cada comando responde dentro del límite de tiempo de Discord,
-incluso con muchas towns. Ningún embed vacío ante una entidad inexistente.
+**Acceptance**: each command responds within Discord's time limit,
+even with many towns. No empty embed for a non-existent entity.
 
-**No toques**: dominio, la cola de mutaciones.
+**Do not touch**: domain, the mutation queue.
 
 ---
 
-## T10 — Actualizador
+## T10 — Updater
 
-- **Rama**: `feat/actualizador` · **Fase** 6 · **Depende de**: T0
-- **Paralela a**: casi todo · **Estado**: pendiente · **Zona**: `update/`
+- **Branch**: `feat/actualizador` · **Phase** 6 · **Depends on**: T0
+- **Parallel to**: almost everything · **Status**: pending · **Zone**: `update/`
 
-**Construye**
+**Builds**
 
-- Comprobación periódica contra los releases de GitHub, con el cliente HTTP del
-  JDK. Sin dependencias nuevas.
-- URL del repositorio **constante en el código**, no configurable.
-- Comparación semántica de versiones. Caché de la respuesta, respeto del límite
-  de peticiones, fuera del hilo principal, con tiempo máximo de espera.
-- Descarga automática al detectar versión nueva, desactivable por
-  configuración, y `/dt admin update` para forzarla.
-- Descarga a temporal, SHA-256 verificado contra el checksum del release, y solo
-  entonces mover a la carpeta `update` del servidor. Tope de tamaño.
-- Avisos: consola al arrancar, admins al entrar, canal de logs una vez por
-  versión. Y de nuevo al quedar descargada.
+- Periodic check against GitHub releases using the JDK HTTP client.
+  No new dependencies.
+- Repository URL **constant in code**, not configurable.
+- Semantic version comparison. Response caching, respects rate limits,
+  off the main thread, with maximum timeout.
+- Automatic download upon detecting a new version, toggleable in
+  configuration, and `/dt admin update` to force it.
+- Download to temp file, SHA-256 verified against release checksum, and only
+  then moved to the server's `update` folder. Size cap.
+- Notifications: console on startup, admins on join, log channel once per
+  version. And again once downloaded.
 - `/dt admin update status`.
 
-**Aceptación**: un checksum que no cuadra descarta la descarga sin dejar restos.
-Sin red, el plugin funciona igual y anota el fallo una sola vez. El jar en uso
-nunca se toca.
+**Acceptance**: a mismatched checksum discards the download without leaving leftovers.
+Without network, the plugin functions normally and logs the failure only once. The active jar
+is never touched.
 
-**No toques**: absolutamente nada fuera de `update/` y sus comandos.
-
----
-
-## T11 — Documentación pública
-
-- **Rama**: `docs/publica` · **Fase** 6 · **Depende de**: spec aprobada
-- **Paralela a**: casi todo · **Estado**: integrada · **Zona**: `README.md`,
-  `docs/guia-de-uso.md`
-
-**Construye**
-
-- `README.md`: qué es, qué resuelve, requisitos, instalación, configuración
-  mínima, lista de comandos, licencia.
-- `docs/guia-de-uso.md`: recorrido en lenguaje de jugador — vincular la cuenta,
-  crear el espacio de la town, qué ve cada quién, qué pasa al entrar, salir o
-  desaparecer la town.
-- Sin detalles de código ni de arquitectura.
-- Instrucciones de creación del bot y permisos que necesita en Discord.
-
-**Aceptación**: alguien que nunca vio el plugin lo instala y lo usa siguiendo
-solo estos dos documentos.
-
-**No toques**: código.
+**Do not touch**: absolutely anything outside `update/` and its commands.
 
 ---
 
-## T12 — Endurecimiento
+## T11 — Public Documentation
 
-- **Rama**: `chore/endurecimiento` · **Fase** 7 · **Depende de**: T8, T9, T10
-- **Responsable**: arquitecto · **Estado**: pendiente
+- **Branch**: `docs/publica` · **Phase** 6 · **Depends on**: approved spec
+- **Parallel to**: almost everything · **Status**: integrated · **Zone**: `README.md`,
+  `docs/user-guide.md`
 
-**Hace**
+**Builds**
 
-- Recorrer los once criterios de aceptación de la spec sobre un servidor real.
-- Provocar fallos: bot caído, base de datos caída, canal borrado a mano, rol
-  asignado a mano, corte a mitad de una creación, ráfaga de operaciones.
-- Medir que el servidor no pierde ticks con el canal de logs saturado.
-- Auditar que no se filtran secretos en ningún log ni mensaje de error.
+- `README.md`: what it is, what it solves, requirements, installation, minimal
+  configuration, command list, license.
+- `docs/user-guide.md`: walkthrough in player language — linking the account,
+  creating the town space, what each person sees, what happens when joining, leaving, or
+  when the town disappears.
+- No code or architecture details.
+- Bot creation instructions and permissions required in Discord.
 
-**Aceptación**: los once criterios pasan y ningún fallo provocado deja permisos
-abiertos ni estado irrecuperable.
+**Acceptance**: someone who has never seen the plugin installs and uses it following
+only these two documents.
+
+**Do not touch**: code.
+
+---
+
+## T12 — Hardening
+
+- **Branch**: `chore/endurecimiento` · **Phase** 7 · **Depends on**: T8, T9, T10
+- **Responsible**: architect · **Status**: pending
+
+**Does**
+
+- Run through the eleven acceptance criteria from the spec on a real server.
+- Cause failures: bot down, database down, channel manually deleted, role
+  manually assigned, cutoff midway through creation, burst of operations.
+- Measure that the server does not drop ticks with the log channel saturated.
+- Audit that no secrets are leaked in any log or error message.
+
+**Acceptance**: all eleven criteria pass and no induced failure leaves open
+permissions or unrecoverable state.
 
 ---
 
 ## T13 — Release
 
-- **Rama**: `chore/release` · **Fase** 8 · **Depende de**: T12
-- **Responsable**: arquitecto · **Estado**: pendiente
+- **Branch**: `chore/release` · **Phase** 8 · **Depends on**: T12
+- **Responsible**: architect · **Status**: pending
 
-**Hace**
+**Does**
 
-- Versionado semántico y changelog.
-- Pipeline que publica el jar **y su checksum SHA-256** en el release de GitHub.
-  Sin checksum publicado, T10 no funciona.
-- Guía de contribución y plantillas de issue.
+- Semantic versioning and changelog.
+- Pipeline that publishes the jar **and its SHA-256 checksum** to the GitHub release.
+  Without a published checksum, T10 will not work.
+- Contributing guide and issue templates.
 
-**Aceptación**: un release publicado desde el pipeline es detectado y descargado
-correctamente por el actualizador de una instancia con la versión anterior.
+**Acceptance**: a release published from the pipeline is detected and downloaded
+correctly by the updater on an instance running the previous version.
 
 ---
 
-## Mapa rápido
+## Quick Map
 
-| Tarea | Fase | Depende de | Paralela a | Zona |
+| Task | Phase | Depends on | Parallel to | Zone |
 |---|---|---|---|---|
-| T0 Esqueleto | 0 | — | — | raíz |
-| T1 Contratos | 1 | T0 | — | interfaces |
-| T2 Almacenamiento | 2 | T1 | T3, T4 | `storage/` |
-| T3 Discord y colas | 2 | T1 | T2, T4 | `discord/` |
-| T4 Configuración y Towny | 2 | T1 | T2, T3 | `config/`, `towny/` |
-| T5 Vinculación | 3 | T2, T3, T4 | T10, T11 | `link/` |
-| T6 Espacios | 4 | T5 | T10, T11 | `space/` |
-| T7 Sincronización | 4 | T6 | T10, T11 | `sync/` |
-| T8 Comandos juego | 5 | T7 | T9 | `minecraft/` |
-| T9 Comandos Discord | 5 | T7 | T8 | `discord/` slash |
-| T10 Actualizador | 6 | T0 | casi todo | `update/` |
-| T11 Documentación | 6 | spec | casi todo | `README`, guía |
-| T12 Endurecimiento | 7 | T8, T9, T10 | — | todo |
+| T0 Skeleton | 0 | — | — | root |
+| T1 Contracts | 1 | T0 | — | interfaces |
+| T2 Storage | 2 | T1 | T3, T4 | `storage/` |
+| T3 Discord and queues | 2 | T1 | T2, T4 | `discord/` |
+| T4 Configuration and Towny | 2 | T1 | T2, T3 | `config/`, `towny/` |
+| T5 Linking | 3 | T2, T3, T4 | T10, T11 | `link/` |
+| T6 Spaces | 4 | T5 | T10, T11 | `space/` |
+| T7 Synchronization | 4 | T6 | T10, T11 | `sync/` |
+| T8 In-game commands | 5 | T7 | T9 | `minecraft/` |
+| T9 Discord commands | 5 | T7 | T8 | `discord/` slash |
+| T10 Updater | 6 | T0 | almost everything | `update/` |
+| T11 Documentation | 6 | spec | almost everything | `README`, guide |
+| T12 Hardening | 7 | T8, T9, T10 | — | all |
 | T13 Release | 8 | T12 | — | pipeline |

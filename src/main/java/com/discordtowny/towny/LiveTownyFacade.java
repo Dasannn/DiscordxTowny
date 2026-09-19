@@ -18,119 +18,119 @@ import java.util.function.Supplier;
 import java.util.function.ToDoubleFunction;
 import org.bukkit.Bukkit;
 
-/** Lecturas en vivo; ningun objeto mutable de Towny cruza esta frontera. */
+/** Live reads; no mutable Towny object crosses this boundary. */
 public final class LiveTownyFacade implements TownyFacade {
     private final Supplier<?> api;
-    private final BooleanSupplier disponible;
-    private final BooleanSupplier hiloPrincipal;
-    private final Consumer<String> aviso;
-    private final ToDoubleFunction<Town> saldoTown;
-    private final ToDoubleFunction<Resident> saldoResidente;
-    private boolean avisado;
+    private final BooleanSupplier available;
+    private final BooleanSupplier mainThread;
+    private final Consumer<String> warning;
+    private final ToDoubleFunction<Town> townBalance;
+    private final ToDoubleFunction<Resident> residentBalance;
+    private boolean warned;
 
-    public LiveTownyFacade(Consumer<String> aviso) {
+    public LiveTownyFacade(Consumer<String> warning) {
         this(() -> TownyAPI.getInstance(), () -> {
             var plugin = Bukkit.getPluginManager().getPlugin("Towny");
             return plugin instanceof Towny towny && towny.isEnabled() && !towny.isError();
-        }, Bukkit::isPrimaryThread, aviso);
+        }, Bukkit::isPrimaryThread, warning);
     }
 
-    LiveTownyFacade(Supplier<?> api, BooleanSupplier disponible,
-                    BooleanSupplier hiloPrincipal, Consumer<String> aviso) {
-        this(api, disponible, hiloPrincipal, aviso,
+    LiveTownyFacade(Supplier<?> api, BooleanSupplier available,
+                    BooleanSupplier mainThread, Consumer<String> warning) {
+        this(api, available, mainThread, warning,
                 town -> town.getAccount().getHoldingBalance(),
-                residente -> residente.getAccount().getHoldingBalance());
+                resident -> resident.getAccount().getHoldingBalance());
     }
 
-    LiveTownyFacade(Supplier<?> api, BooleanSupplier disponible,
-                    BooleanSupplier hiloPrincipal, Consumer<String> aviso,
-                    ToDoubleFunction<Town> saldoTown, ToDoubleFunction<Resident> saldoResidente) {
+    LiveTownyFacade(Supplier<?> api, BooleanSupplier available,
+                    BooleanSupplier mainThread, Consumer<String> warning,
+                    ToDoubleFunction<Town> townBalance, ToDoubleFunction<Resident> residentBalance) {
         this.api = api;
-        this.disponible = disponible;
-        this.hiloPrincipal = hiloPrincipal;
-        this.aviso = aviso;
-        this.saldoTown = saldoTown;
-        this.saldoResidente = saldoResidente;
+        this.available = available;
+        this.mainThread = mainThread;
+        this.warning = warning;
+        this.townBalance = townBalance;
+        this.residentBalance = residentBalance;
     }
 
-    private <T> T leer(Function<TownyAPI, T> lectura, T vacio) {
-        // Rechazar antes de consultar incluso la disponibilidad de Towny.
-        if (!hiloPrincipal.getAsBoolean()) {
-            throw new IllegalStateException("TownyFacade: se requiere el hilo principal del servidor");
+    private <T> T read(Function<TownyAPI, T> readOperation, T empty) {
+        // Reject before even checking Towny availability.
+        if (!mainThread.getAsBoolean()) {
+            throw new IllegalStateException("TownyFacade: server main thread is required");
         }
         try {
-            if (!disponible.getAsBoolean()) return vacio;
-            TownyAPI actual = (TownyAPI) api.get();
-            if (actual == null) return vacio;
-            T resultado = lectura.apply(actual);
-            avisado = false;
-            return resultado;
-        } catch (RuntimeException | LinkageError fallo) {
-            if (!avisado) {
-                avisado = true;
-                aviso.accept("Towny: no se pudo completar la lectura; se devuelve un resultado vacio");
+            if (!available.getAsBoolean()) return empty;
+            TownyAPI current = (TownyAPI) api.get();
+            if (current == null) return empty;
+            T result = readOperation.apply(current);
+            warned = false;
+            return result;
+        } catch (RuntimeException | LinkageError failure) {
+            if (!warned) {
+                warned = true;
+                warning.accept("Towny: read could not be completed; returning empty result");
             }
-            return vacio;
+            return empty;
         }
     }
 
     @Override
     public boolean isAvailable() {
-        return leer(actual -> actual.getDataSource() != null, false);
+        return read(current -> current.getDataSource() != null, false);
     }
 
     @Override
     public Optional<TownSnapshot> town(UUID townUuid) {
-        return leer(actual -> Optional.ofNullable(actual.getTown(townUuid)).map(this::townSnapshot), Optional.empty());
+        return read(current -> Optional.ofNullable(current.getTown(townUuid)).map(this::townSnapshot), Optional.empty());
     }
 
     @Override
     public Optional<TownSnapshot> townByName(String name) {
-        return leer(actual -> Optional.ofNullable(actual.getTown(name)).map(this::townSnapshot), Optional.empty());
+        return read(current -> Optional.ofNullable(current.getTown(name)).map(this::townSnapshot), Optional.empty());
     }
 
     @Override
     public Optional<TownSnapshot> townOf(UUID playerUuid) {
-        return leer(actual -> Optional.ofNullable(actual.getResident(playerUuid))
+        return read(current -> Optional.ofNullable(current.getResident(playerUuid))
                 .map(Resident::getTownOrNull).map(this::townSnapshot), Optional.empty());
     }
 
     @Override
     public Optional<ResidentSnapshot> resident(UUID playerUuid) {
-        return leer(actual -> Optional.ofNullable(actual.getResident(playerUuid)).map(this::residentSnapshot), Optional.empty());
+        return read(current -> Optional.ofNullable(current.getResident(playerUuid)).map(this::residentSnapshot), Optional.empty());
     }
 
     @Override
     public Optional<ResidentSnapshot> residentByName(String name) {
-        return leer(actual -> Optional.ofNullable(actual.getResident(name)).map(this::residentSnapshot), Optional.empty());
+        return read(current -> Optional.ofNullable(current.getResident(name)).map(this::residentSnapshot), Optional.empty());
     }
 
     @Override
     public List<TownSnapshot> allTowns() {
-        return leer(actual -> actual.getTowns().stream().map(this::townSnapshot).filter(Objects::nonNull).toList(), List.of());
+        return read(current -> current.getTowns().stream().map(this::townSnapshot).filter(Objects::nonNull).toList(), List.of());
     }
 
     @Override
     public int townCount() {
-        return leer(actual -> actual.getTowns().size(), 0);
+        return read(current -> current.getTowns().size(), 0);
     }
 
     private TownSnapshot townSnapshot(Town town) {
-        Resident alcalde = town.getMayor();
-        // Sin alcalde no hay snapshot valido; las otras towns siguen disponibles.
-        if (alcalde == null) return null;
-        return new TownSnapshot(town.getUUID(), town.getName(), alcalde.getUUID(),
+        Resident mayor = town.getMayor();
+        // Without a mayor there is no valid snapshot; other towns remain available.
+        if (mayor == null) return null;
+        return new TownSnapshot(town.getUUID(), town.getName(), mayor.getUUID(),
                 town.getResidents().stream().map(Resident::getUUID).toList(), town.isRuined(),
-                Optional.ofNullable(town.getNationOrNull()).map(nacion -> nacion.getName()),
-                town.getNumTownBlocks(), TownyEconomyHandler.isActive() ? saldoTown.applyAsDouble(town) : 0,
+                Optional.ofNullable(town.getNationOrNull()).map(nation -> nation.getName()),
+                town.getNumTownBlocks(), TownyEconomyHandler.isActive() ? townBalance.applyAsDouble(town) : 0,
                 town.getRegistered());
     }
 
-    private ResidentSnapshot residentSnapshot(Resident residente) {
-        Town town = residente.getTownOrNull();
-        return new ResidentSnapshot(residente.getUUID(), residente.getName(),
+    private ResidentSnapshot residentSnapshot(Resident resident) {
+        Town town = resident.getTownOrNull();
+        return new ResidentSnapshot(resident.getUUID(), resident.getName(),
                 Optional.ofNullable(town).map(Town::getName), Optional.ofNullable(town).map(Town::getUUID),
-                residente.isMayor(), residente.isOnline(), residente.getLastOnline(),
-                TownyEconomyHandler.isActive() ? saldoResidente.applyAsDouble(residente) : 0);
+                resident.isMayor(), resident.isOnline(), resident.getLastOnline(),
+                TownyEconomyHandler.isActive() ? residentBalance.applyAsDouble(resident) : 0);
     }
 }

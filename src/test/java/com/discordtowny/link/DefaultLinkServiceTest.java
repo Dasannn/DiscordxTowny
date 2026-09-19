@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Pruebas obligatorias de {@link DefaultLinkService} contra SQLite real.
+ * Mandatory tests for {@link DefaultLinkService} against real SQLite.
  */
 class DefaultLinkServiceTest {
 
@@ -83,7 +83,7 @@ class DefaultLinkServiceTest {
 
         clock = new MutableClock(Instant.parse("2026-09-18T12:00:00Z"));
 
-        // Caducidad 10m, maximo 3 intentos fallidos, bloqueo de 15m
+        // Expiry 10m, maximum 3 failed attempts, 15m lockout
         PluginConfig.Linking linkingConfig = new PluginConfig.Linking(
                 Duration.ofMinutes(10),
                 3,
@@ -135,25 +135,25 @@ class DefaultLinkServiceTest {
         }
     }
 
-    // --- 1. Ciclo completo con reapertura y verificacion de auditoria sin secretos ---
+    // --- 1. Full cycle with reopen and audit verification without secrets ---
 
     @Test
-    void cicloCompletoGenerarCanjearYPersistir() {
+    void fullCycleGenerateRedeemAndPersist() {
         UUID uuid = UUID.randomUUID();
         String discordId = "discord_user_1";
 
-        // Generar
+        // Generate
         Optional<String> optCode = service.generateCode(uuid).join();
-        assertTrue(optCode.isPresent(), "Debe generar un codigo");
+        assertTrue(optCode.isPresent(), "Must generate a code");
         String code = optCode.get();
         assertEquals(6, code.length());
         assertFalse(CodeGenerator.containsAmbiguousCharacters(code));
 
-        // Canjear
+        // Redeem
         LinkService.LinkResult result = service.redeem(code, discordId).join();
         assertEquals(LinkService.LinkResult.SUCCESS, result);
 
-        // Vinculo persistido
+        // Persisted link
         Optional<AccountLink> byUuid = service.findByUuid(uuid).join();
         assertTrue(byUuid.isPresent());
         assertEquals(uuid, byUuid.get().uuid());
@@ -163,58 +163,58 @@ class DefaultLinkServiceTest {
         assertTrue(byDiscord.isPresent());
         assertEquals(uuid, byDiscord.get().uuid());
 
-        // Se disparo la sincronizacion de roles
+        // Role synchronization was triggered
         verify(syncService).syncPlayer(uuid);
 
-        // Se registro evento de auditoria sin exponer el codigo en ningun campo (hallazgo 7)
+        // Audit event was recorded without exposing the code in any field (finding 7)
         ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
         verify(discordGateway).log(captor.capture());
         AuditEvent event = captor.getValue();
         assertEquals("link", event.action());
         assertEquals(discordId, event.actor());
         assertTrue(event.success());
-        assertFalse(event.target().contains(code), "El target de auditoria no debe contener el codigo");
-        event.detail().ifPresent(d -> assertFalse(d.contains(code), "El detalle no debe contener el codigo"));
+        assertFalse(event.target().contains(code), "Audit target must not contain the code");
+        event.detail().ifPresent(d -> assertFalse(d.contains(code), "The detail must not contain the code"));
 
-        // Verificar persistencia tras reinicio/reapertura de almacenamiento (hallazgo 12)
+        // Verify persistence after restart/reopening of storage (finding 12)
         storage.close();
         HikariStorage reopened = new HikariStorage(dbConfig, Logger.getLogger("ReopenTest"));
         reopened.initialize();
         try {
             Optional<AccountLink> reopenedLink = reopened.links().findByUuid(uuid);
-            assertTrue(reopenedLink.isPresent(), "El vinculo debe persistir en disco tras reapertura");
+            assertTrue(reopenedLink.isPresent(), "The link must persist on disk after reopening");
             assertEquals(discordId, reopenedLink.get().discordId());
         } finally {
             reopened.close();
         }
     }
 
-    // --- 2. Codigo caducado, inexistente y ya usado ---
+    // --- 2. Expired, nonexistent and already used code ---
 
     @Test
-    void codigoCaducadoEsRechazado() {
+    void expiredCodeIsRejected() {
         UUID uuid = UUID.randomUUID();
         String code = service.generateCode(uuid).join().orElseThrow();
 
-        // Avanzar el tiempo 11 minutos (caduca a los 10 minutos)
+        // Advance time 11 minutes (expires after 10 minutes)
         clock.advance(Duration.ofMinutes(11));
 
         LinkService.LinkResult result = service.redeem(code, "discord_user_1").join();
         assertEquals(LinkService.LinkResult.CODE_EXPIRED, result);
 
-        // El codigo debe haberse eliminado al detectarse caducado
+        // The code must have been deleted upon detecting it expired
         assertTrue(linkRepository.findCode(code).isEmpty());
-        // El vinculo no debe haberse creado
+        // The link must not have been created
         assertTrue(service.findByUuid(uuid).join().isEmpty());
 
-        // Auditoria no expone el codigo
+        // Audit does not expose the code
         ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
         verify(discordGateway).log(captor.capture());
         assertFalse(captor.getValue().target().contains(code));
     }
 
     @Test
-    void codigoInexistenteEsRechazado() {
+    void nonexistentCodeIsRejected() {
         LinkService.LinkResult result = service.redeem("NOEXISTE", "discord_user_1").join();
         assertEquals(LinkService.LinkResult.CODE_INVALID, result);
 
@@ -224,34 +224,34 @@ class DefaultLinkServiceTest {
     }
 
     @Test
-    void codigoYaUsadoNoSePuedeCanjearDosVeces() {
+    void alreadyUsedCodeCannotBeRedeemedTwice() {
         UUID uuid = UUID.randomUUID();
         String code = service.generateCode(uuid).join().orElseThrow();
 
         LinkService.LinkResult first = service.redeem(code, "discord_user_1").join();
         assertEquals(LinkService.LinkResult.SUCCESS, first);
 
-        // Segundo intento con otra cuenta de Discord
+        // Second attempt with another Discord account
         LinkService.LinkResult second = service.redeem(code, "discord_user_2").join();
-        // El codigo ya no existe en la base de datos tras el primer uso
+        // The code no longer exists in the database after first use
         assertEquals(LinkService.LinkResult.CODE_INVALID, second);
     }
 
-    // --- 3. Jugador y cuenta de Discord ya vinculados ---
+    // --- 3. Player and Discord account already linked ---
 
     @Test
-    void jugadorYaVinculadoNoPuedeGenerarNuevoCodigo() {
+    void alreadyLinkedPlayerCannotGenerateNewCode() {
         UUID uuid = UUID.randomUUID();
         String code = service.generateCode(uuid).join().orElseThrow();
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, "discord_user_1").join());
 
-        // Intentar generar codigo estando ya vinculado
-        Optional<String> nuevo = service.generateCode(uuid).join();
-        assertTrue(nuevo.isEmpty(), "Un jugador ya vinculado no debe poder generar codigos");
+        // Attempt to generate code while already linked
+        Optional<String> newCode = service.generateCode(uuid).join();
+        assertTrue(newCode.isEmpty(), "An already linked player must not be able to generate codes");
     }
 
     @Test
-    void jugadorYaVinculadoRechazaCanje() {
+    void alreadyLinkedPlayerRejectsRedemption() {
         UUID uuid = UUID.randomUUID();
         LinkCode code = new LinkCode("TEST01", uuid, clock.instant().plusSeconds(600), 0);
         linkRepository.saveCode(code);
@@ -264,80 +264,80 @@ class DefaultLinkServiceTest {
     }
 
     @Test
-    void cuentaDiscordYaVinculadaEsRechazada() {
+    void alreadyLinkedDiscordAccountIsRejected() {
         UUID uuid1 = UUID.randomUUID();
         String code1 = service.generateCode(uuid1).join().orElseThrow();
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code1, "discord_user_1").join());
 
-        // Otro jugador genera un codigo
+        // Another player generates a code
         UUID uuid2 = UUID.randomUUID();
         String code2 = service.generateCode(uuid2).join().orElseThrow();
 
-        // La cuenta discord_user_1 intenta canjear el codigo del segundo jugador
+        // The discord_user_1 account attempts to redeem the second player's code
         LinkService.LinkResult result = service.redeem(code2, "discord_user_1").join();
         assertEquals(LinkService.LinkResult.DISCORD_ALREADY_LINKED, result);
     }
 
-    // --- 4. Limite de intentos y presupuesto temporal ---
+    // --- 4. Attempt limit and time budget ---
 
     @Test
-    void limiteDeIntentosBloqueaDeVerdad() {
+    void attemptLimitActuallyBlocks() {
         String discordId = "discord_atacante";
 
         // maxAttempts = 3
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL001", discordId).join());
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL002", discordId).join());
 
-        // Al tercer fallo consecutivo se activa el bloqueo
+        // On the third consecutive failure, lockout is triggered
         assertEquals(LinkService.LinkResult.TOO_MANY_ATTEMPTS, service.redeem("MAL003", discordId).join());
 
-        // Los intentos posteriores mientras este bloqueado se rechazan inmediatamente
+        // Subsequent attempts while locked out are immediately rejected
         assertEquals(LinkService.LinkResult.TOO_MANY_ATTEMPTS, service.redeem("MAL004", discordId).join());
 
-        // Incluso con un codigo valido que exista, se rechaza por estar bloqueado
+        // Even with a valid existing code, it is rejected due to being locked out
         UUID uuid = UUID.randomUUID();
         String validCode = service.generateCode(uuid).join().orElseThrow();
         assertEquals(LinkService.LinkResult.TOO_MANY_ATTEMPTS, service.redeem(validCode, discordId).join());
 
-        // Otro usuario de Discord no esta bloqueado
+        // Another Discord user is not locked out
         String discordId2 = "discord_inocente";
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(validCode, discordId2).join());
 
-        // Despues de que pase el tiempo de bloqueo (15 minutos), el usuario atacante queda desbloqueado
+        // After the lockout duration passes (15 minutes), the attacking user is unlocked
         clock.advance(Duration.ofMinutes(16));
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL005", discordId).join());
     }
 
     @Test
-    void exitoYDesvinculacionNoReinicianPresupuestoDeFallosEnVentana() {
-        // Correccion de hallazgo 4 y hallazgo 12: comprobar observablemente
-        // que un canje con exito y desvinculacion posterior NO borran el contador
+    void successAndUnlinkDoNotResetTheFailureBudgetWithinTheWindow() {
+        // Fix for finding 4 and finding 12: observably verify
+        // that a successful redemption and subsequent unlinking DO NOT clear the counter
         String discordId = "discord_atacante_astuto";
 
-        // maxAttempts = 3: falla 2 veces (queda 1 intento en la ventana)
+        // maxAttempts = 3: fails twice (1 attempt remains in the window)
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL001", discordId).join());
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem("MAL002", discordId).join());
 
-        // Canjea un codigo valido propio con exito
-        UUID uuidPropio = UUID.randomUUID();
-        String codeValido = service.generateCode(uuidPropio).join().orElseThrow();
-        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(codeValido, discordId).join());
+        // Redeems their own valid code with success
+        UUID ownUuid = UUID.randomUUID();
+        String validCode = service.generateCode(ownUuid).join().orElseThrow();
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(validCode, discordId).join());
 
-        // Desvincula la cuenta
-        assertTrue(service.unlink(uuidPropio).join());
+        // Unlinks the account
+        assertTrue(service.unlink(ownUuid).join());
 
-        // El atacante prueba un nuevo codigo falso dentro de la ventana de 15 minutos:
-        // Debe ser su 3er fallo acumulado y activar el bloqueo de inmediato
+        // The attacker tries a new fake code within the 15-minute window:
+        // It must be their 3rd accumulated failure and trigger lockout immediately
         assertEquals(LinkService.LinkResult.TOO_MANY_ATTEMPTS, service.redeem("MAL003", discordId).join());
     }
 
     @Test
-    void rafagaConcurrenteDeIntentosFallidosRespetaElPresupuesto() throws Exception {
-        // Hallazgo 4 y 12: contar entradas reales a consumeCodeAndLink y exigir resultados exactos
+    void concurrentBurstOfFailedAttemptsRespectsTheBudget() throws Exception {
+        // Finding 4 and 12: count actual entries to consumeCodeAndLink and demand exact results
         String discordId = "discord_burst_attacker";
-        int totalPeticiones = 10;
-        CyclicBarrier barrier = new CyclicBarrier(totalPeticiones);
-        CountDownLatch latch = new CountDownLatch(totalPeticiones);
+        int totalRequests = 10;
+        CyclicBarrier barrier = new CyclicBarrier(totalRequests);
+        CountDownLatch latch = new CountDownLatch(totalRequests);
         List<LinkService.LinkResult> results = Collections.synchronizedList(new ArrayList<>());
 
         AtomicInteger consumeCalls = new AtomicInteger(0);
@@ -351,7 +351,7 @@ class DefaultLinkServiceTest {
                 spyRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
         );
 
-        for (int i = 0; i < totalPeticiones; i++) {
+        for (int i = 0; i < totalRequests; i++) {
             final String badCode = "BURST" + i;
             new Thread(() -> {
                 try {
@@ -370,36 +370,36 @@ class DefaultLinkServiceTest {
         long invalidCount = results.stream().filter(r -> r == LinkService.LinkResult.CODE_INVALID).count();
         long lockedCount = results.stream().filter(r -> r == LinkService.LinkResult.TOO_MANY_ATTEMPTS).count();
 
-        assertEquals(totalPeticiones, results.size(), "Todas las peticiones deben completarse");
-        // Como maxAttempts = 3: exactamente 2 fallos son invalidos, el 3ro bloquea y las restantes 7 rebotan por bloqueo
-        assertEquals(2, invalidCount, "Deben registrarse exactamente 2 resultados CODE_INVALID");
-        assertEquals(8, lockedCount, "Deben registrarse exactamente 8 resultados TOO_MANY_ATTEMPTS");
-        // Entradas reales a consumeCodeAndLink: solo los 3 primeros intentos entran antes del bloqueo
-        assertEquals(3, consumeCalls.get(), "Solo deben realizarse exactamente 3 llamadas reales a consumeCodeAndLink");
+        assertEquals(totalRequests, results.size(), "All requests must complete");
+        // Since maxAttempts = 3: exactly 2 failures are invalid, the 3rd locks out and the remaining 7 bounce due to lockout
+        assertEquals(2, invalidCount, "Exactly 2 CODE_INVALID results must be recorded");
+        assertEquals(8, lockedCount, "Exactly 8 TOO_MANY_ATTEMPTS results must be recorded");
+        // Actual entries to consumeCodeAndLink: only the first 3 attempts enter before lockout
+        assertEquals(3, consumeCalls.get(), "Only exactly 3 real calls to consumeCodeAndLink must be performed");
     }
 
-    // --- 5. Generar codigo nuevo invalida el anterior ---
+    // --- 5. Generating a new code invalidates the previous one ---
 
     @Test
-    void generarCodigoNuevoInvalidaElAnterior() {
+    void generatingNewCodeInvalidatesThePreviousOne() {
         UUID uuid = UUID.randomUUID();
 
         String code1 = service.generateCode(uuid).join().orElseThrow();
         String code2 = service.generateCode(uuid).join().orElseThrow();
 
-        assertNotEquals(code1, code2, "Los dos codigos deben ser distintos");
+        assertNotEquals(code1, code2, "The two codes must be distinct");
 
-        // El codigo antiguo ya no es valido
+        // The old code is no longer valid
         assertEquals(LinkService.LinkResult.CODE_INVALID, service.redeem(code1, "discord_1").join());
 
-        // El codigo nuevo si es valido
+        // The new code is valid
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code2, "discord_1").join());
     }
 
-    // --- 6. Caracteres ambiguos ---
+    // --- 6. Ambiguous characters ---
 
     @Test
-    void codigosGeneradosNoContienenCaracteresAmbiguos() {
+    void generatedCodesDoNotContainAmbiguousCharacters() {
         UUID uuid = UUID.randomUUID();
         for (int i = 0; i < 500; i++) {
             String code = service.generateCode(uuid).join().orElseThrow();
@@ -408,14 +408,14 @@ class DefaultLinkServiceTest {
         }
     }
 
-    // --- 7. Desvinculacion y retirada de roles (hallazgos 2, 3, 12) ---
+    // --- 7. Unlinking and role removal (findings 2, 3, 12) ---
 
     @Test
-    void unlinkEliminaVinculoYRetiraRolesIncluyendoRolDeAlcalde() {
+    void unlinkRemovesLinkAndRevokesRolesIncludingMayorRole() {
         UUID uuid = UUID.randomUUID();
         String discordId = "discord_linked_mayor";
 
-        // Registrar un espacio de town con rol
+        // Register a town space with role
         TownSpace townSpace = new TownSpace(
                 UUID.randomUUID(), "Madrid",
                 Optional.of("cat-1"), Optional.of("text-1"), Optional.of("voice-1"),
@@ -424,21 +424,21 @@ class DefaultLinkServiceTest {
         );
         spaceRepository.save(townSpace);
 
-        // Gateway expone el rol de alcalde configurado
+        // Gateway exposes the configured mayor role
         when(discordGateway.mayorRoleId()).thenReturn(Optional.of("role-mayor-global"));
 
         String code = service.generateCode(uuid).join().orElseThrow();
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
 
-        // Desvincular
+        // Unlink
         boolean unlinked = service.unlink(uuid).join();
         assertTrue(unlinked);
 
-        // Ya no existe el vinculo
+        // Link no longer exists
         assertTrue(service.findByUuid(uuid).join().isEmpty());
         assertTrue(service.findByDiscordId(discordId).join().isEmpty());
 
-        // Se envio la orden a DiscordGateway para retirar roles exactos (town + alcalde)
+        // Command was sent to DiscordGateway to remove exact roles (town + mayor)
         ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
         verify(discordGateway, atLeastOnce()).submit(captor.capture());
 
@@ -447,39 +447,39 @@ class DefaultLinkServiceTest {
                 .map(op -> (GuildOperation.ApplyMemberRoles) op)
                 .filter(op -> op.discordId().equals(discordId))
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("Debe enviarse orden ApplyMemberRoles para " + discordId));
+                .orElseThrow(() -> new AssertionError("ApplyMemberRoles order must be sent for " + discordId));
 
-        // Hallazgo 12 y 14: exigir igualdad exacta en la lista de roles retirados
+        // Finding 12 and 14: require exact equality in the list of removed roles
         List<String> expectedRoles = List.of("role-town-madrid", "role-mayor-global");
         assertEquals(expectedRoles, applyOp.revokeRoleIds(),
-                "La lista de roles a revocar debe coincidir exactamente sin roles sobrantes ni faltantes");
+                "The list of roles to revoke must match exactly with no excess or missing roles");
     }
 
     @Test
-    void unlinkNoConfirmaExitoSiFallaDiscordYPreservaElVinculo() {
-        // Hallazgo 2: con bot caido o gateway fallido, no borrar el vinculo ni confirmar exito
+    void unlinkDoesNotConfirmSuccessWhenDiscordFailsAndPreservesTheLink() {
+        // Finding 2: with bot down or gateway failed, do not delete the link or confirm success
         UUID uuid = UUID.randomUUID();
         String discordId = "discord_gateway_down";
 
         String code = service.generateCode(uuid).join().orElseThrow();
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
 
-        // Simular que Discord devuelve un fallo transitorio
+        // Simulate Discord returning a transient failure
         when(discordGateway.submit(any())).thenReturn(
-                CompletableFuture.completedFuture(OperationOutcome.transientFailure("Discord no esta disponible")));
+                CompletableFuture.completedFuture(OperationOutcome.transientFailure("Discord is unavailable")));
 
         CompletionException ex = assertThrows(CompletionException.class, () -> service.unlink(uuid).join());
         assertInstanceOf(IllegalStateException.class, ex.getCause());
 
-        // El vinculo NO debe haberse eliminado
+        // The link must NOT have been deleted
         assertTrue(service.findByUuid(uuid).join().isPresent(),
-                "El vinculo debe permanecer si Discord no pudo retirar los roles");
+                "The link must remain if Discord could not remove the roles");
         assertTrue(service.findByDiscordId(discordId).join().isPresent());
     }
 
     @Test
-    void unlinkPropagaFalloDeSpaceRepositorySinBorrarVinculo() {
-        // Hallazgo 2: si falla spaceRepository.findAll(), no tragar la excepcion
+    void unlinkPropagatesSpaceRepositoryFailureWithoutDeletingLink() {
+        // Finding 2: if spaceRepository.findAll() fails, do not swallow the exception
         SpaceRepository failingSpaceRepo = mock(SpaceRepository.class);
         when(failingSpaceRepo.findAll()).thenThrow(new StorageException("Error de BD en spaces"));
 
@@ -496,69 +496,69 @@ class DefaultLinkServiceTest {
         CompletionException ex = assertThrows(CompletionException.class, () -> failingService.unlink(uuid).join());
         assertInstanceOf(StorageException.class, ex.getCause());
 
-        // El vinculo NO debe haberse eliminado
+        // The link must NOT have been deleted
         assertTrue(failingService.findByUuid(uuid).join().isPresent());
     }
 
     @Test
-    void unlinkCondicionalNoBorraSiElVinculoFueRecreado() {
-        // Hallazgo 9: evitar que una peticion antigua borre un vinculo recreado
+    void conditionalUnlinkDoesNotDeleteIfLinkWasRecreated() {
+        // Finding 9: prevent an old request from deleting a recreated link
         UUID uuid = UUID.randomUUID();
-        String discordIdAntiguo = "discord_antiguo";
-        String discordIdNuevo = "discord_nuevo";
+        String oldDiscordId = "discord_antiguo";
+        String newDiscordId = "discord_nuevo";
 
         String code = service.generateCode(uuid).join().orElseThrow();
-        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordIdAntiguo).join());
+        assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, oldDiscordId).join());
 
-        // Simular que entre la autorizacion y el borrado, el vinculo se recreo para otra cuenta
+        // Simulate that between authorization and deletion, the link was recreated for another account
         linkRepository.deleteByUuid(uuid);
-        linkRepository.save(new AccountLink(uuid, discordIdNuevo, clock.instant(), "Jugador"));
+        linkRepository.save(new AccountLink(uuid, newDiscordId, clock.instant(), "Jugador"));
 
-        // Intentar desvincular condicionando a la cuenta antigua
-        boolean unlinked = service.unlink(uuid, discordIdAntiguo).join();
-        assertFalse(unlinked, "No debe borrar si la cuenta Discord no coincide con la esperada");
+        // Attempt to unlink conditional on the old account
+        boolean unlinked = service.unlink(uuid, oldDiscordId).join();
+        assertFalse(unlinked, "Must not delete if the Discord account does not match the expected one");
 
-        // El vinculo de discordIdNuevo permanece intacto
+        // The link for newDiscordId remains intact
         Optional<AccountLink> actual = service.findByUuid(uuid).join();
         assertTrue(actual.isPresent());
-        assertEquals(discordIdNuevo, actual.get().discordId());
+        assertEquals(newDiscordId, actual.get().discordId());
     }
 
     @Test
-    void unlinkCondicionalNoBorraSiElVinculoFueRecreadoConMismoDiscordIdPeroDistintoLinkedAt() {
-        // Hallazgo 9: borrado condicional estricto por timestamp de autorizacion
+    void conditionalUnlinkDoesNotDeleteIfLinkWasRecreatedWithSameDiscordIdButDifferentLinkedAt() {
+        // Finding 9: strict conditional deletion by authorization timestamp
         UUID uuid = UUID.randomUUID();
         String discordId = "discord_recreated_same_user";
-        Instant linkedAtAntiguo = clock.instant();
+        Instant oldLinkedAt = clock.instant();
 
         String code = service.generateCode(uuid).join().orElseThrow();
         assertEquals(LinkService.LinkResult.SUCCESS, service.redeem(code, discordId).join());
 
-        // Simular que el vinculo se rompio y se recreo con fecha posterior
+        // Simulate that the link was broken and recreated at a later time
         clock.advance(Duration.ofHours(1));
-        Instant linkedAtNuevo = clock.instant();
+        Instant newLinkedAt = clock.instant();
         linkRepository.deleteByUuid(uuid);
-        linkRepository.save(new AccountLink(uuid, discordId, linkedAtNuevo, "Jugador"));
+        linkRepository.save(new AccountLink(uuid, discordId, newLinkedAt, "Jugador"));
 
-        // Desvincular con la version antigua leida en autorizacion previa
-        boolean unlinked = service.unlink(uuid, discordId, linkedAtAntiguo).join();
-        assertFalse(unlinked, "No debe borrar si la fecha de vinculacion no coincide");
+        // Unlink with the old version read in previous authorization
+        boolean unlinked = service.unlink(uuid, discordId, oldLinkedAt).join();
+        assertFalse(unlinked, "Must not delete if the link date does not match");
 
-        // El vinculo nuevo permanece intacto
+        // The new link remains intact
         Optional<AccountLink> actual = service.findByUuid(uuid).join();
         assertTrue(actual.isPresent());
-        assertEquals(linkedAtNuevo, actual.get().linkedAt());
+        assertEquals(newLinkedAt, actual.get().linkedAt());
     }
 
     @Test
-    void unlinkJugadorNoVinculadoRetornaFalse() {
+    void unlinkUnlinkedPlayerReturnsFalse() {
         assertFalse(service.unlink(UUID.randomUUID()).join());
     }
 
-    // --- 8. Purga de codigos caducados ---
+    // --- 8. Purge of expired codes ---
 
     @Test
-    void purgaDeCodigosCaducados() {
+    void purgeOfExpiredCodes() {
         UUID u1 = UUID.randomUUID();
         UUID u2 = UUID.randomUUID();
 
@@ -573,10 +573,10 @@ class DefaultLinkServiceTest {
         assertTrue(linkRepository.findCode(code2).isPresent());
     }
 
-    // --- 9. Captura de nombre, sincronizacion y concurrencia real ---
+    // --- 9. Name capture, synchronization and real concurrency ---
 
     @Test
-    void nombreCapturadoEnGeneracionSePersisteAlCanjear() {
+    void nameCapturedOnGenerationIsPersistedUponRedemption() {
         UUID uuid = UUID.randomUUID();
         String code = service.generateCode(uuid, "Steve").join().orElseThrow();
 
@@ -587,8 +587,8 @@ class DefaultLinkServiceTest {
     }
 
     @Test
-    void falloDeSyncServiceEsObservableEnElFuturoDeRedeem() {
-        // Hallazgo 5: hacer observable cualquier fallo de sincronizacion
+    void syncServiceFailureIsObservableInRedeemFuture() {
+        // Finding 5: make any synchronization failure observable
         when(syncService.syncPlayer(any())).thenReturn(
                 CompletableFuture.failedFuture(new RuntimeException("Fallo en sincronizacion")));
 
@@ -602,7 +602,7 @@ class DefaultLinkServiceTest {
     }
 
     @Test
-    void falloGenericoDeBaseDeDatosNoSeReportaComoVinculoDuplicado() {
+    void genericDatabaseFailureIsNotReportedAsDuplicateLink() {
         LinkRepository mockRepo = mock(LinkRepository.class);
         String code = "ABC234";
 
@@ -623,8 +623,8 @@ class DefaultLinkServiceTest {
     }
 
     @Test
-    void canjeConcurrenteDelMismoCodigoSoloUnoTieneExito() throws Exception {
-        // Hallazgo 1 y 12: concurrencia real con barrera y multiples hilos
+    void concurrentRedemptionOfSameCodeOnlyOneSucceeds() throws Exception {
+        // Finding 1 and 12: real concurrency with barrier and multiple threads
         UUID uuid = UUID.randomUUID();
         String code = service.generateCode(uuid).join().orElseThrow();
 
@@ -652,12 +652,12 @@ class DefaultLinkServiceTest {
         long successCount = results.stream().filter(r -> r == LinkService.LinkResult.SUCCESS).count();
         long failedCount = results.stream().filter(r -> r == LinkService.LinkResult.CODE_INVALID).count();
 
-        assertEquals(1, successCount, "Exactamente uno de los canjes debe tener exito");
-        assertEquals(1, failedCount, "El otro canje concurrente debe ser rechazado");
+        assertEquals(1, successCount, "Exactly one of the redemptions must succeed");
+        assertEquals(1, failedCount, "The other concurrent redemption must be rejected");
     }
 
-    // Limite conocido de cobertura (hallazgo 12): intercalaciones exoticas (fallo parcial seguido
-    // de reintento, recreaciones durante operaciones pendientes, canje contra regeneracion y fallo
-    // de borrado) requieren instrumentar el repositorio con barreras internas, lo que agregaria
-    // mas andamiaje que valor real. Se asume como limite documentado de las pruebas.
+    // Known coverage boundary (finding 12): exotic interleavings (partial failure followed
+    // by retry, recreations during pending operations, redemption against regeneration and deletion
+    // failure) require instrumenting the repository with internal barriers, which would add
+    // more scaffolding than real value. This is accepted as a documented test limitation.
 }

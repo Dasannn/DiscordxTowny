@@ -10,12 +10,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Implementacion de {@link LinkRepository} sobre JDBC.
+ * JDBC implementation of {@link LinkRepository}.
  *
- * <p>Todas las sentencias son preparadas. Ningun valor de usuario se concatena
- * a cadenas SQL. La unicidad de links (un UUID a un Discord ID y viceversa)
- * esta garantizada por restricciones UNIQUE del esquema: un choque lanza
- * {@link StorageException} en lugar de pasar silencioso.
+ * <p>All statements are prepared statements. No user value is concatenated
+ * into SQL strings. Link uniqueness (one UUID to one Discord ID and vice versa)
+ * is guaranteed by UNIQUE constraints in the schema: a collision throws
+ * {@link StorageException} instead of passing silently.
  */
 final class SqlLinkRepository implements LinkRepository {
 
@@ -42,7 +42,7 @@ final class SqlLinkRepository implements LinkRepository {
                 if (rs.next()) return Optional.of(mapLink(rs));
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al buscar vinculo por UUID", e);
+            throw new StorageException("Failed to find link by UUID", e);
         }
         return Optional.empty();
     }
@@ -58,20 +58,20 @@ final class SqlLinkRepository implements LinkRepository {
                 if (rs.next()) return Optional.of(mapLink(rs));
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al buscar vinculo por Discord ID", e);
+            throw new StorageException("Failed to find link by Discord ID", e);
         }
         return Optional.empty();
     }
 
     /**
-     * Inserta el vinculo.
+     * Inserts the link.
      *
-     * <p>La restriccion UNIQUE del esquema garantiza que dos peticiones
-     * simultaneas no puedan vincular el mismo UUID o el mismo Discord ID.
-     * Un choque se traduce en {@link StorageException} con un mensaje claro
-     * que no revela credenciales.
+     * <p>The UNIQUE constraint in the schema guarantees that two concurrent
+     * requests cannot link the same UUID or the same Discord ID.
+     * A collision translates into a {@link StorageException} with a clear message
+     * that does not reveal credentials.
      *
-     * @throws StorageException si el UUID o el Discord ID ya estan vinculados.
+     * @throws StorageException if the UUID or Discord ID is already linked.
      */
     @Override
     public void save(AccountLink link) {
@@ -87,9 +87,9 @@ final class SqlLinkRepository implements LinkRepository {
         } catch (SQLException e) {
             if (isUniqueViolation(e)) {
                 throw new StorageException(
-                    "Ya existe un vinculo para este UUID o Discord ID: " + link.uuid(), e);
+                    "A link already exists for this UUID or Discord ID: " + link.uuid(), e);
             }
-            throw new StorageException("Error al guardar vinculo", e);
+            throw new StorageException("Failed to save link", e);
         }
     }
 
@@ -101,14 +101,14 @@ final class SqlLinkRepository implements LinkRepository {
             ps.setString(1, uuid.toString());
             return ps.executeUpdate() > 0;
         } catch (SQLException e) {
-            throw new StorageException("Error al borrar vinculo", e);
+            throw new StorageException("Failed to delete link", e);
         }
     }
 
     @Override
     public boolean deleteByUuidIfMatches(UUID uuid, String discordId, Instant linkedAt) {
-        // La condicion va dentro del DELETE: comprobar antes y borrar despues
-        // deja un hueco por el que se borraria un vinculo recreado entre medias.
+        // The condition goes inside the DELETE: checking before and deleting after
+        // leaves a gap through which a link recreated in between would be deleted.
         String sql = "DELETE FROM " + tLinks
                 + " WHERE uuid = ? AND discord_id = ? AND linked_at = ?";
         try (Connection conn = ds.getConnection();
@@ -118,18 +118,17 @@ final class SqlLinkRepository implements LinkRepository {
             ps.setLong(3, linkedAt.toEpochMilli());
             return ps.executeUpdate() > 0;
         } catch (SQLException e) {
-            throw new StorageException("Error al borrar vinculo condicionalmente", e);
+            throw new StorageException("Failed to conditionally delete link", e);
         }
     }
 
     // --- link_codes ---
 
     /**
-     * Sustituye cualquier codigo vivo del jugador por este.
+     * Replaces any active code for the player with this one.
      *
-     * <p>La columna uuid tiene UNIQUE, por lo que primero se borra el codigo
-     * anterior del mismo jugador y luego se inserta el nuevo, todo en una
-     * transaccion.
+     * <p>The uuid column has UNIQUE, so the previous code for the same player
+     * is deleted first and then the new one is inserted, all in one transaction.
      */
     @Override
     public void saveCode(LinkCode code) {
@@ -139,7 +138,7 @@ final class SqlLinkRepository implements LinkRepository {
         try (Connection conn = ds.getConnection()) {
             conn.setAutoCommit(false);
             try (PreparedStatement psDel = conn.prepareStatement(del);
-                 PreparedStatement psIns = conn.prepareStatement(ins)) {
+                  PreparedStatement psIns = conn.prepareStatement(ins)) {
                 psDel.setString(1, code.uuid().toString());
                 psDel.executeUpdate();
 
@@ -157,7 +156,7 @@ final class SqlLinkRepository implements LinkRepository {
                 conn.setAutoCommit(true);
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al guardar codigo de vinculacion", e);
+            throw new StorageException("Failed to save link code", e);
         }
     }
 
@@ -171,7 +170,7 @@ final class SqlLinkRepository implements LinkRepository {
                 if (rs.next()) return Optional.of(mapCode(rs));
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al buscar codigo de vinculacion", e);
+            throw new StorageException("Failed to find link code", e);
         }
         return Optional.empty();
     }
@@ -184,7 +183,7 @@ final class SqlLinkRepository implements LinkRepository {
             ps.setString(1, code);
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al borrar codigo de vinculacion", e);
+            throw new StorageException("Failed to delete link code", e);
         }
     }
 
@@ -204,7 +203,7 @@ final class SqlLinkRepository implements LinkRepository {
                 }
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al incrementar intentos del codigo", e);
+            throw new StorageException("Failed to increment code attempts", e);
         }
         return 0;
     }
@@ -217,17 +216,17 @@ final class SqlLinkRepository implements LinkRepository {
             ps.setLong(1, now.toEpochMilli());
             return ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al purgar codigos caducados", e);
+            throw new StorageException("Failed to purge expired codes", e);
         }
     }
 
     /**
-     * Consume el codigo y crea el vinculo en una sola transaccion.
+     * Consumes the code and creates the link in a single transaction.
      *
-     * <p>El codigo se reclama borrandolo: el borrado es atomico, asi que de dos
-     * canjes simultaneos solo uno afecta a una fila y el otro se va con
-     * CODE_NOT_FOUND. Si la insercion falla, el rollback devuelve el codigo a
-     * su sitio: un choque de unicidad no debe quemar el codigo del jugador.
+     * <p>The code is claimed by deleting it: the deletion is atomic, so of two
+     * concurrent redemptions only one affects a row and the other leaves with
+     * CODE_NOT_FOUND. If insertion fails, the rollback puts the code back
+     * in place: a uniqueness collision must not burn the player's code.
      */
     @Override
     public ConsumeOutcome consumeCodeAndLink(String code, String discordId, String lastKnownName,
@@ -254,8 +253,8 @@ final class SqlLinkRepository implements LinkRepository {
                     }
                 }
 
-                // Reclamar el codigo borrandolo. Cero filas significa que otro
-                // canje simultaneo llego antes.
+                // Claim the code by deleting it. Zero rows means another
+                // concurrent redemption arrived first.
                 try (PreparedStatement ps = conn.prepareStatement(del)) {
                     ps.setString(1, code);
                     if (ps.executeUpdate() == 0) {
@@ -265,7 +264,7 @@ final class SqlLinkRepository implements LinkRepository {
                 }
 
                 if (now.toEpochMilli() > expiresAt) {
-                    // Caducado: se confirma el borrado, ya no sirve para nada.
+                    // Expired: deletion is committed, it is no longer of any use.
                     conn.commit();
                     return ConsumeOutcome.of(ConsumeResult.CODE_EXPIRED);
                 }
@@ -281,7 +280,7 @@ final class SqlLinkRepository implements LinkRepository {
                     if (!isUniqueViolation(e)) {
                         throw e;
                     }
-                    // El codigo vuelve a estar disponible al deshacer.
+                    // The code becomes available again upon rollback.
                     conn.rollback();
                     return ConsumeOutcome.of(existingLink(conn, uuid)
                             ? ConsumeResult.PLAYER_ALREADY_LINKED
@@ -297,11 +296,11 @@ final class SqlLinkRepository implements LinkRepository {
                 conn.setAutoCommit(true);
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al canjear el codigo de vinculacion", e);
+            throw new StorageException("Failed to redeem link code", e);
         }
     }
 
-    /** Sobre la misma conexion, para no salir de la transaccion en curso. */
+    /** Over the same connection, so as not to leave the ongoing transaction. */
     private boolean existingLink(Connection conn, UUID uuid) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT 1 FROM " + tLinks + " WHERE uuid = ?")) {
@@ -320,11 +319,11 @@ final class SqlLinkRepository implements LinkRepository {
              ResultSet rs = ps.executeQuery()) {
             return rs.next() ? rs.getInt(1) : 0;
         } catch (SQLException e) {
-            throw new StorageException("Error al contar vinculos", e);
+            throw new StorageException("Failed to count links", e);
         }
     }
 
-    // --- mapeo ---
+    // --- mapping ---
 
     private AccountLink mapLink(ResultSet rs) throws SQLException {
         return new AccountLink(
@@ -342,16 +341,16 @@ final class SqlLinkRepository implements LinkRepository {
                 rs.getInt("attempts"));
     }
 
-    // --- utilidades ---
+    // --- utilities ---
 
     /**
-     * Detecta violacion de unicidad en SQLite y MySQL/MariaDB.
+     * Detects a uniqueness violation in SQLite and MySQL/MariaDB.
      *
-     * <p>Se comprueba por mensaje y no por el codigo de error 19 de SQLite:
-     * ese codigo es SQLITE_CONSTRAINT y cubre TODAS las restricciones, tambien
-     * NOT NULL y las claves ajenas. Tratarlo como choque de unicidad convierte
-     * cualquier fallo de restriccion en un "ya existe un vinculo" falso, y
-     * manda a quien diagnostica en la direccion contraria.
+     * <p>Checked by message and not by SQLite error code 19:
+     * that code is SQLITE_CONSTRAINT and covers ALL constraints, including
+     * NOT NULL and foreign keys. Treating it as a uniqueness collision turns
+     * any constraint failure into a false "a link already exists", and
+     * sends whoever is diagnosing in the opposite direction.
      */
     private static boolean isUniqueViolation(SQLException e) {
         String msg = e.getMessage();
@@ -360,10 +359,10 @@ final class SqlLinkRepository implements LinkRepository {
                 || msg.contains("Duplicate entry"))) {
             return true;
         }
-        // MySQL/MariaDB: 1062 es exclusivamente entrada duplicada. No vale
-        // SQLIntegrityConstraintViolationException a secas ni el SQLState
-        // 23000: ambos cubren tambien NOT NULL y claves ajenas, y darlos por
-        // duplicado devuelve un diagnostico falso.
+        // MySQL/MariaDB: 1062 is exclusively duplicate entry. Neither bare
+        // SQLIntegrityConstraintViolationException nor SQLState
+        // 23000 is suitable: both also cover NOT NULL and foreign keys, and
+        // treating them as duplicate returns a false diagnosis.
         return e.getErrorCode() == 1062;
     }
 }

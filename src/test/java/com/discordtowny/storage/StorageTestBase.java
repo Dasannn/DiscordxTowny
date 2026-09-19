@@ -11,14 +11,14 @@ import java.time.Duration;
 import java.util.logging.Logger;
 
 /**
- * Base para los tests de almacenamiento: arranca un HikariStorage contra
- * SQLite en un archivo temporal y lo cierra al terminar cada test.
+ * Base for storage tests: starts a HikariStorage against
+ * SQLite in a temporary file and closes it upon finishing each test.
  *
- * <p>Se usa un archivo temporal en lugar de :memory: para garantizar
- * compatibilidad con HikariCP, que puede abrir varias conexiones y SQLite
- * en memoria no comparte estado entre conexiones distintas a menos que
- * se use cache=shared (no siempre disponible). Con pool_size=1 y archivo
- * temporal se obtiene el mismo aislamiento por test sin ambiguedad.
+ * <p>A temporary file is used instead of :memory: to guarantee
+ * compatibility with HikariCP, which may open multiple connections, and SQLite
+ * in memory does not share state across different connections unless
+ * cache=shared is used (not always available). With pool_size=1 and a temporary
+ * file, the same per-test isolation is obtained without ambiguity.
  */
 abstract class StorageTestBase {
 

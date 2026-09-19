@@ -20,25 +20,25 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Verifica que las migraciones se aplican correctamente desde cero y que
- * son idempotentes (se puede inicializar dos veces sobre el mismo esquema
- * sin error).
+ * Verifies that migrations are applied correctly from scratch and that
+ * they are idempotent (can be initialized twice on the same schema
+ * without error).
  */
 class MigrationTest extends StorageTestBase {
 
     @Test
-    void migrationesAplicadasDesde0() throws SQLException {
-        assertTrue(storage.isHealthy(), "El storage debe estar sano tras las migraciones");
+    void migrationsAppliedFromScratch() throws SQLException {
+        assertTrue(storage.isHealthy(), "Storage must be healthy after migrations");
 
         try (Connection conn = storage.dataSource().getConnection()) {
-            // Verificar que la tabla de versiones registro la ultima version.
+            // Verify that the version table recorded the latest version.
             try (Statement st = conn.createStatement();
                  ResultSet rs = st.executeQuery("SELECT MAX(version) FROM dt_schema_version")) {
-                assertTrue(rs.next(), "Debe existir registro en la tabla de versiones");
-                assertEquals(5, rs.getInt(1), "La version final registrada debe ser 5");
+                assertTrue(rs.next(), "Record must exist in the version table");
+                assertEquals(5, rs.getInt(1), "The final recorded version must be 5");
             }
 
-            // Verificar la existencia fisica de las tablas del esquema.
+            // Verify the physical existence of the schema tables.
             Set<String> tables = new HashSet<>();
             try (ResultSet rs = conn.getMetaData().getTables(null, null, "%", new String[]{"TABLE"})) {
                 while (rs.next()) {
@@ -46,18 +46,18 @@ class MigrationTest extends StorageTestBase {
                 }
             }
 
-            assertTrue(tables.contains("dt_schema_version"), "La tabla dt_schema_version debe existir fisicamente");
-            assertTrue(tables.contains("dt_links"), "La tabla dt_links debe existir fisicamente");
-            assertTrue(tables.contains("dt_link_codes"), "La tabla dt_link_codes debe existir fisicamente");
-            assertTrue(tables.contains("dt_spaces"), "La tabla dt_spaces debe existir fisicamente");
-            assertTrue(tables.contains("dt_audit_log"), "La tabla dt_audit_log debe existir fisicamente");
+            assertTrue(tables.contains("dt_schema_version"), "Table dt_schema_version must exist physically");
+            assertTrue(tables.contains("dt_links"), "Table dt_links must exist physically");
+            assertTrue(tables.contains("dt_link_codes"), "Table dt_link_codes must exist physically");
+            assertTrue(tables.contains("dt_spaces"), "Table dt_spaces must exist physically");
+            assertTrue(tables.contains("dt_audit_log"), "Table dt_audit_log must exist physically");
         }
     }
 
     @Test
-    void migracionesIdempotentes() throws IOException {
-        // Creamos un segundo storage sobre un archivo nuevo para verificar
-        // que las migraciones no fallan si ya existen las tablas
+    void idempotentMigrations() throws IOException {
+        // We create a second storage on a new file to verify
+        // that migrations do not fail if tables already exist
         // (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS).
         Path tmpDb = Files.createTempFile("discordtowny-idempotente-", ".db");
         try {
@@ -67,11 +67,11 @@ class MigrationTest extends StorageTestBase {
                     "dt_", 1, 1, Duration.ofSeconds(5));
 
             HikariStorage storage2 = new HikariStorage(dbConfig, Logger.getLogger("MigrationTest2"));
-            // Primera inicializacion: crea todo.
+            // First initialization: creates everything.
             assertDoesNotThrow(storage2::initialize);
             storage2.close();
 
-            // Segunda inicializacion sobre el mismo archivo: no debe lanzar.
+            // Second initialization on the same file: must not throw.
             HikariStorage storage3 = new HikariStorage(dbConfig, Logger.getLogger("MigrationTest3"));
             assertDoesNotThrow(storage3::initialize);
             storage3.close();
@@ -83,9 +83,9 @@ class MigrationTest extends StorageTestBase {
     }
 
     @Test
-    void storageIsHealthyAntesYDespuesDeOperar() {
+    void storageIsHealthyBeforeAndAfterOperating() {
         assertTrue(storage.isHealthy());
-        // Operacion basica para verificar que no se pierde la salud al usar el pool.
+        // Basic operation to verify that health is not lost when using the pool.
         assertDoesNotThrow(() -> links.count());
         assertTrue(storage.isHealthy());
     }

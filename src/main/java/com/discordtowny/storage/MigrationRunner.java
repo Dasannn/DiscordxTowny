@@ -8,12 +8,12 @@ import java.sql.Statement;
 import java.util.logging.Logger;
 
 /**
- * Aplica las migraciones de esquema numeradas al arrancar.
+ * Applies numbered schema migrations at startup.
  *
- * <p>Mantiene una tabla {@code schema_version} con el numero de la ultima
- * migracion aplicada. Cada migracion es idempotente: si ya se aplico, se
- * salta. Las migraciones se ejecutan en orden ascendente, dentro de una
- * transaccion por migracion para que un fallo parcial sea recuperable.
+ * <p>Maintains a {@code schema_version} table with the number of the last
+ * applied migration. Each migration is idempotent: if it was already applied,
+ * it is skipped. Migrations execute in ascending order, within one transaction
+ * per migration so that a partial failure is recoverable.
  */
 final class MigrationRunner {
 
@@ -32,10 +32,10 @@ final class MigrationRunner {
     }
 
     /**
-     * Crea la tabla de version si hace falta y aplica todas las migraciones
-     * pendientes.
+     * Creates the version table if needed and applies all pending
+     * migrations.
      *
-     * @throws StorageException si alguna migracion falla.
+     * @throws StorageException if any migration fails.
      */
     void run(Connection conn) throws StorageException {
         try {
@@ -57,11 +57,11 @@ final class MigrationRunner {
             int current = currentVersion(conn);
             applyPending(conn, current, sqlite);
         } catch (SQLException e) {
-            throw new StorageException("Error al ejecutar migraciones de esquema", e);
+            throw new StorageException("Failed to execute schema migrations", e);
         }
     }
 
-    // --- tabla de version ---
+    // --- version table ---
 
     private void ensureVersionTable(Connection conn) throws SQLException {
         try (Statement st = conn.createStatement()) {
@@ -85,13 +85,13 @@ final class MigrationRunner {
         }
     }
 
-    // --- migraciones ---
+    // --- migrations ---
 
     private void applyPending(Connection conn, int current, boolean sqlite) throws SQLException {
         Migration[] migrations = migrations(sqlite);
         for (Migration m : migrations) {
             if (m.version() > current) {
-                logger.info("Aplicando migracion v" + m.version() + "...");
+                logger.info("Applying migration v" + m.version() + "...");
                 applyOne(conn, m);
             }
         }
@@ -110,13 +110,13 @@ final class MigrationRunner {
             conn.commit();
         } catch (SQLException e) {
             conn.rollback();
-            throw new StorageException("Fallo la migracion v" + m.version(), e);
+            throw new StorageException("Migration v" + m.version() + " failed", e);
         } finally {
             conn.setAutoCommit(autoCommit);
         }
     }
 
-    // --- definicion de migraciones ---
+    // --- migration definitions ---
 
     Migration[] migrations(boolean sqlite) {
         return new Migration[]{
@@ -129,10 +129,10 @@ final class MigrationRunner {
     }
 
     /**
-     * v1: tabla links.
-     * - uuid como clave primaria.
-     * - discord_id unico: un Discord ID a un UUID y viceversa.
-     * - La unicidad se garantiza en el esquema, no solo comprobando antes.
+     * v1: links table.
+     * - uuid as primary key.
+     * - unique discord_id: one Discord ID to one UUID and vice versa.
+     * - Uniqueness is guaranteed in the schema, not merely by checking beforehand.
      */
     private Migration migration1Links() {
         return new Migration(1, new String[]{
@@ -146,10 +146,10 @@ final class MigrationRunner {
     }
 
     /**
-     * v2: tabla link_codes.
-     * - code como clave primaria.
-     * - uuid unico: un codigo vivo por jugador. Si el jugador genera uno nuevo,
-     *   el anterior se borra antes de insertar (ver SqlLinkRepository).
+     * v2: link_codes table.
+     * - code as primary key.
+     * - unique uuid: one active code per player. If the player generates a new one,
+     *   the previous one is deleted before inserting (see SqlLinkRepository).
      */
     private Migration migration2LinkCodes() {
         return new Migration(2, new String[]{
@@ -163,10 +163,10 @@ final class MigrationRunner {
     }
 
     /**
-     * v5: tabla settings.
+     * v5: settings table.
      *
-     * <p>Estado que el plugin se escribe a si mismo entre arranques. No es
-     * configuracion del administrador: esa vive en config.yml.
+     * <p>State that the plugin writes to itself between restarts. This is not
+     * administrator configuration: that lives in config.yml.
      */
     private Migration migration5Settings() {
         return new Migration(5, new String[]{
@@ -178,10 +178,10 @@ final class MigrationRunner {
     }
 
     /**
-     * v3: tabla spaces.
-     * - town_uuid como clave primaria.
-     * - Los IDs de Discord son opcionales (NULL): una creacion puede estar a
-     *   medias y cada ID se persiste en cuanto existe.
+     * v3: spaces table.
+     * - town_uuid as primary key.
+     * - Discord IDs are optional (NULL): a creation may be half-finished
+     *   and each ID is persisted as soon as it exists.
      */
     private Migration migration3Spaces() {
         return new Migration(3, new String[]{
@@ -201,9 +201,9 @@ final class MigrationRunner {
     }
 
     /**
-     * v4: tabla audit_log.
-     * - id autoincremental segun el motor (AUTOINCREMENT en SQLite, AUTO_INCREMENT en MySQL/MariaDB).
-     * - target indexado para acelerar la consulta recent(target, limit).
+     * v4: audit_log table.
+     * - auto-incrementing id according to the engine (AUTOINCREMENT in SQLite, AUTO_INCREMENT in MySQL/MariaDB).
+     * - target indexed to speed up the recent(target, limit) query.
      */
     private Migration migration4AuditLog(boolean sqlite) {
         if (sqlite) {
@@ -238,8 +238,8 @@ final class MigrationRunner {
         }
     }
 
-    // --- tipo auxiliar ---
+    // --- helper type ---
 
-    /** Una migracion numerada: version + sentencias SQL a ejecutar en orden. */
+    /** A numbered migration: version + SQL statements to execute in order. */
     record Migration(int version, String[] statements) {}
 }

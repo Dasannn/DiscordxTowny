@@ -23,33 +23,33 @@ import org.junit.jupiter.params.provider.ValueSource;
 class YamlConfigLoaderTest {
     private static final String TOKEN = "token-secreto-de-prueba";
     private static final String PASSWORD = "password-secreto-de-prueba";
-    @TempDir Path carpeta;
+    @TempDir Path folder;
     private YamlConfiguration yaml;
     private YamlConfigLoader loader;
-    private final List<String> avisos = new ArrayList<>();
+    private final List<String> warnings = new ArrayList<>();
 
     @BeforeEach
-    void preparar() throws Exception {
+    void prepare() throws Exception {
         try (var config = getClass().getResourceAsStream("/config.yml");
-             var mensajes = getClass().getResourceAsStream("/messages.yml")) {
-            Files.copy(config, carpeta.resolve("config.yml"));
-            Files.copy(mensajes, carpeta.resolve("messages.yml"));
+             var messages = getClass().getResourceAsStream("/messages.yml")) {
+            Files.copy(config, folder.resolve("config.yml"));
+            Files.copy(messages, folder.resolve("messages.yml"));
         }
         yaml = new YamlConfiguration();
-        yaml.load(carpeta.resolve("config.yml").toFile());
+        yaml.load(folder.resolve("config.yml").toFile());
         yaml.set("discord.token", TOKEN);
         yaml.set("discord.guild-id", "123456789012345678");
         yaml.set("database.password", PASSWORD);
-        guardar();
-        loader = new YamlConfigLoader(carpeta, avisos::add);
+        save();
+        loader = new YamlConfigLoader(folder, warnings::add);
     }
 
-    private void guardar() throws Exception {
-        yaml.save(carpeta.resolve("config.yml").toFile());
+    private void save() throws Exception {
+        yaml.save(folder.resolve("config.yml").toFile());
     }
 
     @Test
-    void cargaTodosLosBloquesYNoExponeSecretos() {
+    void loadsAllBlocksAndDoesNotExposeSecrets() {
         assertTrue(loader.validate().isEmpty());
         PluginConfig config = loader.load();
         assertEquals(TOKEN, config.discord().token());
@@ -78,13 +78,13 @@ class YamlConfigLoaderTest {
         assertTrue(config.commands().byName("mytown").orElseThrow().ephemeral());
         assertEquals(Duration.ofSeconds(5), config.commands().cooldown());
         assertThrows(UnsupportedOperationException.class, () -> config.commands().commands().clear());
-        for (String volcado : List.of(config.toString(), config.discord().toString(), config.database().toString())) {
-            assertFalse(volcado.contains(TOKEN));
-            assertFalse(volcado.contains(PASSWORD));
+        for (String dump : List.of(config.toString(), config.discord().toString(), config.database().toString())) {
+            assertFalse(dump.contains(TOKEN));
+            assertFalse(dump.contains(PASSWORD));
         }
     }
 
-    static Stream<Arguments> invalidos() {
+    static Stream<Arguments> invalidInputs() {
         return Stream.of(
                 Arguments.of("discord.token", ""),
                 Arguments.of("discord.token", " PON_AQUI_TU_TOKEN "),
@@ -137,16 +137,16 @@ class YamlConfigLoaderTest {
     }
 
     @ParameterizedTest
-    @MethodSource("invalidos")
-    void rechazaIndicandoClaveExacta(String clave, Object valor) throws Exception {
-        yaml.set(clave, valor);
-        guardar();
-        assertTrue(loader.validate().stream().anyMatch(p -> p.startsWith(clave + ":")));
-        ConfigException fallo = assertThrows(ConfigException.class, loader::load);
-        assertTrue(fallo.getMessage().contains(clave + ":"));
-        assertFalse(fallo.getMessage().contains(TOKEN));
-        assertFalse(fallo.getMessage().contains(PASSWORD));
-        assertNull(fallo.getCause());
+    @MethodSource("invalidInputs")
+    void rejectsIndicatingExactKey(String key, Object value) throws Exception {
+        yaml.set(key, value);
+        save();
+        assertTrue(loader.validate().stream().anyMatch(p -> p.startsWith(key + ":")));
+        ConfigException failure = assertThrows(ConfigException.class, loader::load);
+        assertTrue(failure.getMessage().contains(key + ":"));
+        assertFalse(failure.getMessage().contains(TOKEN));
+        assertFalse(failure.getMessage().contains(PASSWORD));
+        assertNull(failure.getCause());
     }
 
     @ParameterizedTest
@@ -155,25 +155,25 @@ class YamlConfigLoaderTest {
             "sync.batch-pause-seconds", "linking.code-expiry-minutes", "linking.max-attempts",
             "linking.attempt-lockout-minutes", "logging.flush-interval-seconds", "logging.queue-size",
             "updates.check-interval-hours", "commands.cooldown-seconds"})
-    void intervalosYTamanosPositivos(String clave) throws Exception {
-        for (int invalido : new int[] {0, -1}) {
-            yaml.set(clave, invalido);
-            guardar();
-            assertTrue(loader.validate().stream().anyMatch(p -> p.startsWith(clave + ":")));
+    void positiveIntervalsAndSizes(String key) throws Exception {
+        for (int invalidValue : new int[] {0, -1}) {
+            yaml.set(key, invalidValue);
+            save();
+            assertTrue(loader.validate().stream().anyMatch(p -> p.startsWith(key + ":")));
         }
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"mysql", "mariadb", "sqlite"})
-    void motoresAdmitidos(String tipo) throws Exception {
-        yaml.set("database.type", tipo);
+    void supportedEngines(String type) throws Exception {
+        yaml.set("database.type", type);
         yaml.set("database.user", "usuario");
-        guardar();
-        assertEquals(tipo, loader.load().database().type().name().toLowerCase(java.util.Locale.ROOT));
+        save();
+        assertEquals(type, loader.load().database().type().name().toLowerCase(java.util.Locale.ROOT));
     }
 
     @Test
-    void limitesOpcionalesYMarcadoresValidos() throws Exception {
+    void optionalLimitsAndValidPlaceholders() throws Exception {
         yaml.set("limits.max-towns", 240);
         yaml.set("discord.log-channel-id", "18446744073709551615");
         yaml.set("database.pool.minimum-idle", 0);
@@ -182,58 +182,58 @@ class YamlConfigLoaderTest {
         yaml.set("roles.town-role-name", "Ciudad {town}");
         yaml.set("structure.text-channel-name", "ciudad-{town}-{mayor}");
         yaml.set("structure.voice-channel-name", "Voz de {town} de {mayor}");
-        guardar();
+        save();
         assertTrue(loader.validate().isEmpty());
         assertEquals("18446744073709551615", loader.load().discord().logChannelId().orElseThrow());
     }
 
     @Test
-    void intervaloCeroDesactivaReconciliacion() throws Exception {
+    void zeroIntervalDisablesReconciliation() throws Exception {
         yaml.set("sync.interval-minutes", 0);
-        guardar();
+        save();
         assertTrue(loader.validate().isEmpty());
         assertEquals(Duration.ZERO, loader.load().sync().interval());
     }
 
     @Test
-    void recargaExplicitaYValidacionNoPublica() throws Exception {
-        PluginConfig anterior = loader.load();
-        Messages mensajes = loader.messages();
+    void explicitReloadAndValidationDoesNotPublish() throws Exception {
+        PluginConfig previous = loader.load();
+        Messages messages = loader.messages();
         yaml.set("limits.max-towns", 100);
-        guardar();
-        Files.writeString(carpeta.resolve("messages.yml"), "prefix: '[nuevo] '\ngeneral:\n  working: nuevo\n");
+        save();
+        Files.writeString(folder.resolve("messages.yml"), "prefix: '[nuevo] '\ngeneral:\n  working: nuevo\n");
         assertTrue(loader.validate().isEmpty());
-        assertSame(mensajes, loader.messages());
-        assertEquals(200, anterior.limits().maxTowns());
+        assertSame(messages, loader.messages());
+        assertEquals(200, previous.limits().maxTowns());
         assertEquals(100, loader.load().limits().maxTowns());
         assertEquals("[nuevo] nuevo", loader.messages().plain("general.working", Map.of()));
-        Messages validos = loader.messages();
+        Messages valid = loader.messages();
         yaml.set("discord.token", "");
-        guardar();
-        Files.writeString(carpeta.resolve("messages.yml"), "prefix: cambiado\n");
+        save();
+        Files.writeString(folder.resolve("messages.yml"), "prefix: cambiado\n");
         assertThrows(ConfigException.class, loader::load);
-        assertSame(validos, loader.messages());
+        assertSame(valid, loader.messages());
     }
 
     @Test
-    void yamlMalformadoNuncaFiltraSecretosNiCausas() throws Exception {
-        Files.writeString(carpeta.resolve("config.yml"), "discord:\n  token: [" + TOKEN + "\npassword: " + PASSWORD);
-        ConfigException fallo = assertThrows(ConfigException.class, loader::load);
-        StringWriter pila = new StringWriter();
-        fallo.printStackTrace(new PrintWriter(pila));
-        assertFalse(pila.toString().contains(TOKEN));
-        assertFalse(pila.toString().contains(PASSWORD));
+    void malformedYamlNeverLeaksSecretsNorCauses() throws Exception {
+        Files.writeString(folder.resolve("config.yml"), "discord:\n  token: [" + TOKEN + "\npassword: " + PASSWORD);
+        ConfigException failure = assertThrows(ConfigException.class, loader::load);
+        StringWriter stackTrace = new StringWriter();
+        failure.printStackTrace(new PrintWriter(stackTrace));
+        assertFalse(stackTrace.toString().contains(TOKEN));
+        assertFalse(stackTrace.toString().contains(PASSWORD));
         assertTrue(loader.validate().stream().anyMatch(p -> p.startsWith("config.yml:")));
-        assertTrue(avisos.isEmpty());
+        assertTrue(warnings.isEmpty());
     }
 
     @Test
-    void archivosAusentesOTextosMalformadosSeRechazan() throws Exception {
-        Files.delete(carpeta.resolve("config.yml"));
-        Files.writeString(carpeta.resolve("messages.yml"), "prefix: [sin cerrar");
-        List<String> problemas = loader.validate();
-        assertTrue(problemas.stream().anyMatch(p -> p.startsWith("config.yml:")));
-        assertTrue(problemas.stream().anyMatch(p -> p.startsWith("messages.yml:")));
+    void missingFilesOrMalformedTextsAreRejected() throws Exception {
+        Files.delete(folder.resolve("config.yml"));
+        Files.writeString(folder.resolve("messages.yml"), "prefix: [sin cerrar");
+        List<String> problems = loader.validate();
+        assertTrue(problems.stream().anyMatch(p -> p.startsWith("config.yml:")));
+        assertTrue(problems.stream().anyMatch(p -> p.startsWith("messages.yml:")));
         assertThrows(ConfigException.class, loader::load);
     }
 }

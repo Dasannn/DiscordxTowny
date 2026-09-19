@@ -18,13 +18,13 @@ import java.util.logging.Logger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Pruebas de la cola serializada de operaciones del guild.
+ * Tests for the serialized guild operation queue.
  *
- * <p>Demuestra sin red ni JDA:
+ * <p>Demonstrates without network or JDA:
  * <ul>
- *   <li>que la cola serializa (no ejecuta dos operaciones a la vez),</li>
- *   <li>que un reintento tras fallo parcial no duplica recursos,</li>
- *   <li>que un fallo permanente no se reintenta.</li>
+ *   <li>that the queue serializes (does not execute two operations at the same time),</li>
+ *   <li>that a retry after partial failure does not duplicate resources,</li>
+ *   <li>that a permanent failure is not retried.</li>
  * </ul>
  */
 @Timeout(value = 10, unit = TimeUnit.SECONDS)
@@ -33,9 +33,9 @@ class GuildOperationQueueTest {
     private static final Logger LOGGER = Logger.getLogger("test");
 
     @Test
-    @DisplayName("La cola serializa: no ejecuta dos operaciones a la vez")
+    @DisplayName("The queue serializes: does not execute two operations at the same time")
     void serializesOperations() throws Exception {
-        // Registro de concurrencia: si alguna vez dos ejecuciones se solapan, lo detectamos
+        // Concurrency tracking: if two executions ever overlap, we detect it
         AtomicInteger concurrent = new AtomicInteger(0);
         AtomicInteger maxConcurrent = new AtomicInteger(0);
         List<String> executionOrder = new CopyOnWriteArrayList<>();
@@ -44,7 +44,7 @@ class GuildOperationQueueTest {
             int running = concurrent.incrementAndGet();
             maxConcurrent.accumulateAndGet(running, Math::max);
             try {
-                // Pequena pausa para verificar concurrencia
+                // Short pause to verify concurrency
                 Thread.sleep(10);
                 executionOrder.add(op.describe());
             } catch (InterruptedException e) {
@@ -59,7 +59,7 @@ class GuildOperationQueueTest {
                 3, java.time.Duration.ofMillis(5), 1.0);
         queue.start();
 
-        // Enviar varias operaciones
+        // Submit multiple operations
         var futures = new ArrayList<CompletableFuture<OperationOutcome>>();
         for (int i = 0; i < 5; i++) {
             var op = new GuildOperation.DeleteSpace(
@@ -67,7 +67,7 @@ class GuildOperationQueueTest {
             futures.add(queue.submit(op));
         }
 
-        // Esperar a que todas terminen
+        // Wait for all to finish
         for (var f : futures) {
             OperationOutcome result = f.get(5, TimeUnit.SECONDS);
             assertTrue(result.succeeded());
@@ -75,46 +75,46 @@ class GuildOperationQueueTest {
 
         queue.shutdown();
 
-        // La concurrencia maxima debe ser 1
+        // Maximum concurrency must be 1
         assertEquals(1, maxConcurrent.get(),
-                "Nunca debe haber mas de una operacion ejecutandose a la vez");
+                "There must never be more than one operation executing at a time");
 
-        // Todas se ejecutaron
+        // All were executed
         assertEquals(5, executionOrder.size());
     }
 
     @Test
-    @DisplayName("Reintento tras fallo transitorio completa la tarea exitosamente")
+    @DisplayName("Retry after transient failure completes the task successfully")
     void retryOnTransientFailureCompletesSuccessfully() throws Exception {
         AtomicInteger attempts = new AtomicInteger(0);
         List<String> createdRoles = new ArrayList<>();
         List<String> createdChannels = new ArrayList<>();
 
-        // Ejecutor que simula la creacion idempotente:
-        // Intento 1: crea el rol con exito, pero falla antes de crear los canales (fallo parcial).
-        // Intento 2: al reintentar, comprueba si el rol ya existe (no lo duplica) y crea los canales.
+        // Executor simulating idempotent creation:
+        // Attempt 1: creates the role successfully, but fails before creating channels (partial failure).
+        // Attempt 2: on retry, checks if the role already exists (does not duplicate it) and creates channels.
         GuildOperationExecutor executor = op -> {
             int attempt = attempts.incrementAndGet();
 
-            // Paso 1: Rol de la town (idempotente: no duplicar si ya existe)
-            if (!createdRoles.contains("rol-test-town")) {
-                createdRoles.add("rol-test-town");
+            // Step 1: Town role (idempotent: do not duplicate if it already exists)
+            if (!createdRoles.contains("role-test-town")) {
+                createdRoles.add("role-test-town");
             }
 
-            // Fallo parcial en el primer intento tras crear el rol
+            // Partial failure on the first attempt after creating the role
             if (attempt == 1) {
-                return OperationOutcome.transientFailure("Error transitorio de red al crear canales");
+                return OperationOutcome.transientFailure("Transient network error creating channels");
             }
 
-            // Paso 2: Canales de la town (idempotente)
-            if (!createdChannels.contains("canal-test-town")) {
-                createdChannels.add("canal-test-town");
+            // Step 2: Town channels (idempotent)
+            if (!createdChannels.contains("channel-test-town")) {
+                createdChannels.add("channel-test-town");
             }
 
             return OperationOutcome.success();
         };
 
-        // Parametros de reintento rapidos para no demorar los tests
+        // Fast retry parameters to avoid delaying tests
         var queue = new GuildOperationQueue(executor, LOGGER,
                 3, java.time.Duration.ofMillis(10), 1.0);
         queue.start();
@@ -126,21 +126,21 @@ class GuildOperationQueueTest {
 
         queue.shutdown();
 
-        assertTrue(result.succeeded(), "Debe haber tenido exito tras reintento");
-        assertEquals(2, attempts.get(), "Exactamente 2 intentos: el original + 1 reintento");
-        assertEquals(1, createdRoles.size(), "No debe duplicar el rol");
-        assertEquals(1, createdChannels.size(), "No debe duplicar el canal");
-        assertEquals("rol-test-town", createdRoles.getFirst());
-        assertEquals("canal-test-town", createdChannels.getFirst());
+        assertTrue(result.succeeded(), "Must have succeeded after retry");
+        assertEquals(2, attempts.get(), "Exactly 2 attempts: the original + 1 retry");
+        assertEquals(1, createdRoles.size(), "Must not duplicate the role");
+        assertEquals(1, createdChannels.size(), "Must not duplicate the channel");
+        assertEquals("role-test-town", createdRoles.getFirst());
+        assertEquals("channel-test-town", createdChannels.getFirst());
     }
 
     @Test
-    @DisplayName("Fallo permanente no se reintenta")
+    @DisplayName("Permanent failure is not retried")
     void permanentFailureNoRetry() throws Exception {
         AtomicInteger attempts = new AtomicInteger(0);
         GuildOperationExecutor executor = op -> {
             attempts.incrementAndGet();
-            return OperationOutcome.permanentFailure("Permisos insuficientes");
+            return OperationOutcome.permanentFailure("Insufficient permissions");
         };
 
         var queue = new GuildOperationQueue(executor, LOGGER,
@@ -156,19 +156,19 @@ class GuildOperationQueueTest {
         assertFalse(result.succeeded());
         assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, result.status());
         assertEquals(1, attempts.get(),
-                "Un fallo permanente solo se intenta una vez");
+                "A permanent failure is only attempted once");
     }
 
     @Test
-    @DisplayName("Los fallos transitorios se reintentan hasta el maximo")
+    @DisplayName("Transient failures are retried up to the maximum")
     void transientFailureRetriesUpToMax() throws Exception {
         AtomicInteger attempts = new AtomicInteger(0);
         GuildOperationExecutor executor = op -> {
             attempts.incrementAndGet();
-            return OperationOutcome.transientFailure("Siempre falla");
+            return OperationOutcome.transientFailure("Always fails");
         };
 
-        // Reintentos rapidos para el test (10ms base, sin multiplicador)
+        // Fast retries for the test (10ms base, no multiplier)
         var queue = new GuildOperationQueue(executor, LOGGER,
                 5, java.time.Duration.ofMillis(10), 1.0);
         queue.start();
@@ -181,19 +181,19 @@ class GuildOperationQueueTest {
 
         assertFalse(result.succeeded());
         assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, result.status());
-        // 1 intento original + 5 reintentos = 6
+        // 1 original attempt + 5 retries = 6
         assertEquals(6, attempts.get(),
-                "Se deben agotar todos los reintentos (1 + MAX_RETRIES)");
+                "All retries must be exhausted (1 + MAX_RETRIES)");
     }
 
     @Test
-    @DisplayName("submit() nunca completa el futuro de forma excepcional")
+    @DisplayName("submit() never completes the future exceptionally")
     void submitNeverCompletesExceptionally() throws Exception {
-        // Caso 1: Lanza excepcion en intento 1 y luego tiene exito
+        // Case 1: Throws exception on attempt 1 and then succeeds
         AtomicInteger calls1 = new AtomicInteger(0);
         GuildOperationExecutor executor1 = op -> {
             if (calls1.incrementAndGet() == 1) {
-                throw new RuntimeException("Explosion inesperada");
+                throw new RuntimeException("Unexpected explosion");
             }
             return OperationOutcome.success();
         };
@@ -215,9 +215,9 @@ class GuildOperationQueueTest {
         assertTrue(result1.succeeded());
         assertEquals(2, calls1.get());
 
-        // Caso 2: Lanza excepcion en todos los intentos (agota reintentos sin completar excepcionalmente)
+        // Case 2: Throws exception on all attempts (exhausts retries without completing exceptionally)
         GuildOperationExecutor executor2 = op -> {
-            throw new IllegalStateException("Error constante");
+            throw new IllegalStateException("Constant error");
         };
 
         var queue2 = new GuildOperationQueue(executor2, LOGGER,
@@ -234,7 +234,7 @@ class GuildOperationQueueTest {
         assertFalse(result2.succeeded());
         assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, result2.status());
 
-        // Caso 3: El ejecutor devuelve null
+        // Case 3: The executor returns null
         GuildOperationExecutor executor3 = op -> null;
         var queue3 = new GuildOperationQueue(executor3, LOGGER,
                 1, java.time.Duration.ofMillis(5), 1.0);
@@ -249,7 +249,7 @@ class GuildOperationQueueTest {
         assertNotNull(result3);
         assertFalse(result3.succeeded());
 
-        // Caso 4: Se envia una operacion nula
+        // Case 4: A null operation is submitted
         var queue4 = new GuildOperationQueue(op -> OperationOutcome.success(), LOGGER);
         CompletableFuture<OperationOutcome> f4 = queue4.submit(null);
         OperationOutcome result4 = f4.get(5, TimeUnit.SECONDS);
@@ -261,7 +261,7 @@ class GuildOperationQueueTest {
     }
 
     @Test
-    @DisplayName("El orden de ejecucion respeta el orden de envio")
+    @DisplayName("Execution order respects submission order")
     void executionRespectsSubmissionOrder() throws Exception {
         List<String> order = new CopyOnWriteArrayList<>();
         GuildOperationExecutor executor = op -> {
@@ -286,17 +286,17 @@ class GuildOperationQueueTest {
 
         queue.shutdown();
 
-        // Verificar que el orden de ejecucion es secuencial
+        // Verify that execution order is sequential
         assertEquals(10, order.size());
         for (int i = 0; i < 10; i++) {
-            assertEquals("borrar definitivamente el espacio de town-" + i, order.get(i));
+            assertEquals("permanently delete space for town-" + i, order.get(i));
         }
     }
 
     @Test
-    @DisplayName("Shutdown completa los futuros pendientes sin colgarse")
+    @DisplayName("Shutdown completes pending futures without hanging")
     void shutdownCompletesPendingFutures() throws Exception {
-        // Ejecutor que tarda un poco para que haya pendientes al hacer shutdown
+        // Executor that takes a bit of time so there are pending operations on shutdown
         CountDownLatch started = new CountDownLatch(1);
         GuildOperationExecutor executor = op -> {
             started.countDown();
@@ -312,22 +312,22 @@ class GuildOperationQueueTest {
                 3, java.time.Duration.ofMillis(5), 1.0);
         queue.start();
 
-        // La primera se ejecutara (y tardara)
+        // The first will execute (and take time)
         var f1 = queue.submit(new GuildOperation.DeleteSpace(
-                java.util.UUID.randomUUID(), "lenta"));
-        // Las demas quedaran en cola
+                java.util.UUID.randomUUID(), "slow"));
+        // The others will remain queued
         var f2 = queue.submit(new GuildOperation.DeleteSpace(
-                java.util.UUID.randomUUID(), "pendiente-1"));
+                java.util.UUID.randomUUID(), "pending-1"));
         var f3 = queue.submit(new GuildOperation.DeleteSpace(
-                java.util.UUID.randomUUID(), "pendiente-2"));
+                java.util.UUID.randomUUID(), "pending-2"));
 
-        // Esperar a que la primera empiece
+        // Wait for the first to start
         assertTrue(started.await(5, TimeUnit.SECONDS));
 
-        // Apagar la cola
+        // Shut down the queue
         queue.shutdown();
 
-        // Los pendientes deben completarse (con fallo transitorio, no colgarse)
+        // Pending operations must complete (with transient failure, not hang)
         OperationOutcome r2 = f2.get(5, TimeUnit.SECONDS);
         OperationOutcome r3 = f3.get(5, TimeUnit.SECONDS);
 
@@ -338,7 +338,7 @@ class GuildOperationQueueTest {
     }
 
     @Test
-    @DisplayName("submit() tras shutdown() devuelve fallo transitorio inmediatamente")
+    @DisplayName("submit() after shutdown() returns transient failure immediately")
     void submitAfterShutdownReturnsTransientFailureImmediately() throws Exception {
         var queue = new GuildOperationQueue(op -> OperationOutcome.success(), LOGGER);
         queue.start();
@@ -353,11 +353,11 @@ class GuildOperationQueueTest {
         OperationOutcome outcome = future.get(1, TimeUnit.SECONDS);
         assertFalse(outcome.succeeded());
         assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, outcome.status());
-        assertTrue(outcome.reason().orElse("").contains("Cola detenida"));
+        assertTrue(outcome.reason().orElse("").contains("Queue stopped"));
     }
 
     @Test
-    @DisplayName("La cola sanitiza el token si una excepcion no controlada lo contiene")
+    @DisplayName("The queue sanitizes the token if an unhandled exception contains it")
     void sanitizerMasksTokenWhenExceptionOccurs() throws Exception {
         String secretToken = "super-secret-bot-token-999";
         List<String> loggedWarnings = new ArrayList<>();
@@ -369,11 +369,11 @@ class GuildOperationQueueTest {
         };
 
         GuildOperationExecutor executor = op -> {
-            throw new RuntimeException("Error fatal con token " + secretToken);
+            throw new RuntimeException("Fatal error with token " + secretToken);
         };
 
         var queue = new GuildOperationQueue(executor, testLogger, 1, java.time.Duration.ofMillis(5), 1.0,
-                msg -> msg.replace(secretToken, "[TOKEN_OCULTO]"));
+                msg -> msg.replace(secretToken, "[HIDDEN_TOKEN]"));
         queue.start();
 
         var op = new GuildOperation.DeleteSpace(java.util.UUID.randomUUID(), "town");
@@ -382,10 +382,10 @@ class GuildOperationQueueTest {
 
         assertFalse(outcome.succeeded());
         assertFalse(outcome.reason().orElse("").contains(secretToken));
-        assertTrue(outcome.reason().orElse("").contains("[TOKEN_OCULTO]"));
+        assertTrue(outcome.reason().orElse("").contains("[HIDDEN_TOKEN]"));
         assertFalse(loggedWarnings.isEmpty());
         for (String logMsg : loggedWarnings) {
-            assertFalse(logMsg.contains(secretToken), "El log nunca debe contener el token");
+            assertFalse(logMsg.contains(secretToken), "The log must never contain the token");
         }
     }
 }

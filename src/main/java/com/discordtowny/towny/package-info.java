@@ -1,8 +1,8 @@
 /**
- * Unica puerta a la API de Towny. Solo lectura.
+ * Sole gateway to the Towny API. Read-only.
  *
- * <p><b>Regla de dependencias:</b> no conoce JDA ni la base de datos. Solo se usa en el hilo principal.
+ * <p><b>Dependency rule:</b> does not know JDA or the database. Only used on the main thread.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.towny;

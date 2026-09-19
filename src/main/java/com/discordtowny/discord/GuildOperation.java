@@ -5,71 +5,71 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Mutacion del guild, descrita como dato.
+ * Guild mutation, described as data.
  *
- * <p>Cada implementacion debe ser <b>idempotente</b>: antes de crear algo se
- * comprueba si ya existe por su identificador guardado. Reintentar una
- * operacion a medias no puede duplicar canales ni roles.
+ * <p>Each implementation must be <b>idempotent</b>: before creating anything,
+ * it checks whether it already exists by its saved identifier. Retrying a
+ * half-finished operation cannot duplicate channels or roles.
  *
- * <p>Sellada a proposito: la cola sabe tratar exactamente estos casos, y anadir
- * uno nuevo obliga a decidir que hace con el.
+ * <p>Sealed on purpose: the queue knows how to handle exactly these cases, and adding
+ * a new one forces deciding what to do with it.
  */
 public sealed interface GuildOperation {
 
-    /** Para el registro y los mensajes de error. */
+    /** For logging and error messages. */
     String describe();
 
-    /** Crea lo que falte del espacio: categoria, rol, canales, permisos, roles. */
+    /** Creates whatever is missing from the space: category, role, channels, permissions, roles. */
     record CreateSpace(SpaceRequest request) implements GuildOperation {
         @Override
         public String describe() {
-            return "crear espacio de " + request.townName();
+            return "create space for " + request.townName();
         }
     }
 
-    /** Renombra canales y rol tras un renombrado de town. */
+    /** Renames channels and role following a town rename. */
     record RenameSpace(UUID townUuid, String oldName, String newName) implements GuildOperation {
         @Override
         public String describe() {
-            return "renombrar " + oldName + " a " + newName;
+            return "rename " + oldName + " to " + newName;
         }
     }
 
-    /** Canales a solo lectura, movidos al archivo, rol eliminado. */
+    /** Channels to read-only, moved to archive, role deleted. */
     record ArchiveSpace(UUID townUuid, String townName) implements GuildOperation {
         @Override
         public String describe() {
-            return "archivar espacio de " + townName;
+            return "archive space for " + townName;
         }
     }
 
-    /** Devuelve al activo un espacio archivado, con su historial. */
+    /** Returns an archived space to active, with its history. */
     record RestoreSpace(SpaceRequest request) implements GuildOperation {
         @Override
         public String describe() {
-            return "restaurar espacio de " + request.townName();
+            return "restore space for " + request.townName();
         }
     }
 
-    /** Borrado definitivo. Solo lo ordena un administrador. */
+    /** Permanent deletion. Only ordered by an administrator. */
     record DeleteSpace(UUID townUuid, String townName) implements GuildOperation {
         @Override
         public String describe() {
-            return "borrar definitivamente el espacio de " + townName;
+            return "permanently delete space for " + townName;
         }
     }
 
     /**
-     * Ajusta los roles de un miembro a los que le corresponden.
+     * Adjusts a member's roles to those they should have.
      *
-     * <p>Solo se tocan roles gestionados por el plugin: los demas roles del
-     * usuario no se miran ni se modifican.
+     * <p>Only roles managed by the plugin are touched: other roles of the
+     * user are neither inspected nor modified.
      */
     record ApplyMemberRoles(String discordId, List<String> grantRoleIds, List<String> revokeRoleIds)
             implements GuildOperation {
         @Override
         public String describe() {
-            return "ajustar roles de " + discordId;
+            return "adjust roles for " + discordId;
         }
     }
 }

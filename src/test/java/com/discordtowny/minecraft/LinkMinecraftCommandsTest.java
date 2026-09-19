@@ -21,7 +21,7 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.any;
 
 /**
- * Pruebas unitarias de la definicion de comandos Brigadier en {@link LinkMinecraftCommands}.
+ * Unit tests for Brigadier command definition in {@link LinkMinecraftCommands}.
  */
 class LinkMinecraftCommandsTest {
 
@@ -55,33 +55,33 @@ class LinkMinecraftCommandsTest {
     }
 
     @Test
-    void arbolDeComandosContieneEstructuraCorrecta() {
+    void commandTreeContainsCorrectStructure() {
         LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
                 linkService, config, messages, townyFacade);
 
         assertEquals("dt", root.getName());
 
-        // Comprueba subcomandos /dt link y /dt unlink
+        // Verify subcommands /dt link and /dt unlink
         CommandNode<CommandSourceStack> linkNode = root.getChild("link");
-        assertNotNull(linkNode, "Debe existir el subcomando link");
+        assertNotNull(linkNode, "Subcommand link must exist");
 
         CommandNode<CommandSourceStack> unlinkNode = root.getChild("unlink");
-        assertNotNull(unlinkNode, "Debe existir el subcomando unlink");
+        assertNotNull(unlinkNode, "Subcommand unlink must exist");
 
-        // Comprueba /dt admin unlink <jugador>
+        // Verify /dt admin unlink <jugador>
         CommandNode<CommandSourceStack> adminNode = root.getChild("admin");
-        assertNotNull(adminNode, "Debe existir el subcomando admin");
+        assertNotNull(adminNode, "Subcommand admin must exist");
 
         CommandNode<CommandSourceStack> adminUnlink = adminNode.getChild("unlink");
-        assertNotNull(adminUnlink, "Debe existir admin unlink");
+        assertNotNull(adminUnlink, "Subcommand admin unlink must exist");
 
-        CommandNode<CommandSourceStack> jugadorArg = adminUnlink.getChild("jugador");
-        assertNotNull(jugadorArg, "Debe existir el argumento <jugador>");
+        CommandNode<CommandSourceStack> playerArg = adminUnlink.getChild("jugador");
+        assertNotNull(playerArg, "Argument <jugador> must exist");
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void respuestasAsincronasSeProgramanEnElSchedulerDelHiloPrincipal() throws Exception {
+    void asynchronousResponsesAreScheduledOnMainThreadScheduler() throws Exception {
         java.util.concurrent.atomic.AtomicBoolean scheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
         java.util.function.Consumer<Runnable> scheduler = task -> {
             scheduled.set(true);
@@ -105,17 +105,17 @@ class LinkMinecraftCommandsTest {
 
         root.getChild("link").getCommand().run(ctx);
 
-        assertFalse(scheduled.get(), "No debe haberse invocado el scheduler antes de completar el futuro");
+        assertFalse(scheduled.get(), "Scheduler must not have been invoked before completing future");
 
-        // Completar el futuro desde otro hilo del pool
+        // Complete the future from another pool thread
         CompletableFuture.runAsync(() -> asyncFuture.complete(Optional.of("ABC234"))).join();
 
-        assertTrue(scheduled.get(), "La respuesta debe programarse en el scheduler al completar");
+        assertTrue(scheduled.get(), "Response must be scheduled on the scheduler upon completion");
     }
 
     @Test
     @SuppressWarnings("unchecked")
-    void erroresAsincronosSeProgramanEnElSchedulerDelHiloPrincipal() throws Exception {
+    void asynchronousErrorsAreScheduledOnMainThreadScheduler() throws Exception {
         java.util.concurrent.atomic.AtomicBoolean scheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
         java.util.function.Consumer<Runnable> scheduler = task -> {
             scheduled.set(true);
@@ -138,11 +138,11 @@ class LinkMinecraftCommandsTest {
 
         root.getChild("unlink").getCommand().run(ctx);
 
-        assertFalse(scheduled.get(), "No debe haberse invocado el scheduler antes del error");
+        assertFalse(scheduled.get(), "Scheduler must not have been invoked before error");
 
-        // Completar excepcionalmente desde otro hilo
+        // Complete exceptionally from another thread
         CompletableFuture.runAsync(() -> asyncFuture.completeExceptionally(new RuntimeException("Error simulado"))).join();
 
-        assertTrue(scheduled.get(), "El manejador de error debe programarse en el scheduler");
+        assertTrue(scheduled.get(), "Error handler must be scheduled on the scheduler");
     }
 }

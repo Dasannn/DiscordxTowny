@@ -4,32 +4,32 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Comprobacion y descarga de nuevas versiones publicadas en GitHub.
+ * Checking and downloading new versions published on GitHub.
  *
- * <p>Independiente del resto del plugin: no lee ni escribe su estado y puede
- * fallar entero sin afectar a nada.
+ * <p>Independent of the rest of the plugin: neither reads nor writes its
+ * state and can fail completely without affecting anything.
  *
- * <p>El origen de descarga es <b>constante en el codigo</b>, nunca
- * configurable: un origen editable convertiria el config.yml en ejecucion de
- * codigo arbitrario.
+ * <p>The download source is a <b>constant in the code</b>, never
+ * configurable: an editable source would turn config.yml into arbitrary
+ * code execution.
  *
- * <p>La nueva version se deja en la carpeta {@code update} del servidor y entra
- * al reiniciar. El jar en uso no se toca nunca: recargar un plugin con
- * conexiones vivas a Discord y a la base de datos corrompe estado.
+ * <p>The new version is placed in the server's {@code update} folder and
+ * takes effect upon restart. The jar in use is never touched: reloading a
+ * plugin with live connections to Discord and the database corrupts state.
  */
 public interface UpdateService {
 
     CompletableFuture<Optional<Release>> checkForUpdate();
 
     /**
-     * Descarga la version, verifica su SHA-256 contra el checksum publicado y
-     * solo entonces la deja en la carpeta {@code update}.
+     * Downloads the release, verifies its SHA-256 against the published checksum,
+     * and only then places it in the {@code update} folder.
      *
-     * <p>Un checksum que no coincide descarta la descarga sin dejar restos.
+     * <p>A checksum that does not match discards the download without leaving remnants.
      */
     CompletableFuture<DownloadResult> download(Release release);
 
-    /** Cierto si ya hay una version descargada esperando al reinicio. */
+    /** True if there is already a downloaded version waiting for restart. */
     boolean isUpdatePending();
 
     String currentVersion();

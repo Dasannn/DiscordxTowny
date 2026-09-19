@@ -1,11 +1,11 @@
 package com.discordtowny.storage;
 
 /**
- * Fallo de base de datos.
+ * Database failure.
  *
- * <p>El mensaje se muestra en consola: no debe contener credenciales. Al
- * construirla a partir de una causa, revisa que la cadena de conexion no viaje
- * en el texto.
+ * <p>The message is shown in the console: it must not contain credentials. When
+ * constructing it from a cause, ensure that the connection string is not
+ * included in the text.
  */
 public class StorageException extends RuntimeException {
 

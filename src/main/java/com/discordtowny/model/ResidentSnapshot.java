@@ -3,7 +3,7 @@ package com.discordtowny.model;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Lectura inmutable de un residente, tomada de Towny en el hilo principal. */
+/** Immutable snapshot of a resident, taken from Towny on the main thread. */
 public record ResidentSnapshot(
         UUID uuid,
         String name,

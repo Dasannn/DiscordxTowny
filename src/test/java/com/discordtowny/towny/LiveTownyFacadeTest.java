@@ -22,236 +22,236 @@ import org.mockito.MockedStatic;
 
 class LiveTownyFacadeTest {
     private TownyAPI api;
-    private LiveTownyFacade fachada;
+    private LiveTownyFacade facade;
     private Town town;
-    private Resident residente;
-    private MockedStatic<TownySettings> ajustes;
+    private Resident resident;
+    private MockedStatic<TownySettings> settings;
     private final UUID townId = UUID.randomUUID();
-    private final UUID residenteId = UUID.randomUUID();
-    private final List<String> avisos = new ArrayList<>();
+    private final UUID residentId = UUID.randomUUID();
+    private final List<String> warnings = new ArrayList<>();
 
     @BeforeEach
-    void preparar() {
-        // Town y Nation consultan los prefijos de economia al inicializar sus clases.
-        ajustes = mockStatic(TownySettings.class);
+    void prepare() {
+        // Town and Nation query economy prefixes when initializing their classes.
+        settings = mockStatic(TownySettings.class);
         api = mock(TownyAPI.class);
         town = mock(Town.class);
-        residente = mock(Resident.class);
-        fachada = new LiveTownyFacade(() -> api, () -> true, () -> true, avisos::add);
+        resident = mock(Resident.class);
+        facade = new LiveTownyFacade(() -> api, () -> true, () -> true, warnings::add);
         when(api.getDataSource()).thenReturn(mock(TownyDataSource.class));
         when(api.getTown(townId)).thenReturn(town);
         when(api.getTown("Roma")).thenReturn(town);
-        when(api.getResident(residenteId)).thenReturn(residente);
-        when(api.getResident("Ana")).thenReturn(residente);
+        when(api.getResident(residentId)).thenReturn(resident);
+        when(api.getResident("Ana")).thenReturn(resident);
         when(api.getTowns()).thenReturn(List.of(town));
         when(town.getUUID()).thenReturn(townId);
         when(town.getName()).thenReturn("Roma");
-        when(town.getMayor()).thenReturn(residente);
-        when(town.getResidents()).thenReturn(new ArrayList<>(List.of(residente)));
+        when(town.getMayor()).thenReturn(resident);
+        when(town.getResidents()).thenReturn(new ArrayList<>(List.of(resident)));
         when(town.getNumTownBlocks()).thenReturn(12);
         when(town.getRegistered()).thenReturn(123456L);
-        when(residente.getUUID()).thenReturn(residenteId);
-        when(residente.getName()).thenReturn("Ana");
-        when(residente.getTownOrNull()).thenReturn(town);
-        when(residente.isMayor()).thenReturn(true);
-        when(residente.isOnline()).thenReturn(true);
-        when(residente.getLastOnline()).thenReturn(654321L);
+        when(resident.getUUID()).thenReturn(residentId);
+        when(resident.getName()).thenReturn("Ana");
+        when(resident.getTownOrNull()).thenReturn(town);
+        when(resident.isMayor()).thenReturn(true);
+        when(resident.isOnline()).thenReturn(true);
+        when(resident.getLastOnline()).thenReturn(654321L);
     }
 
     @AfterEach
-    void cerrarAjustes() {
-        if (ajustes != null) ajustes.close();
+    void closeSettings() {
+        if (settings != null) settings.close();
     }
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    void copiaTodosLosCamposConYSinEconomia(boolean economia) {
-        try (var estado = mockStatic(TownyEconomyHandler.class)) {
-            estado.when(TownyEconomyHandler::isActive).thenReturn(economia);
-            // Las cuentas de Towny requieren un servidor; sustituir solo su lectura.
-            fachada = new LiveTownyFacade(() -> api, () -> true, () -> true, avisos::add,
+    void copiesAllFieldsWithAndWithoutEconomy(boolean economy) {
+        try (var state = mockStatic(TownyEconomyHandler.class)) {
+            state.when(TownyEconomyHandler::isActive).thenReturn(economy);
+            // Towny accounts require a server; substitute only their reading.
+            facade = new LiveTownyFacade(() -> api, () -> true, () -> true, warnings::add,
                     entidad -> {
-                        assertTrue(economia, "No leer saldo sin economia");
+                        assertTrue(economy, "Do not read balance without economy");
                         assertSame(town, entidad);
                         return 42.5;
                     }, entidad -> {
-                        assertTrue(economia, "No leer saldo sin economia");
-                        assertSame(residente, entidad);
+                        assertTrue(economy, "Do not read balance without economy");
+                        assertSame(resident, entidad);
                         return 7.5;
                     });
-            Nation nacion = mock(Nation.class);
-            when(nacion.getName()).thenReturn("Italia");
-            when(town.getNationOrNull()).thenReturn(nacion);
+            Nation nation = mock(Nation.class);
+            when(nation.getName()).thenReturn("Italia");
+            when(town.getNationOrNull()).thenReturn(nation);
             when(town.isRuined()).thenReturn(true);
 
-            assertTrue(fachada.isAvailable());
-            var copia = fachada.town(townId).orElseThrow();
-            assertEquals(townId, copia.uuid());
-            assertEquals("Roma", copia.name());
-            assertEquals(residenteId, copia.mayorUuid());
-            assertEquals(List.of(residenteId), copia.residentUuids());
-            assertTrue(copia.ruined());
-            assertEquals("Italia", copia.nationName().orElseThrow());
-            assertEquals(12, copia.townBlocks());
-            assertEquals(123456L, copia.registeredMillis());
-            assertEquals(economia ? 42.5 : 0, copia.bankBalance());
-            assertEquals(copia, fachada.townByName("Roma").orElseThrow());
-            assertEquals(copia, fachada.townOf(residenteId).orElseThrow());
-            assertEquals(List.of(copia), fachada.allTowns());
-            assertEquals(1, fachada.townCount());
+            assertTrue(facade.isAvailable());
+            var copy = facade.town(townId).orElseThrow();
+            assertEquals(townId, copy.uuid());
+            assertEquals("Roma", copy.name());
+            assertEquals(residentId, copy.mayorUuid());
+            assertEquals(List.of(residentId), copy.residentUuids());
+            assertTrue(copy.ruined());
+            assertEquals("Italia", copy.nationName().orElseThrow());
+            assertEquals(12, copy.townBlocks());
+            assertEquals(123456L, copy.registeredMillis());
+            assertEquals(economy ? 42.5 : 0, copy.bankBalance());
+            assertEquals(copy, facade.townByName("Roma").orElseThrow());
+            assertEquals(copy, facade.townOf(residentId).orElseThrow());
+            assertEquals(List.of(copy), facade.allTowns());
+            assertEquals(1, facade.townCount());
 
-            var persona = fachada.resident(residenteId).orElseThrow();
-            assertEquals(residenteId, persona.uuid());
-            assertEquals("Ana", persona.name());
-            assertEquals(townId, persona.townUuid().orElseThrow());
-            assertEquals("Roma", persona.townName().orElseThrow());
-            assertTrue(persona.mayor());
-            assertTrue(persona.online());
-            assertEquals(654321L, persona.lastOnlineMillis());
-            assertEquals(economia ? 7.5 : 0, persona.balance());
-            assertEquals(persona, fachada.residentByName("Ana").orElseThrow());
-            if (!economia) {
+            var person = facade.resident(residentId).orElseThrow();
+            assertEquals(residentId, person.uuid());
+            assertEquals("Ana", person.name());
+            assertEquals(townId, person.townUuid().orElseThrow());
+            assertEquals("Roma", person.townName().orElseThrow());
+            assertTrue(person.mayor());
+            assertTrue(person.online());
+            assertEquals(654321L, person.lastOnlineMillis());
+            assertEquals(economy ? 7.5 : 0, person.balance());
+            assertEquals(person, facade.residentByName("Ana").orElseThrow());
+            if (!economy) {
                 verify(town, never()).getAccount();
-                verify(residente, never()).getAccount();
+                verify(resident, never()).getAccount();
             }
         }
     }
 
     @Test
-    void sinCacheYSinReferenciasMutables() {
-        try (var estado = mockStatic(TownyEconomyHandler.class)) {
-            var copia = fachada.town(townId).orElseThrow();
-            assertTrue(copia.nationName().isEmpty());
+    void noCacheAndNoMutableReferences() {
+        try (var state = mockStatic(TownyEconomyHandler.class)) {
+            var copy = facade.town(townId).orElseThrow();
+            assertTrue(copy.nationName().isEmpty());
             town.getResidents().clear();
             when(town.getName()).thenReturn("NuevaRoma");
-            assertEquals(1, copia.residentCount());
-            assertEquals("Roma", copia.name());
-            assertEquals("NuevaRoma", fachada.town(townId).orElseThrow().name());
-            assertEquals(0, fachada.town(townId).orElseThrow().residentCount());
-            assertThrows(UnsupportedOperationException.class, () -> copia.residentUuids().clear());
-            assertThrows(UnsupportedOperationException.class, () -> fachada.allTowns().clear());
+            assertEquals(1, copy.residentCount());
+            assertEquals("Roma", copy.name());
+            assertEquals("NuevaRoma", facade.town(townId).orElseThrow().name());
+            assertEquals(0, facade.town(townId).orElseThrow().residentCount());
+            assertThrows(UnsupportedOperationException.class, () -> copy.residentUuids().clear());
+            assertThrows(UnsupportedOperationException.class, () -> facade.allTowns().clear());
         }
     }
 
     @Test
-    void entidadesAusentesYResidenteSinTown() {
-        try (var estado = mockStatic(TownyEconomyHandler.class)) {
-            assertTrue(fachada.town(UUID.randomUUID()).isEmpty());
-            assertTrue(fachada.townByName("otra").isEmpty());
-            assertTrue(fachada.resident(UUID.randomUUID()).isEmpty());
-            assertTrue(fachada.residentByName("otro").isEmpty());
-            assertTrue(fachada.townOf(UUID.randomUUID()).isEmpty());
-            when(residente.getTownOrNull()).thenReturn(null);
-            when(residente.isMayor()).thenReturn(false);
-            assertTrue(fachada.townOf(residenteId).isEmpty());
-            var copia = fachada.resident(residenteId).orElseThrow();
-            assertTrue(copia.townName().isEmpty());
-            assertTrue(copia.townUuid().isEmpty());
-            assertFalse(copia.mayor());
+    void missingEntitiesAndResidentWithoutTown() {
+        try (var state = mockStatic(TownyEconomyHandler.class)) {
+            assertTrue(facade.town(UUID.randomUUID()).isEmpty());
+            assertTrue(facade.townByName("otra").isEmpty());
+            assertTrue(facade.resident(UUID.randomUUID()).isEmpty());
+            assertTrue(facade.residentByName("otro").isEmpty());
+            assertTrue(facade.townOf(UUID.randomUUID()).isEmpty());
+            when(resident.getTownOrNull()).thenReturn(null);
+            when(resident.isMayor()).thenReturn(false);
+            assertTrue(facade.townOf(residentId).isEmpty());
+            var copy = facade.resident(residentId).orElseThrow();
+            assertTrue(copy.townName().isEmpty());
+            assertTrue(copy.townUuid().isEmpty());
+            assertFalse(copy.mayor());
         }
     }
 
-    private void comprobarVacios(LiveTownyFacade objeto) {
-        assertFalse(objeto.isAvailable());
-        assertTrue(objeto.town(townId).isEmpty());
-        assertTrue(objeto.townByName("Roma").isEmpty());
-        assertTrue(objeto.townOf(residenteId).isEmpty());
-        assertTrue(objeto.resident(residenteId).isEmpty());
-        assertTrue(objeto.residentByName("Ana").isEmpty());
-        assertTrue(objeto.allTowns().isEmpty());
-        assertEquals(0, objeto.townCount());
+    private void verifyEmpty(LiveTownyFacade object) {
+        assertFalse(object.isAvailable());
+        assertTrue(object.town(townId).isEmpty());
+        assertTrue(object.townByName("Roma").isEmpty());
+        assertTrue(object.townOf(residentId).isEmpty());
+        assertTrue(object.resident(residentId).isEmpty());
+        assertTrue(object.residentByName("Ana").isEmpty());
+        assertTrue(object.allTowns().isEmpty());
+        assertEquals(0, object.townCount());
     }
 
     @Test
-    void dependenciaAusenteDeshabilitadaOFallidaDevuelveVacio() {
-        comprobarVacios(new LiveTownyFacade(() -> api, () -> false, () -> true, avisos::add));
-        comprobarVacios(new LiveTownyFacade(() -> null, () -> true, () -> true, avisos::add));
-        comprobarVacios(new LiveTownyFacade(() -> { throw new NoClassDefFoundError("Towny"); },
-                () -> true, () -> true, avisos::add));
-        comprobarVacios(new LiveTownyFacade(() -> { throw new IllegalStateException("fallo"); },
-                () -> true, () -> true, avisos::add));
+    void missingDisabledOrFailedDependencyReturnsEmpty() {
+        verifyEmpty(new LiveTownyFacade(() -> api, () -> false, () -> true, warnings::add));
+        verifyEmpty(new LiveTownyFacade(() -> null, () -> true, () -> true, warnings::add));
+        verifyEmpty(new LiveTownyFacade(() -> { throw new NoClassDefFoundError("Towny"); },
+                () -> true, () -> true, warnings::add));
+        verifyEmpty(new LiveTownyFacade(() -> { throw new IllegalStateException("fallo"); },
+                () -> true, () -> true, warnings::add));
         verifyNoInteractions(api);
-        assertEquals(2, avisos.size());
+        assertEquals(2, warnings.size());
     }
 
     @Test
-    void fallosDeApiVisiblesYRecuperacionSinCache() {
+    void visibleApiFailuresAndRecoveryWithoutCache() {
         when(api.getTown(townId)).thenThrow(new IllegalStateException("fallo"));
-        assertTrue(fachada.town(townId).isEmpty());
-        assertTrue(fachada.town(townId).isEmpty());
-        assertEquals(1, avisos.size());
+        assertTrue(facade.town(townId).isEmpty());
+        assertTrue(facade.town(townId).isEmpty());
+        assertEquals(1, warnings.size());
         when(api.getTowns()).thenThrow(new IllegalStateException("fallo"));
-        assertTrue(fachada.allTowns().isEmpty());
-        assertEquals(0, fachada.townCount());
+        assertTrue(facade.allTowns().isEmpty());
+        assertEquals(0, facade.townCount());
         doReturn(null).when(api).getTown(townId);
-        assertTrue(fachada.town(townId).isEmpty());
-        assertTrue(fachada.isAvailable());
+        assertTrue(facade.town(townId).isEmpty());
+        assertTrue(facade.isAvailable());
     }
 
     @Test
-    void falloDuranteSnapshotNoEntregaListaParcial() {
-        try (var estado = mockStatic(TownyEconomyHandler.class)) {
-            Town rota = mock(Town.class);
-            when(rota.getMayor()).thenThrow(new IllegalStateException("fallo"));
-            when(api.getTowns()).thenReturn(List.of(town, rota));
-            assertTrue(fachada.allTowns().isEmpty());
-            assertEquals(1, avisos.size());
-            assertTrue(fachada.isAvailable());
+    void failureDuringSnapshotDoesNotDeliverPartialList() {
+        try (var state = mockStatic(TownyEconomyHandler.class)) {
+            Town broken = mock(Town.class);
+            when(broken.getMayor()).thenThrow(new IllegalStateException("fallo"));
+            when(api.getTowns()).thenReturn(List.of(town, broken));
+            assertTrue(facade.allTowns().isEmpty());
+            assertEquals(1, warnings.size());
+            assertTrue(facade.isAvailable());
         }
     }
 
     @Test
-    void disponibilidadSeRecuperaTrasFalloTransitorioDeLectura() {
+    void availabilityRecoversAfterTransientReadFailure() {
         when(api.getTown(townId)).thenThrow(new IllegalStateException("fallo pasajero"));
-        assertTrue(fachada.town(townId).isEmpty());
+        assertTrue(facade.town(townId).isEmpty());
         doReturn(town).when(api).getTown(townId);
 
-        assertTrue(fachada.isAvailable());
-        assertTrue(fachada.isAvailable());
-        assertEquals(1, avisos.size());
+        assertTrue(facade.isAvailable());
+        assertTrue(facade.isAvailable());
+        assertEquals(1, warnings.size());
         verify(api, times(2)).getDataSource();
     }
 
     @Test
-    void disponibilidadReintentaTrasFalloDeLaComprobacion() {
+    void availabilityRetriesAfterCheckFailure() {
         when(api.getDataSource()).thenThrow(new IllegalStateException("fallo pasajero"))
                 .thenReturn(null, mock(TownyDataSource.class));
-        assertFalse(fachada.isAvailable());
-        assertFalse(fachada.isAvailable());
-        assertTrue(fachada.isAvailable());
-        assertEquals(1, avisos.size());
+        assertFalse(facade.isAvailable());
+        assertFalse(facade.isAvailable());
+        assertTrue(facade.isAvailable());
+        assertEquals(1, warnings.size());
     }
 
     @Test
-    void townSinAlcaldeNoInvalidaLasDemas() {
-        try (var estado = mockStatic(TownyEconomyHandler.class)) {
-            var valida = fachada.town(townId).orElseThrow();
-            Town sinAlcalde = mock(Town.class);
-            UUID sinAlcaldeId = UUID.randomUUID();
-            when(api.getTown(sinAlcaldeId)).thenReturn(sinAlcalde);
-            when(api.getTown("Administrativa")).thenReturn(sinAlcalde);
-            when(residente.getTownOrNull()).thenReturn(sinAlcalde);
-            when(api.getTowns()).thenReturn(List.of(sinAlcalde, town));
+    void townWithoutMayorDoesNotInvalidateTheOthers() {
+        try (var state = mockStatic(TownyEconomyHandler.class)) {
+            var valid = facade.town(townId).orElseThrow();
+            Town withoutMayor = mock(Town.class);
+            UUID withoutMayorId = UUID.randomUUID();
+            when(api.getTown(withoutMayorId)).thenReturn(withoutMayor);
+            when(api.getTown("Administrativa")).thenReturn(withoutMayor);
+            when(resident.getTownOrNull()).thenReturn(withoutMayor);
+            when(api.getTowns()).thenReturn(List.of(withoutMayor, town));
 
-            assertEquals(List.of(valida), fachada.allTowns());
-            assertTrue(fachada.town(sinAlcaldeId).isEmpty());
-            assertTrue(fachada.townByName("Administrativa").isEmpty());
-            assertTrue(fachada.townOf(residenteId).isEmpty());
-            assertTrue(fachada.isAvailable());
-            assertTrue(avisos.isEmpty());
-            assertEquals(2, fachada.townCount());
+            assertEquals(List.of(valid), facade.allTowns());
+            assertTrue(facade.town(withoutMayorId).isEmpty());
+            assertTrue(facade.townByName("Administrativa").isEmpty());
+            assertTrue(facade.townOf(residentId).isEmpty());
+            assertTrue(facade.isAvailable());
+            assertTrue(warnings.isEmpty());
+            assertEquals(2, facade.townCount());
         }
     }
 
     @Test
-    void cadaMetodoRechazaHiloIncorrectoAntesDeTocarTowny() {
-        fachada = new LiveTownyFacade(() -> api, () -> { fail("No consultar Towny"); return true; },
-                () -> false, avisos::add);
-        List<Runnable> llamadas = List.of(() -> fachada.isAvailable(), () -> fachada.town(townId),
-                () -> fachada.townByName("Roma"), () -> fachada.townOf(residenteId),
-                () -> fachada.resident(residenteId), () -> fachada.residentByName("Ana"),
-                () -> fachada.allTowns(), () -> fachada.townCount());
-        for (Runnable llamada : llamadas) assertThrows(IllegalStateException.class, llamada::run);
+    void everyMethodRejectsIncorrectThreadBeforeTouchingTowny() {
+        facade = new LiveTownyFacade(() -> api, () -> { fail("Do not query Towny"); return true; },
+                () -> false, warnings::add);
+        List<Runnable> calls = List.of(() -> facade.isAvailable(), () -> facade.town(townId),
+                () -> facade.townByName("Roma"), () -> facade.townOf(residentId),
+                () -> facade.resident(residentId), () -> facade.residentByName("Ana"),
+                () -> facade.allTowns(), () -> facade.townCount());
+        for (Runnable call : calls) assertThrows(IllegalStateException.class, call::run);
         verifyNoInteractions(api);
     }
 }

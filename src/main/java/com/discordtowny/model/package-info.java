@@ -1,10 +1,10 @@
 /**
- * Tipos inmutables que cruzan fronteras entre paquetes.
+ * Immutable types that cross boundaries between packages.
  *
- * <p><b>Regla de dependencias:</b> no depende de nada. Ni de Bukkit, ni de JDA,
- * ni de JDBC, ni de ningun otro paquete propio. Todo lo demas puede depender de
- * el, y por eso puede hacerlo sin crear ciclos.
+ * <p><b>Dependency rule:</b> depends on nothing. Neither Bukkit, nor JDA,
+ * nor JDBC, nor any other internal package. Everything else may depend on
+ * it, and therefore can do so without creating cycles.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.model;

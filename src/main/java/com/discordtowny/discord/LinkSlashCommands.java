@@ -24,10 +24,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Adaptador de Discord para los comandos slash de vinculacion (/link y /unlink).
+ * Discord adapter for the linking slash commands (/link and /unlink).
  *
- * <p>Las respuestas de vinculacion son obligatoriamente efimeras para que el
- * codigo de vinculacion no quede expuesto publicamente en los canales del guild.
+ * <p>Linking responses are mandatory ephemeral so that the
+ * link code is not publicly exposed in guild channels.
  */
 public final class LinkSlashCommands extends ListenerAdapter {
 
@@ -49,24 +49,24 @@ public final class LinkSlashCommands extends ListenerAdapter {
     }
 
     /**
-     * Definiciones de los comandos slash para registrar en el guild de Discord,
-     * filtrando aquellos desactivados por configuracion.
+     * Slash command definitions to register in the Discord guild,
+     * filtering those disabled by configuration.
      */
     public static List<SlashCommandData> getCommandData(PluginConfig config) {
         List<SlashCommandData> data = new ArrayList<>();
         if (config == null || config.commands().byName("link").map(PluginConfig.DiscordCommand::enabled).orElse(true)) {
-            data.add(Commands.slash("link", "Vincula tu cuenta de Minecraft con Discord")
+            data.add(Commands.slash("link", "Link your Minecraft account with Discord")
                     .addOption(OptionType.STRING, "codigo",
-                            "Codigo de 6 caracteres generado en el juego con /dt link", true));
+                            "6-character code generated in-game with /dt link", true));
         }
         if (config == null || config.commands().byName("unlink").map(PluginConfig.DiscordCommand::enabled).orElse(true)) {
-            data.add(Commands.slash("unlink", "Desvincula tu cuenta de Minecraft de Discord"));
+            data.add(Commands.slash("unlink", "Unlink your Minecraft account from Discord"));
         }
         return data;
     }
 
     /**
-     * Definiciones completas de comandos slash.
+     * Complete slash command definitions.
      */
     public static List<SlashCommandData> getCommandData() {
         return getCommandData(null);
@@ -79,14 +79,14 @@ public final class LinkSlashCommands extends ListenerAdapter {
             return;
         }
 
-        // Comprobar si el comando esta habilitado segun configuracion
+        // Check if the command is enabled according to configuration
         Optional<PluginConfig.DiscordCommand> cmdOpt = config.commands().byName(name);
         if (cmdOpt.isPresent() && !cmdOpt.get().enabled()) {
             event.reply(messages.plain("general.no-permission", Map.of())).setEphemeral(true).queue();
             return;
         }
 
-        // Comprobar cooldown por usuario
+        // Check per-user cooldown
         String userId = event.getUser().getId();
         Instant now = clock.instant();
         Duration cooldown = config.commands().cooldown();
@@ -112,7 +112,7 @@ public final class LinkSlashCommands extends ListenerAdapter {
     }
 
     private void handleLink(SlashCommandInteractionEvent event) {
-        // Respuesta efimera obligatoria: el codigo nunca debe quedar visible en el canal publico
+        // Mandatory ephemeral reply: the code must never remain visible in the public channel
         event.deferReply(true).queue(hook -> {
             OptionMapping option = event.getOption("codigo");
             if (option == null) {
@@ -162,7 +162,7 @@ public final class LinkSlashCommands extends ListenerAdapter {
                     return CompletableFuture.completedFuture(false);
                 }
                 AccountLink link = optLink.get();
-                // Desvinculacion condicional propagando la version leida desde la autorizacion
+                // Conditional unlinking propagating the version read from authorization
                 return linkService.unlink(link.uuid(), discordId, link.linkedAt());
             }).thenAccept(unlinked -> {
                 String reply = unlinked

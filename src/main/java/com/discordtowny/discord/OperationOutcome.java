@@ -3,20 +3,20 @@ package com.discordtowny.discord;
 import java.util.Optional;
 
 /**
- * Resultado de una operacion sobre el guild.
+ * Outcome of an operation on the guild.
  *
- * <p>La distincion entre fallo transitorio y permanente decide que hace la cola:
- * el transitorio se reintenta con espera creciente, el permanente corta la
- * tarea y deja el espacio como inconsistente para que lo retome la
- * reconciliacion.
+ * <p>The distinction between transient and permanent failure decides what the
+ * queue does: transient failure is retried with increasing backoff, permanent
+ * failure aborts the task and leaves the space as inconsistent for
+ * reconciliation to pick up.
  */
 public record OperationOutcome(Status status, Optional<String> reason) {
 
     public enum Status {
         SUCCESS,
-        /** Red caida, limite de peticiones, Discord de mal humor. Se reintenta. */
+        /** Network down, rate limit, Discord having a bad day. Retried. */
         TRANSIENT_FAILURE,
-        /** Faltan permisos, se alcanzo un limite de Discord. No se reintenta. */
+        /** Missing permissions, reached a Discord limit. Not retried. */
         PERMANENT_FAILURE
     }
 

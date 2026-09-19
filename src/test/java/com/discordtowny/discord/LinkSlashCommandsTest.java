@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Pruebas unitarias para {@link LinkSlashCommands}.
+ * Unit tests for {@link LinkSlashCommands}.
  */
 class LinkSlashCommandsTest {
 
@@ -91,7 +91,7 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void getCommandDataDefineComandosCorrectos() {
+    void getCommandDataDefinesCorrectCommands() {
         List<SlashCommandData> data = LinkSlashCommands.getCommandData();
         assertEquals(2, data.size());
 
@@ -108,7 +108,7 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void handleLinkCanjeExitoso() {
+    void handleLinkSuccessfulRedemption() {
         when(event.getName()).thenReturn("link");
         OptionMapping opt = mock(OptionMapping.class);
         when(opt.getAsString()).thenReturn("ABC234");
@@ -120,12 +120,12 @@ class LinkSlashCommandsTest {
 
         commands.onSlashCommandInteraction(event);
 
-        verify(event).deferReply(true); // Efimera
+        verify(event).deferReply(true); // Ephemeral
         verify(hook).editOriginal("Cuenta vinculada con exito");
     }
 
     @Test
-    void handleLinkCodigoInvalido() {
+    void handleLinkInvalidCode() {
         when(event.getName()).thenReturn("link");
         OptionMapping opt = mock(OptionMapping.class);
         when(opt.getAsString()).thenReturn("MAL123");
@@ -141,7 +141,7 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void handleLinkDemasiadosIntentos() {
+    void handleLinkTooManyAttempts() {
         when(event.getName()).thenReturn("link");
         OptionMapping opt = mock(OptionMapping.class);
         when(opt.getAsString()).thenReturn("MAL123");
@@ -157,7 +157,7 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void handleUnlinkUsuarioVinculado() {
+    void handleUnlinkLinkedUser() {
         when(event.getName()).thenReturn("unlink");
         UUID uuid = UUID.randomUUID();
         AccountLink link = new AccountLink(uuid, "123456789012345678", Instant.now(), "Jugador");
@@ -175,7 +175,7 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void handleUnlinkUsuarioNoVinculado() {
+    void handleUnlinkUnlinkedUser() {
         when(event.getName()).thenReturn("unlink");
 
         when(linkService.findByDiscordId("123456789012345678"))
@@ -188,8 +188,8 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void handleLinkRespuestaSiempreEfimeraInclusoSiConfiguracionDiceFalso() {
-        // Configuracion con ephemeral = false para link
+    void handleLinkResponseAlwaysEphemeralEvenIfConfigurationSaysFalse() {
+        // Configuration with ephemeral = false for link
         PluginConfig nonEphemeralConfig = new PluginConfig(
                 config.discord(), config.database(), config.structure(), config.roles(),
                 config.limits(), config.lifecycle(), config.sync(), config.linking(),
@@ -212,12 +212,12 @@ class LinkSlashCommandsTest {
 
         nonEphemeralCommands.onSlashCommandInteraction(event);
 
-        // A pesar de que ephemeral=false en config, deferReply DEBE ser true
+        // Despite ephemeral=false in config, deferReply MUST be true
         verify(event).deferReply(true);
     }
 
     @Test
-    void comandoDesactivadoSeRechazaSinInvocarServicio() {
+    void disabledCommandIsRejectedWithoutInvokingService() {
         PluginConfig disabledConfig = new PluginConfig(
                 config.discord(), config.database(), config.structure(), config.roles(),
                 config.limits(), config.lifecycle(), config.sync(), config.linking(),
@@ -243,7 +243,7 @@ class LinkSlashCommandsTest {
     }
 
     @Test
-    void cooldownPorUsuarioRechazaPeticionRepetidaSinInvocarServicio() {
+    void perUserCooldownRejectsRepeatedRequestWithoutInvokingService() {
         when(event.getName()).thenReturn("link");
         OptionMapping opt = mock(OptionMapping.class);
         when(opt.getAsString()).thenReturn("ABC234");
@@ -258,18 +258,18 @@ class LinkSlashCommandsTest {
         when(event.reply(anyString())).thenReturn(cooldownReply);
         when(cooldownReply.setEphemeral(true)).thenReturn(cooldownReply);
 
-        // Primer intento dentro del cooldown: pasa y se procesa
+        // First attempt within cooldown: passes and is processed
         commands.onSlashCommandInteraction(event);
         verify(linkService, times(1)).redeem("ABC234", "123456789012345678");
 
-        // Segundo intento inmediato del mismo usuario: se bloquea por cooldown sin invocar el servicio
+        // Second immediate attempt by same user: blocked by cooldown without invoking service
         commands.onSlashCommandInteraction(event);
         verify(linkService, times(1)).redeem(any(), any());
         verify(event).reply("Espera cooldown");
     }
 
     @Test
-    void getCommandDataFiltraComandosDesactivadosSegunConfiguracion() {
+    void getCommandDataFiltersDisabledCommandsAccordingToConfiguration() {
         PluginConfig disabledConfig = new PluginConfig(
                 config.discord(), config.database(), config.structure(), config.roles(),
                 config.limits(), config.lifecycle(), config.sync(), config.linking(),

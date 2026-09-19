@@ -17,225 +17,225 @@ import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 /**
- * Carga explicita: cada load recarga ambos archivos y publica solo si todo es valido.
+ * Explicit loading: each load reloads both files and publishes only if everything is valid.
  *
- * <p>El cableado entrega la carpeta de datos y logger::warning. Al arrancar o
- * recargar, debe capturar ConfigException y mantener el plugin degradado si no
- * dispone de una configuracion valida. Una recarga rechazada conserva los textos
- * anteriores; el consumidor conserva tambien su PluginConfig anterior.
+ * <p>The wiring provides the data folder and logger::warning. On startup or
+ * reload, it must catch ConfigException and keep the plugin degraded if it
+ * lacks a valid configuration. A rejected reload retains previous texts;
+ * the consumer also retains its previous PluginConfig.
  *
- * <p>config-version es metadato del archivo, no un campo de PluginConfig.
+ * <p>config-version is file metadata, not a PluginConfig field.
  */
 public final class YamlConfigLoader implements ConfigLoader {
-    private final Path carpeta;
-    private final Consumer<String> aviso;
-    private volatile Messages mensajes;
+    private final Path dataFolder;
+    private final Consumer<String> warning;
+    private volatile Messages messages;
 
-    public YamlConfigLoader(Path carpeta, Consumer<String> aviso) {
-        this.carpeta = carpeta;
-        this.aviso = aviso;
-        this.mensajes = new YamlMessages(Map.of(), aviso);
+    public YamlConfigLoader(Path dataFolder, Consumer<String> warning) {
+        this.dataFolder = dataFolder;
+        this.warning = warning;
+        this.messages = new YamlMessages(Map.of(), warning);
     }
 
     @Override
     public synchronized PluginConfig load() {
-        Lectura lectura = leer();
-        if (!lectura.problemas.isEmpty()) {
-            throw new ConfigException(String.join("; ", lectura.problemas));
+        ReadResult readResult = read();
+        if (!readResult.problems.isEmpty()) {
+            throw new ConfigException(String.join("; ", readResult.problems));
         }
-        mensajes = new YamlMessages(lectura.textos, aviso);
-        return lectura.config;
+        messages = new YamlMessages(readResult.texts, warning);
+        return readResult.config;
     }
 
     @Override
     public Messages messages() {
-        return mensajes;
+        return messages;
     }
 
     @Override
     public List<String> validate() {
-        return List.copyOf(leer().problemas);
+        return List.copyOf(read().problems);
     }
 
-    private Lectura leer() {
-        List<String> problemas = new ArrayList<>();
-        YamlConfiguration yaml = archivo("config.yml", problemas);
-        YamlConfiguration textos = archivo("messages.yml", problemas);
-        Map<String, String> mapa = new HashMap<>();
-        for (String clave : textos.getKeys(true)) {
-            if (textos.isString(clave)) mapa.put(clave, textos.getString(clave));
+    private ReadResult read() {
+        List<String> problems = new ArrayList<>();
+        YamlConfiguration yaml = file("config.yml", problems);
+        YamlConfiguration texts = file("messages.yml", problems);
+        Map<String, String> map = new HashMap<>();
+        for (String key : texts.getKeys(true)) {
+            if (texts.isString(key)) map.put(key, texts.getString(key));
         }
-        PluginConfig config = new Valores(yaml, problemas).config();
-        return new Lectura(config, mapa, problemas);
+        PluginConfig config = new Values(yaml, problems).config();
+        return new ReadResult(config, map, problems);
     }
 
-    private YamlConfiguration archivo(String nombre, List<String> problemas) {
+    private YamlConfiguration file(String name, List<String> problems) {
         YamlConfiguration yaml = new YamlConfiguration();
-        try (var lector = Files.newBufferedReader(carpeta.resolve(nombre), StandardCharsets.UTF_8)) {
-            yaml.load(lector);
-        } catch (IOException | InvalidConfigurationException | RuntimeException fallo) {
-            // El parser puede incluir lineas con secretos: nunca adjuntar su causa ni su mensaje.
-            problemas.add(nombre + ": se esperaba un archivo legible con sintaxis YAML valida");
+        try (var reader = Files.newBufferedReader(dataFolder.resolve(name), StandardCharsets.UTF_8)) {
+            yaml.load(reader);
+        } catch (IOException | InvalidConfigurationException | RuntimeException failure) {
+            // The parser may include lines with secrets: never attach its cause or its message.
+            problems.add(name + ": expected a readable file with valid YAML syntax");
         }
         return yaml;
     }
 
-    private record Lectura(PluginConfig config, Map<String, String> textos, List<String> problemas) {}
+    private record ReadResult(PluginConfig config, Map<String, String> texts, List<String> problems) {}
 
-    private static final class Valores {
+    private static final class Values {
         private final YamlConfiguration yaml;
-        private final List<String> problemas;
+        private final List<String> problems;
 
-        private Valores(YamlConfiguration yaml, List<String> problemas) {
+        private Values(YamlConfiguration yaml, List<String> problems) {
             this.yaml = yaml;
-            this.problemas = problemas;
+            this.problems = problems;
         }
 
-        private void exigir(boolean condicion, String clave, String esperado) {
-            if (!condicion) problemas.add(clave + ": se esperaba " + esperado);
+        private void require(boolean condition, String key, String expected) {
+            if (!condition) problems.add(key + ": expected " + expected);
         }
 
-        private String texto(String clave) {
-            Object valor = yaml.get(clave);
-            exigir(valor instanceof String, clave, "texto entre comillas si es un numero");
-            return valor instanceof String cadena ? cadena : "";
+        private String text(String key) {
+            Object value = yaml.get(key);
+            require(value instanceof String, key, "quoted text if it is a number");
+            return value instanceof String str ? str : "";
         }
 
-        private String noVacio(String clave) {
-            String valor = texto(clave);
-            exigir(!valor.isBlank(), clave, "texto no vacio");
-            return valor;
+        private String nonEmpty(String key) {
+            String value = text(key);
+            require(!value.isBlank(), key, "non-empty text");
+            return value;
         }
 
-        private boolean booleano(String clave) {
-            Object valor = yaml.get(clave);
-            exigir(valor instanceof Boolean, clave, "true o false");
-            return Boolean.TRUE.equals(valor);
+        private boolean bool(String key) {
+            Object value = yaml.get(key);
+            require(value instanceof Boolean, key, "true or false");
+            return Boolean.TRUE.equals(value);
         }
 
-        private int entero(String clave, int minimo, int maximo) {
-            Object valor = yaml.get(clave);
-            boolean valido = (valor instanceof Integer || valor instanceof Long)
-                    && ((Number) valor).longValue() >= minimo && ((Number) valor).longValue() <= maximo;
-            exigir(valido, clave, "un entero entre " + minimo + " y " + maximo);
-            return valido ? ((Number) valor).intValue() : minimo;
+        private int integer(String key, int min, int max) {
+            Object value = yaml.get(key);
+            boolean valid = (value instanceof Integer || value instanceof Long)
+                    && ((Number) value).longValue() >= min && ((Number) value).longValue() <= max;
+            require(valid, key, "an integer between " + min + " and " + max);
+            return valid ? ((Number) value).intValue() : min;
         }
 
-        private int positivo(String clave) {
-            return entero(clave, 1, Integer.MAX_VALUE);
+        private int positive(String key) {
+            return integer(key, 1, Integer.MAX_VALUE);
         }
 
-        private Duration segundos(String clave) {
-            return Duration.ofSeconds(positivo(clave));
+        private Duration seconds(String key) {
+            return Duration.ofSeconds(positive(key));
         }
 
-        private Duration minutos(String clave) {
-            return Duration.ofMinutes(positivo(clave));
+        private Duration minutes(String key) {
+            return Duration.ofMinutes(positive(key));
         }
 
-        private <E extends Enum<E>> E opcion(String clave, Class<E> tipo) {
-            String valor = texto(clave).toUpperCase(Locale.ROOT);
-            for (E opcion : tipo.getEnumConstants()) {
-                if (opcion.name().equals(valor)) return opcion;
+        private <E extends Enum<E>> E option(String key, Class<E> type) {
+            String value = text(key).toUpperCase(Locale.ROOT);
+            for (E opt : type.getEnumConstants()) {
+                if (opt.name().equals(value)) return opt;
             }
-            exigir(false, clave, "uno de " + Arrays.toString(tipo.getEnumConstants()));
-            return tipo.getEnumConstants()[0];
+            require(false, key, "one of " + Arrays.toString(type.getEnumConstants()));
+            return type.getEnumConstants()[0];
         }
 
-        private Optional<String> opcional(String clave) {
-            String valor = texto(clave);
-            return valor.isBlank() ? Optional.empty() : Optional.of(valor);
+        private Optional<String> optional(String key) {
+            String value = text(key);
+            return value.isBlank() ? Optional.empty() : Optional.of(value);
         }
 
-        private String snowflake(String clave, boolean opcional) {
-            String valor = texto(clave);
-            if (opcional && valor.isEmpty()) return valor;
-            boolean valido = valor.matches("[1-9][0-9]{0,19}");
-            if (valido) {
+        private String snowflake(String key, boolean optional) {
+            String value = text(key);
+            if (optional && value.isEmpty()) return value;
+            boolean valid = value.matches("[1-9][0-9]{0,19}");
+            if (valid) {
                 try {
-                    Long.parseUnsignedLong(valor);
-                } catch (NumberFormatException fallo) {
-                    valido = false;
+                    Long.parseUnsignedLong(value);
+                } catch (NumberFormatException failure) {
+                    valid = false;
                 }
             }
-            exigir(valido, clave, "un snowflake decimal positivo de hasta 64 bits sin signo"
-                    + (opcional ? " o texto vacio" : ""));
-            return valor;
+            require(valid, key, "a positive decimal snowflake of up to 64 unsigned bits"
+                    + (optional ? " or empty text" : ""));
+            return value;
         }
 
-        private String nombre(String clave, boolean canalTexto, String... marcadores) {
-            String valor = noVacio(clave);
-            String muestra = valor;
-            for (String marcador : marcadores) muestra = muestra.replace(marcador, "x");
-            exigir(!muestra.contains("{") && !muestra.contains("}"), clave,
-                    marcadores.length > 0 ? "solo marcadores " + String.join(", ", marcadores) : "un nombre sin marcadores");
-            exigir(muestra.length() >= 1 && muestra.length() <= 100, clave,
-                    "un nombre de 1 a 100 caracteres, contando al menos uno por marcador");
-            exigir(muestra.codePoints().noneMatch(Character::isISOControl), clave, "un nombre sin caracteres de control");
-            if (canalTexto) {
-                exigir(muestra.matches("[\\p{Ll}\\p{Lo}\\p{M}\\p{N}_-]+"), clave,
-                        "letras minusculas, numeros, guiones o guiones bajos fuera de los marcadores");
+        private String name(String key, boolean textChannel, String... placeholders) {
+            String value = nonEmpty(key);
+            String sample = value;
+            for (String placeholder : placeholders) sample = sample.replace(placeholder, "x");
+            require(!sample.contains("{") && !sample.contains("}"), key,
+                    placeholders.length > 0 ? "only placeholders " + String.join(", ", placeholders) : "a name without placeholders");
+            require(sample.length() >= 1 && sample.length() <= 100, key,
+                    "a name of 1 to 100 characters, counting at least one per placeholder");
+            require(sample.codePoints().noneMatch(Character::isISOControl), key, "a name without control characters");
+            if (textChannel) {
+                require(sample.matches("[\\p{Ll}\\p{Lo}\\p{M}\\p{N}_-]+"), key,
+                        "lowercase letters, numbers, hyphens, or underscores outside placeholders");
             }
-            // Los nombres reales se deben validar de nuevo tras sustituir town y mayor al crear el canal.
-            return valor;
+            // Real names must be validated again after substituting town and mayor when creating the channel.
+            return value;
         }
 
         private PluginConfig config() {
-            String token = noVacio("discord.token");
-            exigir(!token.strip().equalsIgnoreCase("PON_AQUI_TU_TOKEN"), "discord.token", "un token propio, no el ejemplo");
+            String token = nonEmpty("discord.token");
+            require(!token.strip().equalsIgnoreCase("PON_AQUI_TU_TOKEN"), "discord.token", "your own token, not the example");
             String guild = snowflake("discord.guild-id", false);
             String log = snowflake("discord.log-channel-id", true);
             var discord = new PluginConfig.Discord(token, guild, log.isEmpty() ? Optional.empty() : Optional.of(log));
 
-            var tipo = opcion("database.type", PluginConfig.Database.Type.class);
-            String host = texto("database.host");
-            int puerto = entero("database.port", 1, 65535);
-            String nombre = texto("database.name");
-            String usuario = texto("database.user");
-            String password = texto("database.password");
-            String prefijo = texto("database.table-prefix");
-            exigir(prefijo.matches("[A-Za-z_][A-Za-z0-9_]*") || prefijo.isEmpty(), "database.table-prefix",
-                    "un prefijo SQL de letras, numeros y guiones bajos, sin empezar por numero, o vacio");
-            if (tipo != PluginConfig.Database.Type.SQLITE) {
-                exigir(!host.isBlank(), "database.host", "un host no vacio");
-                exigir(!nombre.isBlank(), "database.name", "un nombre no vacio");
-                exigir(!usuario.isBlank(), "database.user", "un usuario no vacio");
+            var type = option("database.type", PluginConfig.Database.Type.class);
+            String host = text("database.host");
+            int port = integer("database.port", 1, 65535);
+            String dbName = text("database.name");
+            String user = text("database.user");
+            String password = text("database.password");
+            String prefix = text("database.table-prefix");
+            require(prefix.matches("[A-Za-z_][A-Za-z0-9_]*") || prefix.isEmpty(), "database.table-prefix",
+                    "an SQL prefix of letters, numbers, and underscores, not starting with a number, or empty");
+            if (type != PluginConfig.Database.Type.SQLITE) {
+                require(!host.isBlank(), "database.host", "a non-empty host");
+                require(!dbName.isBlank(), "database.name", "a non-empty name");
+                require(!user.isBlank(), "database.user", "a non-empty user");
             }
-            int maximo = positivo("database.pool.maximum-size");
-            int minimo = entero("database.pool.minimum-idle", 0, maximo);
-            var database = new PluginConfig.Database(tipo, host, puerto, nombre, usuario, password,
-                    prefijo, maximo, minimo, segundos("database.pool.connection-timeout-seconds"));
+            int max = positive("database.pool.maximum-size");
+            int min = integer("database.pool.minimum-idle", 0, max);
+            var database = new PluginConfig.Database(type, host, port, dbName, user, password,
+                    prefix, max, min, seconds("database.pool.connection-timeout-seconds"));
 
-            var structure = new PluginConfig.Structure(nombre("structure.category-name", false),
-                    nombre("structure.archive-category-name", false), booleano("structure.create-text-channel"),
-                    booleano("structure.create-voice-channel"), nombre("structure.text-channel-name", true, "{town}", "{mayor}"),
-                    nombre("structure.voice-channel-name", false, "{town}", "{mayor}"));
-            Optional<String> color = opcional("roles.town-role-color");
-            exigir(color.isEmpty() || color.get().matches("#?[0-9a-fA-F]{6}"), "roles.town-role-color",
-                    "un color hexadecimal de seis digitos o vacio");
-            var roles = new PluginConfig.Roles(nombre("roles.mayor-role-name", false),
-                    nombre("roles.town-role-name", false, "{town}"), color, booleano("roles.town-role-hoisted"));
-            var limits = new PluginConfig.Limits(entero("limits.max-towns", 1, 240), positivo("limits.min-residents"),
-                    segundos("limits.creation-cooldown-seconds"));
-            var lifecycle = new PluginConfig.Lifecycle(opcion("lifecycle.on-town-deleted", PluginConfig.Lifecycle.Action.class),
-                    opcion("lifecycle.on-town-ruined", PluginConfig.Lifecycle.Action.class),
-                    entero("lifecycle.archive-reminder-days", 0, Integer.MAX_VALUE));
-            var sync = new PluginConfig.Sync(Duration.ofMinutes(entero("sync.interval-minutes", 0, Integer.MAX_VALUE)), opcion("sync.mode", PluginConfig.Sync.Mode.class),
-                    positivo("sync.batch-size"), segundos("sync.batch-pause-seconds"));
-            var linking = new PluginConfig.Linking(minutos("linking.code-expiry-minutes"), positivo("linking.max-attempts"),
-                    minutos("linking.attempt-lockout-minutes"), booleano("linking.unlink-on-guild-leave"));
-            var logging = new PluginConfig.Logging(segundos("logging.flush-interval-seconds"), positivo("logging.queue-size"),
-                    opcion("logging.detail", PluginConfig.Logging.Detail.class));
-            var updates = new PluginConfig.Updates(booleano("updates.check-enabled"),
-                    Duration.ofHours(positivo("updates.check-interval-hours")), booleano("updates.auto-download"),
-                    booleano("updates.notify-admins-on-join"));
-            var comandos = new ArrayList<PluginConfig.DiscordCommand>();
-            for (String comando : List.of("town", "residents", "res", "townlist", "mytown", "help")) {
-                comandos.add(new PluginConfig.DiscordCommand(comando, booleano("commands." + comando + ".enabled"),
-                        booleano("commands." + comando + ".ephemeral")));
+            var structure = new PluginConfig.Structure(name("structure.category-name", false),
+                    name("structure.archive-category-name", false), bool("structure.create-text-channel"),
+                    bool("structure.create-voice-channel"), name("structure.text-channel-name", true, "{town}", "{mayor}"),
+                    name("structure.voice-channel-name", false, "{town}", "{mayor}"));
+            Optional<String> color = optional("roles.town-role-color");
+            require(color.isEmpty() || color.get().matches("#?[0-9a-fA-F]{6}"), "roles.town-role-color",
+                    "a six-digit hexadecimal color or empty");
+            var roles = new PluginConfig.Roles(name("roles.mayor-role-name", false),
+                    name("roles.town-role-name", false, "{town}"), color, bool("roles.town-role-hoisted"));
+            var limits = new PluginConfig.Limits(integer("limits.max-towns", 1, 240), positive("limits.min-residents"),
+                    seconds("limits.creation-cooldown-seconds"));
+            var lifecycle = new PluginConfig.Lifecycle(option("lifecycle.on-town-deleted", PluginConfig.Lifecycle.Action.class),
+                    option("lifecycle.on-town-ruined", PluginConfig.Lifecycle.Action.class),
+                    integer("lifecycle.archive-reminder-days", 0, Integer.MAX_VALUE));
+            var sync = new PluginConfig.Sync(Duration.ofMinutes(integer("sync.interval-minutes", 0, Integer.MAX_VALUE)), option("sync.mode", PluginConfig.Sync.Mode.class),
+                    positive("sync.batch-size"), seconds("sync.batch-pause-seconds"));
+            var linking = new PluginConfig.Linking(minutes("linking.code-expiry-minutes"), positive("linking.max-attempts"),
+                    minutes("linking.attempt-lockout-minutes"), bool("linking.unlink-on-guild-leave"));
+            var logging = new PluginConfig.Logging(seconds("logging.flush-interval-seconds"), positive("logging.queue-size"),
+                    option("logging.detail", PluginConfig.Logging.Detail.class));
+            var updates = new PluginConfig.Updates(bool("updates.check-enabled"),
+                    Duration.ofHours(positive("updates.check-interval-hours")), bool("updates.auto-download"),
+                    bool("updates.notify-admins-on-join"));
+            var commandsList = new ArrayList<PluginConfig.DiscordCommand>();
+            for (String cmd : List.of("town", "residents", "res", "townlist", "mytown", "help")) {
+                commandsList.add(new PluginConfig.DiscordCommand(cmd, bool("commands." + cmd + ".enabled"),
+                        bool("commands." + cmd + ".ephemeral")));
             }
-            var commands = new PluginConfig.Commands(segundos("commands.cooldown-seconds"), List.copyOf(comandos));
-            entero("config-version", 1, 1);
+            var commands = new PluginConfig.Commands(seconds("commands.cooldown-seconds"), List.copyOf(commandsList));
+            integer("config-version", 1, 1);
             return new PluginConfig(discord, database, structure, roles, limits, lifecycle, sync, linking, logging, updates, commands);
         }
     }

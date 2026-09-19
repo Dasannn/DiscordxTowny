@@ -1,8 +1,8 @@
 /**
- * Carga y validacion de config.yml y messages.yml en objetos tipados.
+ * Loading and validation of config.yml and messages.yml into typed objects.
  *
- * <p><b>Regla de dependencias:</b> lo consume todo el plugin; no depende de ningun otro paquete propio.
+ * <p><b>Dependency rule:</b> consumed by the entire plugin; does not depend on any other internal package.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.config;

@@ -1,10 +1,10 @@
 package com.discordtowny.config;
 
 /**
- * Configuracion invalida.
+ * Invalid configuration.
  *
- * <p>El mensaje debe decir que clave esta mal y que se esperaba. Nunca debe
- * incluir el valor de una clave sensible como el token o la contrasena.
+ * <p>The message must state which key is wrong and what was expected. It must
+ * never include the value of a sensitive key such as the token or password.
  */
 public class ConfigException extends RuntimeException {
 

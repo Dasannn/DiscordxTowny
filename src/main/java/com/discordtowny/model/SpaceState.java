@@ -1,14 +1,14 @@
 package com.discordtowny.model;
 
-/** Estado del espacio de Discord de una town. */
+/** State of a town's Discord space. */
 public enum SpaceState {
-    /** Canales y rol existen, y se sincronizan. */
+    /** Channels and role exist, and are synchronized. */
     ACTIVE,
-    /** Canales en solo lectura, movidos al archivo, rol eliminado. */
+    /** Read-only channels, moved to archive, role deleted. */
     ARCHIVED,
     /**
-     * Una operacion fallo a medias. La reconciliacion debe retomarlo.
-     * Nunca implica permisos abiertos: ante la duda, no se concede acceso.
+     * An operation failed midway. Reconciliation must pick it back up.
+     * Never implies open permissions: when in doubt, access is not granted.
      */
     INCONSISTENT
 }

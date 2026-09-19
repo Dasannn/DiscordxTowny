@@ -1,350 +1,350 @@
-# DiscordTowny — Especificación funcional
+# DiscordTowny — Functional Specification
 
-Qué hace el plugin, visto desde fuera. Sin decisiones de implementación: esas
-van en `ARCHITECTURE.md`.
+What the plugin does, seen from the outside. No implementation decisions: those
+go in `ARCHITECTURE.md`.
 
-Estado: **borrador v1** — pendiente de aprobación.
-Rige sobre este documento: `docs/constitution.md`.
+Status: **draft v1** — pending approval.
+Governing this document: `docs/constitution.md`.
 
 ---
 
-## 1. Actores
+## 1. Actors
 
-| Actor | Quién es |
+| Actor | Who they are |
 |---|---|
-| Residente | Jugador que pertenece a una town |
-| Alcalde | Residente que es mayor de su town según Towny |
-| Administrador | Staff del servidor, con permiso `discordtowny.admin` |
-| Bot | Aplicación de Discord que ejecuta las acciones en el guild |
+| Resident | Player who belongs to a town |
+| Mayor | Resident who is the mayor of their town according to Towny |
+| Administrator | Server staff, with permission `discordtowny.admin` |
+| Bot | Discord application that executes actions in the guild |
 
-## 2. Vinculación de cuentas
+## 2. Account linking
 
-### 2.1 Flujo
+### 2.1 Flow
 
-1. El jugador ejecuta `/dt link` en el juego.
-2. El plugin genera un código de un solo uso, de 6 caracteres alfanuméricos sin
-   caracteres ambiguos, con caducidad configurable (por defecto 10 minutos).
-3. El jugador ejecuta `/link <código>` en Discord.
-4. El bot valida el código, guarda el par UUID ↔ Discord ID y responde de forma
-   efímera.
-5. Inmediatamente después, el plugin sincroniza los roles que le correspondan a
-   esa cuenta.
+1. The player executes `/dt link` in-game.
+2. The plugin generates a single-use code of 6 alphanumeric characters without
+   ambiguous characters, with configurable expiration (default 10 minutes).
+3. The player executes `/link <código>` on Discord.
+4. The bot validates the code, saves the UUID ↔ Discord ID pair, and responds
+   ephemerally.
+5. Immediately after, the plugin synchronizes the roles corresponding to
+   that account.
 
-### 2.2 Reglas
+### 2.2 Rules
 
-- Un UUID se vincula a un único Discord ID y viceversa. Un intento de vincular
-  una cuenta ya vinculada se rechaza con un mensaje que explica cómo desvincular.
-- El código caduca por tiempo y se invalida al usarse. Generar un código nuevo
-  invalida el anterior.
-- Los intentos fallidos se limitan por usuario de Discord para evitar fuerza
-  bruta sobre el espacio de códigos.
-- `/dt unlink` en el juego y `/unlink` en Discord rompen la vinculación y
-  retiran todos los roles otorgados por el plugin.
-- Un administrador puede desvincular a un tercero con
+- A UUID links to a single Discord ID and vice versa. An attempt to link
+  an already-linked account is rejected with a message explaining how to unlink.
+- The code expires over time and is invalidated upon use. Generating a new code
+  invalidates the previous one.
+- Failed attempts are rate-limited per Discord user to prevent brute force
+  attacks on the code space.
+- `/dt unlink` in-game and `/unlink` on Discord break the link and
+  remove all roles granted by the plugin.
+- An administrator can unlink a third party with
   `/dt admin unlink <jugador>`.
 
-### 2.3 Verificación de alcaldía
+### 2.3 Mayor verification
 
-Ser alcalde no se declara: se comprueba. En cada sincronización el plugin
-consulta a Towny quién es el mayor de la town y concede o retira el rol de
-alcalde en consecuencia. Un cambio de alcalde en el juego se refleja sin que
-nadie ejecute nada.
+Being a mayor is not declared: it is verified. On every synchronization, the plugin
+queries Towny for who the town's mayor is and grants or revokes the
+mayor role accordingly. A change of mayor in-game is reflected without
+anyone running anything.
 
-## 3. Canales y roles
+## 3. Channels and roles
 
-### 3.1 Estructura
+### 3.1 Structure
 
-- Existe una categoría contenedora, creada por el bot la primera vez que se
-  necesita. Nombre por defecto: `Comunidades`.
-- **Discord limita a 50 canales por categoría.** Cuando la categoría actual se
-  llena, el bot crea la siguiente numerada (`Comunidades 2`, `Comunidades 3`) y
-  coloca ahí los nuevos espacios. Es transparente para el usuario: el techo real
-  pasa a ser el de 500 canales por servidor.
-- Por cada town con espacio activo, dentro de esa categoría:
-  - un canal de texto, nombre por plantilla (por defecto `{town}`),
-  - un canal de voz, nombre por plantilla (por defecto `{town}`).
-- Qué canales se crean (texto, voz o ambos) es configurable.
+- A container category exists, created by the bot the first time it is
+  needed. Default name: `Comunidades`.
+- **Discord limits to 50 channels per category.** When the current category
+  fills up, the bot creates the next numbered one (`Comunidades 2`, `Comunidades 3`) and
+  places new spaces there. This is transparent to the user: the actual ceiling
+  becomes 500 channels per server.
+- For each town with an active space, within that category:
+  - a text channel, named by template (default `{town}`),
+  - a voice channel, named by template (default `{town}`).
+- Which channels are created (text, voice, or both) is configurable.
 
 ### 3.2 Roles
 
-- Un rol por town, por plantilla (por defecto `{town}`).
-- Un rol global de alcalde, nombre configurable (por defecto `Alcalde`),
-  compartido por todos los alcaldes del servidor.
-- El rol del bot debe estar por encima de todos los roles que gestiona. Si no lo
-  está, el plugin lo detecta al arrancar y avisa en consola sin intentar operar.
+- One role per town, by template (default `{town}`).
+- One global mayor role, configurable name (default `Alcalde`),
+  shared by all mayors on the server.
+- The bot's role must be above all roles it manages. If it is not,
+  the plugin detects it on startup and warns in the console without attempting to operate.
 
-### 3.3 Permisos de los canales
+### 3.3 Channel permissions
 
-| Entidad | Permiso |
+| Entity | Permission |
 |---|---|
-| `@everyone` | Ver canal: denegado |
-| Rol de la town | Ver canal, escribir, conectar y hablar: permitido |
-| Rol de alcalde | Sin permisos especiales a nivel de canal |
-| Bot | Gestionar el canal |
+| `@everyone` | View channel: denied |
+| Town role | View channel, send messages, connect, and speak: allowed |
+| Mayor role | No special permissions at channel level |
+| Bot | Manage channel |
 
-El rol de alcalde es una distinción visible y una llave para ciertos comandos,
-no una llave de acceso a canales de otras towns. Un alcalde solo ve el canal de
-su propia town, porque solo tiene el rol de su propia town.
+The mayor role is a visible distinction and a key for certain commands,
+not an access key to channels of other towns. A mayor only sees their own
+town's channel, because they only have their own town's role.
 
-Ningún usuario puede obtener un rol de town por sí mismo. La única vía de
-asignación es el bot, a partir de la lista de residentes de Towny.
+No user can obtain a town role on their own. The only assignment method
+is the bot, based on Towny's resident list.
 
-## 4. Comandos en el juego
+## 4. In-game commands
 
-Prefijo `/dt`, alias `/discordtowny`.
+Prefix `/dt`, alias `/discordtowny`.
 
-| Comando | Quién | Qué hace |
+| Command | Who | What it does |
 |---|---|---|
-| `/dt help` | Cualquier jugador | Lista los comandos disponibles para quien lo ejecuta, con una línea de explicación cada uno |
-| `/dt link` | Cualquier jugador | Genera el código de vinculación |
-| `/dt unlink` | Vinculado | Rompe su vinculación |
-| `/dt status` | Cualquier jugador | Muestra si está vinculado, a qué cuenta, y si su town tiene espacio |
-| `/dt create` | Alcalde | Crea la categoría, canales y rol de su town |
-| `/dt delete` | Alcalde | Elimina el espacio de su town, con confirmación |
-| `/dt sync` | Alcalde | Fuerza la sincronización de roles de los residentes de su town |
-| `/dt admin sync [town]` | Admin | Reconcilia todo, o una town concreta |
-| `/dt admin unlink <jugador>` | Admin | Desvincula a un tercero |
-| `/dt admin reload` | Admin | Recarga configuración y textos |
-| `/dt admin list` | Admin | Lista los espacios registrados: town, estado, canales, residentes con rol y última actividad |
-| `/dt admin info <town>` | Admin | Detalle de un espacio concreto, incluida su actividad y las inconsistencias detectadas |
-| `/dt admin purge` | Admin | Borra definitivamente los espacios archivados, con confirmación |
-| `/dt admin update` | Admin | Comprueba y descarga la última versión ahora mismo, sin esperar al ciclo automático |
-| `/dt admin update status` | Admin | Indica la versión actual, la disponible y si hay una descarga pendiente |
+| `/dt help` | Any player | Lists the commands available to the person executing it, with one explanatory line each |
+| `/dt link` | Any player | Generates the link code |
+| `/dt unlink` | Linked | Breaks their link |
+| `/dt status` | Any player | Shows whether they are linked, to which account, and whether their town has a space |
+| `/dt create` | Mayor | Creates their town's category, channels, and role |
+| `/dt delete` | Mayor | Deletes their town's space, with confirmation |
+| `/dt sync` | Mayor | Forces role synchronization for their town's residents |
+| `/dt admin sync [town]` | Admin | Reconciles everything, or a specific town |
+| `/dt admin unlink <jugador>` | Admin | Unlinks a third party |
+| `/dt admin reload` | Admin | Reloads configuration and messages |
+| `/dt admin list` | Admin | Lists registered spaces: town, status, channels, residents with role, and last activity |
+| `/dt admin info <town>` | Admin | Details of a specific space, including its activity and detected inconsistencies |
+| `/dt admin purge` | Admin | Permanently deletes archived spaces, with confirmation |
+| `/dt admin update` | Admin | Checks and downloads the latest version right now, without waiting for the automatic cycle |
+| `/dt admin update status` | Admin | Indicates the current version, available version, and whether a download is pending |
 
-`/dt help` solo muestra los comandos que quien lo ejecuta puede usar: un jugador
-sin town no ve los comandos de alcalde, y nadie sin permiso ve los de
-administración.
+`/dt help` only shows the commands that the person executing it can use: a player
+without a town does not see mayor commands, and no one without permission sees
+administration commands.
 
-### 4.1 Reglas de `/dt create`
+### 4.1 Rules for `/dt create`
 
-Se rechaza, con mensaje explicativo, si:
+It is rejected, with an explanatory message, if:
 
-- quien lo ejecuta no es el alcalde de la town,
-- quien lo ejecuta no tiene cuenta vinculada,
-- la town ya tiene espacio,
-- la town no alcanza el mínimo de residentes configurado,
-- se alcanzó `max_towns`,
-- el cooldown de creación sigue activo,
-- el bot no está conectado o le faltan permisos en el guild.
+- the person executing it is not the town's mayor,
+- the person executing it does not have a linked account,
+- the town already has a space,
+- the town does not reach the configured minimum residents,
+- `max_towns` has been reached,
+- the creation cooldown is still active,
+- the bot is not connected or lacks permissions in the guild.
 
-Al crear, el bot asigna el rol de town a todos los residentes ya vinculados y el
-rol de alcalde a quien ejecutó el comando. Los residentes que se vinculen
-después reciben su rol en ese momento.
+Upon creation, the bot assigns the town role to all already-linked residents and the
+mayor role to whoever executed the command. Residents who link
+later receive their role at that time.
 
-## 5. Comandos en Discord
+## 5. Discord commands
 
-Slash commands. Cada uno se puede desactivar por configuración. Respuesta
-efímera o pública, configurable por comando.
+Slash commands. Each can be disabled via configuration. Ephemeral
+or public response, configurable per command.
 
-| Comando | Qué muestra |
+| Command | What it shows |
 |---|---|
-| `/link <código>` | Vincula la cuenta |
-| `/unlink` | Rompe la vinculación |
-| `/town [nombre]` | Ficha de la town: alcalde, residentes, fundación, parcelas, banco, nación, estado de ruina. Sin argumento, la town del autor |
-| `/residents [town]` | Lista de residentes con su estado, paginada |
-| `/res [jugador]` | Ficha de residente: town, cargo, conexión, saldo si hay economía |
-| `/townlist [página]` | Listado de towns ordenado, paginado |
-| `/mytown` | Atajo a la ficha de la town propia |
-| `/help` | Lista los comandos de Discord disponibles, con una línea cada uno |
+| `/link <código>` | Links the account |
+| `/unlink` | Breaks the link |
+| `/town [nombre]` | Town card: mayor, residents, founding date, plots, bank, nation, ruin status. Without argument, author's town |
+| `/residents [town]` | Resident list with their status, paginated |
+| `/res [jugador]` | Resident card: town, rank, connection status, balance if economy exists |
+| `/townlist [página]` | Ordered town list, paginated |
+| `/mytown` | Shortcut to own town card |
+| `/help` | Lists available Discord commands, with one line each |
 
-### 5.1 Reglas
+### 5.1 Rules
 
-- Los datos se leen en vivo de Towny en el momento de responder.
-- Un comando sobre una town inexistente responde con un error claro, no con un
-  embed vacío.
-- Los comandos de información no exigen vinculación, salvo los que dependen de
-  saber quién eres (`/mytown`, y `/town` y `/res` sin argumento).
-- Todo comando respeta un cooldown por usuario configurable.
+- Data is read live from Towny at the time of responding.
+- A command targeting a nonexistent town responds with a clear error, not with an
+  empty embed.
+- Information commands do not require linking, except those that depend on
+  knowing who you are (`/mytown`, and `/town` and `/res` without an argument).
+- Every command respects a configurable per-user cooldown.
 
-### 5.2 Vinculación obligatoria para acceder
+### 5.2 Mandatory linking for access
 
-Ver o escribir en el canal de una town exige tener la cuenta vinculada. Un
-residente no vinculado sigue siendo residente en el juego, pero no recibe rol ni
-ve el canal hasta que vincule. El mensaje de rechazo explica cómo hacerlo.
+Viewing or typing in a town channel requires having a linked account. An
+unlinked resident remains a resident in-game, but receives no role and
+cannot see the channel until they link. The rejection message explains how to do so.
 
-## 6. Sincronización
+## 6. Synchronization
 
-### 6.1 Por eventos
+### 6.1 Event-driven
 
-El plugin reacciona a los eventos de Towny y actualiza Discord de inmediato:
+The plugin reacts to Towny events and updates Discord immediately:
 
-| Evento | Efecto |
+| Event | Effect |
 |---|---|
-| Residente se une a una town | Recibe el rol de la town |
-| Residente sale o es expulsado | Pierde el rol de la town |
-| Cambio de alcalde | El rol de alcalde pasa de uno a otro |
-| Town renombrada | Se renombran canales y rol |
-| Town eliminada o en ruinas | Arranca la política de borrado |
-| Jugador entra al servidor | Se reconcilian sus roles |
+| Resident joins a town | Receives the town role |
+| Resident leaves or is kicked | Loses the town role |
+| Change of mayor | The mayor role transfers from one to the other |
+| Town renamed | Channels and role are renamed |
+| Town deleted or in ruins | Starts the deletion policy |
+| Player joins the server | Their roles are reconciled |
 
-### 6.2 Periódica
+### 6.2 Periodic
 
-Un job configurable recorre el estado y corrige diferencias: roles sobrantes,
-roles faltantes, canales huérfanos y towns sin espacio pese a tenerlo
-registrado. Puede operar en modo reparación o en modo aviso.
+A configurable job scans the state and corrects discrepancies: extra roles,
+missing roles, orphaned channels, and towns without a space despite having it
+registered. It can operate in repair mode or notice mode.
 
-### 6.3 Bajo demanda
+### 6.3 On demand
 
-`/dt sync` para la propia town, `/dt admin sync` para todo.
+`/dt sync` for one's own town, `/dt admin sync` for everything.
 
-### 6.4 Regla de oro
+### 6.4 Golden rule
 
-Ante una discrepancia, Towny gana. Si alguien recibió a mano el rol de una town
-a la que no pertenece, la sincronización se lo quita.
+In any discrepancy, Towny wins. If someone manually received the role of a town
+they do not belong to, synchronization removes it.
 
-## 7. Ciclo de vida del espacio de una town
+## 7. Town space lifecycle
 
-1. **Creación** — a petición del alcalde, si cumple las condiciones.
-2. **Activo** — se sincroniza por eventos y periódicamente.
-3. **Archivado** — cuando la town desaparece, cae en ruinas o el alcalde ejecuta
-   `/dt delete`. El canal se mueve a una categoría de archivo configurable, se
-   elimina el rol de la town y el canal queda **visible solo para
-   administradores**, en solo lectura. Nada se borra automáticamente.
+1. **Creation** — at the mayor's request, if conditions are met.
+2. **Active** — synchronized via events and periodically.
+3. **Archived** — when the town disappears, falls into ruins, or the mayor executes
+   `/dt delete`. The channel is moved to a configurable archive category, the
+   town role is deleted, and the channel remains **visible only to
+   administrators**, in read-only mode. Nothing is deleted automatically.
 
-   Los ex-residentes dejan de ver el canal: el rol desaparece, y es ese rol el
-   que daba acceso. Se elige así porque los roles son el recurso escaso (250 por
-   servidor) y conservarlos por cada town muerta agotaría el cupo. El historial
-   se conserva íntegro y vuelve a sus residentes si la town revive.
-4. **Borrado** — nunca automático. Un administrador borra los espacios
-   archivados con `/dt admin purge`, con confirmación explícita.
+   Former residents can no longer see the channel: the role disappears, and that role was
+   what granted access. This choice is made because roles are the scarce resource (250 per
+   server) and keeping them for every dead town would exhaust the quota. The history
+   is preserved intact and returned to its residents if the town revives.
+4. **Deletion** — never automatic. An administrator deletes archived
+   spaces with `/dt admin purge`, with explicit confirmation.
 
-Si la town revive o se recrea con el mismo nombre estando archivada, el espacio
-se restaura con su historial intacto.
+If the town revives or is recreated with the same name while archived, the space
+is restored with its history intact.
 
-### 7.1 Visibilidad del estado
+### 7.1 State visibility
 
-El plugin registra, por cada espacio, su estado, cuándo se creó, cuándo se
-archivó, cuántos residentes tienen rol y cuándo hubo actividad por última vez en
-sus canales. Esa información se consulta con `/dt admin list` y
-`/dt admin info`, y sirve para decidir qué archivar o purgar.
+The plugin records, for each space, its status, when it was created, when it was
+archived, how many residents hold the role, and when activity last occurred in
+its channels. This information is queried with `/dt admin list` and
+`/dt admin info`, and is used to decide what to archive or purge.
 
-## 8. Datos que se guardan
+## 8. Stored data
 
-| Dato | Para qué |
+| Data | Purpose |
 |---|---|
-| UUID, Discord ID, fecha de vinculación | Identidad verificada |
-| Town, ID de categoría, canales y rol | Saber qué gestiona el plugin |
-| Estado del espacio, fechas de creación y archivado, última actividad | Ciclo de vida y consultas de administración |
-| Códigos de vinculación pendientes | Verificación, con caducidad |
-| Registro de acciones del bot | Diagnóstico y auditoría |
+| UUID, Discord ID, linking date | Verified identity |
+| Town, category ID, channels, and role | Knowing what the plugin manages |
+| Space status, creation and archiving dates, last activity | Lifecycle and administration queries |
+| Pending link codes | Verification, with expiration |
+| Bot action log | Diagnostics and auditing |
 
-El esquema concreto va en `ARCHITECTURE.md`.
+The specific schema goes in `ARCHITECTURE.md`.
 
-## 8.1 Canal de logs en Discord
+## 8.1 Discord log channel
 
-El bot publica en un canal de logs configurable lo que hace: creaciones,
-archivados, borrados, cambios de rol, vinculaciones, inconsistencias detectadas
-y errores. El nivel de detalle es configurable.
+The bot posts what it does to a configurable log channel: creations,
+archivings, deletions, role changes, linkings, detected inconsistencies,
+and errors. The level of detail is configurable.
 
-Para que esto no afecte al servidor, los mensajes se encolan y se envían
-agrupados desde fuera del hilo principal, con un intervalo configurable. Si el
-canal no existe o el bot no puede escribir en él, el plugin sigue funcionando y
-registra el problema una sola vez en consola.
+To prevent this from affecting the server, messages are queued and sent
+in batches from outside the main thread, at a configurable interval. If the
+channel does not exist or the bot cannot write to it, the plugin continues operating and
+logs the problem once to the console.
 
-## 9. Configuración
+## 9. Configuration
 
-Según la tabla acordada: Discord, base de datos, estructura, roles, límites,
-ciclo de vida, sincronización, vinculación, comandos y textos. Los textos viven
-en un archivo aparte del `config.yml`.
+According to the agreed table: Discord, database, structure, roles, limits,
+lifecycle, synchronization, linking, commands, and messages. Messages live
+in a separate file from `config.yml`.
 
-No son configurables: el modelo de permisos de los canales, el esquema de la
-base de datos y el uso de un único rol por town.
+Not configurable: the channel permission model, the database
+schema, and the use of a single role per town.
 
-## 10. Errores y fallos
+## 10. Errors and failures
 
-- Si el bot no puede conectarse, el servidor de Minecraft funciona con
-  normalidad y los comandos del plugin responden que Discord no está disponible.
-- Si una operación falla a medias, el estado queda marcado como inconsistente y
-  la siguiente reconciliación lo repara. Nunca se deja un canal accesible a
-  quien no debería verlo.
-- Los errores se registran con contexto: town, acción y causa.
-- Ni el token ni las credenciales aparecen jamás en logs ni en mensajes a
-  usuarios.
+- If the bot cannot connect, the Minecraft server operates
+  normally and plugin commands respond that Discord is unavailable.
+- If an operation fails halfway, the state is marked as inconsistent and
+  the next reconciliation repairs it. A channel is never left accessible to
+  anyone who should not see it.
+- Errors are logged with context: town, action, and cause.
+- Neither the token nor credentials ever appear in logs or in user-facing
+  messages.
 
-## 10.1 Actualizaciones
+## 10.1 Updates
 
-### Comprobación
+### Checking
 
-El plugin consulta periódicamente los releases publicados en el repositorio
-oficial de GitHub y compara con su propia versión. El intervalo es configurable
-y la comprobación se puede desactivar por completo.
+The plugin periodically checks published releases in the official
+GitHub repository and compares against its own version. The interval is configurable
+and checking can be completely disabled.
 
-Cuando hay una versión nueva, se avisa:
+When a new version is available, notice is given:
 
-- en la consola al arrancar,
-- a los administradores al entrar al servidor,
-- en el canal de logs de Discord, una sola vez por versión.
+- in the console on startup,
+- to administrators upon joining the server,
+- in the Discord log channel, once per version.
 
-El aviso incluye la versión disponible, la actual y un resumen de los cambios.
+The notice includes the available version, current version, and a summary of changes.
 
-### Descarga
+### Downloading
 
-La descarga es **automática**: al detectar una versión nueva, el plugin la baja
-sin esperar a nadie. `/dt admin update` fuerza la comprobación y descarga en el
-momento. El comportamiento automático se puede desactivar por configuración.
+Downloading is **automatic**: upon detecting a new version, the plugin downloads it
+without waiting for anyone. `/dt admin update` forces checking and downloading on the
+spot. Automatic behavior can be disabled via configuration.
 
-La descarga:
+The download:
 
-- viene solo del repositorio oficial, por HTTPS,
-- se verifica contra el checksum publicado en el release, y se descarta si no
-  coincide,
-- se deposita en la carpeta `update` del servidor, sin tocar el jar en uso.
+- comes only from the official repository, via HTTPS,
+- is verified against the checksum published in the release, and discarded if it does not
+  match,
+- is placed into the server's `update` folder, without touching the jar in use.
 
-### Aplicación
+### Applying
 
-La nueva versión entra **al reiniciar el servidor**, mediante el mecanismo
-estándar de Paper. El plugin nunca se reemplaza en caliente: hacerlo con
-conexiones abiertas a Discord y a la base de datos deja estado corrupto.
+The new version takes effect **upon restarting the server**, via Paper's standard
+mechanism. The plugin is never hot-swapped: doing so with
+open connections to Discord and the database leaves corrupt state.
 
-`/dt admin update status` indica si hay una actualización descargada y pendiente
-de reinicio.
+`/dt admin update status` indicates whether an update is downloaded and pending
+a restart.
 
-Descargada la actualización, se avisa de nuevo indicando que basta con reiniciar
-para aplicarla.
+Once the update is downloaded, notice is given again stating that restarting
+is sufficient to apply it.
 
-### Reglas
+### Rules
 
-- Si el release trae cambios que rompen la configuración o requieren migración,
-  se indica en el aviso y se exige confirmación adicional.
-- Un fallo de red o un checksum incorrecto no dejan nada a medias: se descarta
-  la descarga y se informa.
-- Sin conexión a GitHub, el plugin funciona con normalidad y anota el fallo una
-  sola vez.
+- If the release brings breaking configuration changes or requires migration,
+  it is indicated in the notice and additional confirmation is required.
+- A network failure or incorrect checksum leaves nothing half-done: the
+  download is discarded and reported.
+- Without a connection to GitHub, the plugin functions normally and logs the failure
+  once.
 
-## 11. Fuera de esta versión
+## 11. Out of scope for this version
 
-Chat bridge, naciones, multi-servidor, panel web, integraciones con economía o
-plugins de guerra, y más de un guild.
+Chat bridge, nations, multi-server, web panel, integrations with economy or
+war plugins, and more than one guild.
 
-## 12. Criterios de aceptación
+## 12. Acceptance criteria
 
-1. Un jugador vincula su cuenta y el vínculo sobrevive a un reinicio.
-2. Un alcalde ejecuta `/dt create` y aparecen categoría, canales y rol con los
-   permisos correctos.
-3. Un residente vinculado ve el canal de su town; un jugador de otra town no lo
-   ve ni aparece en la lista de miembros del canal.
-4. Expulsar a un residente le retira el rol sin que nadie ejecute nada.
-5. Cambiar de alcalde mueve el rol de alcalde.
-6. Borrar un canal a mano y lanzar `/dt admin sync` deja el estado coherente.
-7. Con el bot apagado, el servidor arranca y opera sin errores en cascada.
-8. Un usuario al que un admin le da a mano el rol de otra town lo pierde en la
-   siguiente reconciliación.
-9. Un residente sin vincular no ve el canal de su town; al vincular, lo ve sin
-   ejecutar nada más.
-10. Una town eliminada deja su canal archivado y legible para administradores,
-    nunca borrado sin que un administrador lo ordene.
-11. Con el canal de logs activo y muchas operaciones seguidas, el servidor no
-    pierde ticks.
+1. A player links their account and the link survives a restart.
+2. A mayor executes `/dt create` and the category, channels, and role appear with the
+   correct permissions.
+3. A linked resident sees their town's channel; a player from another town does not
+   see it or appear in the channel's member list.
+4. Kicking a resident removes their role without anyone executing anything.
+5. Changing mayors transfers the mayor role.
+6. Deleting a channel manually and running `/dt admin sync` leaves the state consistent.
+7. With the bot offline, the server starts and operates without cascading errors.
+8. A user manually given another town's role by an admin loses it in the
+   next reconciliation.
+9. An unlinked resident does not see their town's channel; upon linking, they see it without
+   executing anything else.
+10. A deleted town leaves its channel archived and readable for administrators,
+    never deleted without an administrator ordering it.
+11. With the log channel active and many consecutive operations, the server does not
+    drop ticks.
 
-## 13. Documentación pública
+## 13. Public documentation
 
-El repositorio incluye documentación escrita para jugadores y administradores de
-servidor, no para desarrolladores:
+The repository includes documentation written for players and server administrators,
+not for developers:
 
-- `README.md`: qué es el plugin, qué resuelve, requisitos, instalación, y la
-  lista de comandos.
-- `docs/guia-de-uso.md`: recorrido en lenguaje llano — cómo vincular la cuenta,
-  cómo crear el espacio de la town, qué ve cada quién y qué pasa cuando alguien
-  entra, sale o la town desaparece. Sin detalles de código ni de arquitectura.
+- `README.md`: what the plugin is, what it solves, requirements, installation, and the
+  command list.
+- `docs/user-guide.md`: walkthrough in plain language — how to link the account,
+  how to create the town space, what each person sees, and what happens when someone
+  joins, leaves, or the town disappears. No code or architecture details.
 
-Ambos se mantienen al día como parte del trabajo, no al final.
+Both are kept up to date as part of the work, not at the end.

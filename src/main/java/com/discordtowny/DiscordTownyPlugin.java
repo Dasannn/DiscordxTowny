@@ -3,15 +3,14 @@ package com.discordtowny;
 import org.bukkit.plugin.java.JavaPlugin;
 
 /**
- * Punto de entrada del plugin.
+ * Plugin entry point.
  *
- * <p>Su unica responsabilidad es el cableado: crear los componentes en orden,
- * dejarlos disponibles y apagarlos al reves. La logica vive en los paquetes de
- * dominio, nunca aqui.
+ * <p>Its sole responsibility is wiring: creating components in order, making
+ * them available, and shutting them down in reverse. Logic lives in domain
+ * packages, never here.
  *
- * <p>El apagado debe ser tolerante a un arranque incompleto: si la base de
- * datos fallo, Discord nunca llego a conectarse y {@code onDisable} igualmente
- * se ejecuta.
+ * <p>Shutdown must be tolerant of an incomplete startup: if the database
+ * failed, Discord never managed to connect and {@code onDisable} still runs.
  */
 public final class DiscordTownyPlugin extends JavaPlugin {
 
@@ -20,11 +19,11 @@ public final class DiscordTownyPlugin extends JavaPlugin {
         saveDefaultConfig();
         saveResource("messages.yml", false);
 
-        getLogger().info("DiscordTowny " + getPluginMeta().getVersion() + " iniciado.");
+        getLogger().info("DiscordTowny " + getPluginMeta().getVersion() + " started.");
     }
 
     @Override
     public void onDisable() {
-        getLogger().info("DiscordTowny detenido.");
+        getLogger().info("DiscordTowny stopped.");
     }
 }

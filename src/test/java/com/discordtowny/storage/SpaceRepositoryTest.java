@@ -12,13 +12,13 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests de {@link SpaceRepository}: ciclo de vida de los espacios de Discord.
+ * Tests for {@link SpaceRepository}: lifecycle of Discord spaces.
  */
 class SpaceRepositoryTest extends StorageTestBase {
 
     // --- helpers ---
 
-    private TownSpace nuevoEspacio(SpaceState state) {
+    private TownSpace newSpace(SpaceState state) {
         return new TownSpace(
                 UUID.randomUUID(),
                 "ElPueblo_" + System.nanoTime(),
@@ -32,10 +32,10 @@ class SpaceRepositoryTest extends StorageTestBase {
                 Optional.empty());
     }
 
-    private TownSpace espacioCompleto(UUID uuid, String nombre) {
+    private TownSpace completeSpace(UUID uuid, String name) {
         return new TownSpace(
                 uuid,
-                nombre,
+                name,
                 Optional.of("cat_" + System.nanoTime()),
                 Optional.of("txt_" + System.nanoTime()),
                 Optional.of("voz_" + System.nanoTime()),
@@ -49,44 +49,44 @@ class SpaceRepositoryTest extends StorageTestBase {
     // --- findByTownUuid ---
 
     @Test
-    void findByTownUuidRetornaVacioSiNoExiste() {
+    void findByTownUuidReturnsEmptyWhenDoesNotExist() {
         assertTrue(spaces.findByTownUuid(UUID.randomUUID()).isEmpty());
     }
 
     @Test
-    void findByTownUuidRetornaEspacioGuardado() {
-        TownSpace esp = nuevoEspacio(SpaceState.ACTIVE);
-        spaces.save(esp);
-        Optional<TownSpace> found = spaces.findByTownUuid(esp.townUuid());
+    void findByTownUuidReturnsSavedSpace() {
+        TownSpace space = newSpace(SpaceState.ACTIVE);
+        spaces.save(space);
+        Optional<TownSpace> found = spaces.findByTownUuid(space.townUuid());
         assertTrue(found.isPresent());
-        assertEquals(esp.townUuid(), found.get().townUuid());
-        assertEquals(esp.townName(), found.get().townName());
+        assertEquals(space.townUuid(), found.get().townUuid());
+        assertEquals(space.townName(), found.get().townName());
     }
 
     // --- findByChannelId ---
 
     @Test
-    void findByChannelIdRetornaVacioSiNoHayCanal() {
+    void findByChannelIdReturnsEmptyWhenThereIsNoChannel() {
         assertTrue(spaces.findByChannelId("no_existe").isEmpty());
     }
 
     @Test
-    void findByChannelIdEncuentraPorTextChannel() {
+    void findByChannelIdFindsByTextChannel() {
         UUID uuid = UUID.randomUUID();
-        TownSpace esp = espacioCompleto(uuid, "Pueblo");
-        spaces.save(esp);
-        String textId = esp.textChannelId().orElseThrow();
+        TownSpace space = completeSpace(uuid, "Pueblo");
+        spaces.save(space);
+        String textId = space.textChannelId().orElseThrow();
         Optional<TownSpace> found = spaces.findByChannelId(textId);
         assertTrue(found.isPresent());
         assertEquals(uuid, found.get().townUuid());
     }
 
     @Test
-    void findByChannelIdEncuentraPorVoiceChannel() {
+    void findByChannelIdFindsByVoiceChannel() {
         UUID uuid = UUID.randomUUID();
-        TownSpace esp = espacioCompleto(uuid, "Pueblo");
-        spaces.save(esp);
-        String voiceId = esp.voiceChannelId().orElseThrow();
+        TownSpace space = completeSpace(uuid, "Pueblo");
+        spaces.save(space);
+        String voiceId = space.voiceChannelId().orElseThrow();
         Optional<TownSpace> found = spaces.findByChannelId(voiceId);
         assertTrue(found.isPresent());
         assertEquals(uuid, found.get().townUuid());
@@ -95,31 +95,31 @@ class SpaceRepositoryTest extends StorageTestBase {
     // --- findByState ---
 
     @Test
-    void findByStateRetornaListaFiltrada() {
-        spaces.save(nuevoEspacio(SpaceState.ACTIVE));
-        spaces.save(nuevoEspacio(SpaceState.ACTIVE));
-        spaces.save(nuevoEspacio(SpaceState.ARCHIVED));
+    void findByStateReturnsFilteredList() {
+        spaces.save(newSpace(SpaceState.ACTIVE));
+        spaces.save(newSpace(SpaceState.ACTIVE));
+        spaces.save(newSpace(SpaceState.ARCHIVED));
 
-        List<TownSpace> activos   = spaces.findByState(SpaceState.ACTIVE);
-        List<TownSpace> archivados = spaces.findByState(SpaceState.ARCHIVED);
-        assertEquals(2, activos.size());
-        assertEquals(1, archivados.size());
+        List<TownSpace> active   = spaces.findByState(SpaceState.ACTIVE);
+        List<TownSpace> archived = spaces.findByState(SpaceState.ARCHIVED);
+        assertEquals(2, active.size());
+        assertEquals(1, archived.size());
     }
 
     // --- findAll ---
 
     @Test
-    void findAllRetornaTodos() {
-        spaces.save(nuevoEspacio(SpaceState.ACTIVE));
-        spaces.save(nuevoEspacio(SpaceState.ARCHIVED));
-        spaces.save(nuevoEspacio(SpaceState.INCONSISTENT));
+    void findAllReturnsAll() {
+        spaces.save(newSpace(SpaceState.ACTIVE));
+        spaces.save(newSpace(SpaceState.ARCHIVED));
+        spaces.save(newSpace(SpaceState.INCONSISTENT));
         assertEquals(3, spaces.findAll().size());
     }
 
     // --- save (upsert) ---
 
     @Test
-    void saveActualizaEspacioExistente() {
+    void saveUpdatesExistingSpace() {
         UUID uuid = UUID.randomUUID();
         TownSpace v1 = new TownSpace(uuid, "NombreViejo", Optional.empty(),
                 Optional.empty(), Optional.empty(), Optional.empty(),
@@ -138,24 +138,24 @@ class SpaceRepositoryTest extends StorageTestBase {
     }
 
     @Test
-    void saveConservaFechaDeCreacion() {
-        Instant ahora = Instant.now();
-        TownSpace esp = new TownSpace(UUID.randomUUID(), "Pueblo",
+    void savePreservesCreationDate() {
+        Instant now = Instant.now();
+        TownSpace space = new TownSpace(UUID.randomUUID(), "Pueblo",
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                SpaceState.ACTIVE, ahora, Optional.empty(), Optional.empty());
-        spaces.save(esp);
-        TownSpace found = spaces.findByTownUuid(esp.townUuid()).orElseThrow();
-        assertEquals(ahora.toEpochMilli(), found.createdAt().toEpochMilli());
+                SpaceState.ACTIVE, now, Optional.empty(), Optional.empty());
+        spaces.save(space);
+        TownSpace found = spaces.findByTownUuid(space.townUuid()).orElseThrow();
+        assertEquals(now.toEpochMilli(), found.createdAt().toEpochMilli());
     }
 
     @Test
-    void saveConArchivedAt() {
+    void saveWithArchivedAt() {
         Instant archivedAt = Instant.now().plusSeconds(100);
-        TownSpace esp = new TownSpace(UUID.randomUUID(), "Pueblo",
+        TownSpace space = new TownSpace(UUID.randomUUID(), "Pueblo",
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                 SpaceState.ARCHIVED, Instant.now(), Optional.of(archivedAt), Optional.empty());
-        spaces.save(esp);
-        TownSpace found = spaces.findByTownUuid(esp.townUuid()).orElseThrow();
+        spaces.save(space);
+        TownSpace found = spaces.findByTownUuid(space.townUuid()).orElseThrow();
         assertTrue(found.archivedAt().isPresent());
         assertEquals(archivedAt.toEpochMilli(), found.archivedAt().get().toEpochMilli());
     }
@@ -163,87 +163,87 @@ class SpaceRepositoryTest extends StorageTestBase {
     // --- delete ---
 
     @Test
-    void deleteBorraElEspacio() {
-        TownSpace esp = nuevoEspacio(SpaceState.ACTIVE);
-        spaces.save(esp);
-        spaces.delete(esp.townUuid());
-        assertTrue(spaces.findByTownUuid(esp.townUuid()).isEmpty());
+    void deleteDeletesTheSpace() {
+        TownSpace space = newSpace(SpaceState.ACTIVE);
+        spaces.save(space);
+        spaces.delete(space.townUuid());
+        assertTrue(spaces.findByTownUuid(space.townUuid()).isEmpty());
     }
 
     @Test
-    void deleteNoEsErrorSiNoExiste() {
+    void deleteIsNotAnErrorWhenDoesNotExist() {
         assertDoesNotThrow(() -> spaces.delete(UUID.randomUUID()));
     }
 
     // --- updateState ---
 
     @Test
-    void updateStateActualizaElEstado() {
-        TownSpace esp = nuevoEspacio(SpaceState.ACTIVE);
-        spaces.save(esp);
-        spaces.updateState(esp.townUuid(), SpaceState.ARCHIVED);
-        TownSpace found = spaces.findByTownUuid(esp.townUuid()).orElseThrow();
+    void updateStateUpdatesState() {
+        TownSpace space = newSpace(SpaceState.ACTIVE);
+        spaces.save(space);
+        spaces.updateState(space.townUuid(), SpaceState.ARCHIVED);
+        TownSpace found = spaces.findByTownUuid(space.townUuid()).orElseThrow();
         assertEquals(SpaceState.ARCHIVED, found.state());
     }
 
     @Test
-    void updateStateAInconsistent() {
-        TownSpace esp = nuevoEspacio(SpaceState.ACTIVE);
-        spaces.save(esp);
-        spaces.updateState(esp.townUuid(), SpaceState.INCONSISTENT);
+    void updateStateToInconsistent() {
+        TownSpace space = newSpace(SpaceState.ACTIVE);
+        spaces.save(space);
+        spaces.updateState(space.townUuid(), SpaceState.INCONSISTENT);
         assertEquals(SpaceState.INCONSISTENT,
-                spaces.findByTownUuid(esp.townUuid()).orElseThrow().state());
+                spaces.findByTownUuid(space.townUuid()).orElseThrow().state());
     }
 
     // --- touchActivity ---
 
     @Test
-    void touchActivityActualizaFechaDeUltimaActividad() {
-        TownSpace esp = nuevoEspacio(SpaceState.ACTIVE);
-        spaces.save(esp);
-        Instant actividad = Instant.now().plusSeconds(500);
-        spaces.touchActivity(esp.townUuid(), actividad);
-        TownSpace found = spaces.findByTownUuid(esp.townUuid()).orElseThrow();
+    void touchActivityUpdatesLastActivityDate() {
+        TownSpace space = newSpace(SpaceState.ACTIVE);
+        spaces.save(space);
+        Instant activity = Instant.now().plusSeconds(500);
+        spaces.touchActivity(space.townUuid(), activity);
+        TownSpace found = spaces.findByTownUuid(space.townUuid()).orElseThrow();
         assertTrue(found.lastActivityAt().isPresent());
-        assertEquals(actividad.toEpochMilli(), found.lastActivityAt().get().toEpochMilli());
+        assertEquals(activity.toEpochMilli(), found.lastActivityAt().get().toEpochMilli());
     }
 
     // --- countActive ---
 
     @Test
-    void countActiveContaSoloActivos() {
-        spaces.save(nuevoEspacio(SpaceState.ACTIVE));
-        spaces.save(nuevoEspacio(SpaceState.ACTIVE));
-        spaces.save(nuevoEspacio(SpaceState.ARCHIVED));
-        spaces.save(nuevoEspacio(SpaceState.INCONSISTENT));
+    void countActiveCountsOnlyActive() {
+        spaces.save(newSpace(SpaceState.ACTIVE));
+        spaces.save(newSpace(SpaceState.ACTIVE));
+        spaces.save(newSpace(SpaceState.ARCHIVED));
+        spaces.save(newSpace(SpaceState.INCONSISTENT));
         assertEquals(2, spaces.countActive());
     }
 
     @Test
-    void countActiveEsCeroSiNoHayNada() {
+    void countActiveIsZeroWhenThereIsNothing() {
         assertEquals(0, spaces.countActive());
     }
 
     // --- isComplete ---
 
     @Test
-    void isCompleteConTextoYVoz() {
-        TownSpace esp = espacioCompleto(UUID.randomUUID(), "Pueblo");
-        assertTrue(esp.isComplete(true, true));
-        assertTrue(esp.isComplete(true, false));
-        assertTrue(esp.isComplete(false, true));
-        assertTrue(esp.isComplete(false, false));
+    void isCompleteWithTextAndVoice() {
+        TownSpace space = completeSpace(UUID.randomUUID(), "Pueblo");
+        assertTrue(space.isComplete(true, true));
+        assertTrue(space.isComplete(true, false));
+        assertTrue(space.isComplete(false, true));
+        assertTrue(space.isComplete(false, false));
     }
 
     @Test
-    void isCompleteIncompleto() {
-        TownSpace esp = new TownSpace(UUID.randomUUID(), "Pueblo",
+    void isCompleteIncomplete() {
+        TownSpace space = new TownSpace(UUID.randomUUID(), "Pueblo",
                 Optional.empty(), Optional.of("txt123"), Optional.empty(),
                 Optional.of("rol123"), SpaceState.ACTIVE, Instant.now(),
                 Optional.empty(), Optional.empty());
-        // Tiene texto y rol, le falta voz.
-        assertFalse(esp.isComplete(false, true), "Falta voz");
-        assertTrue(esp.isComplete(true, false), "Solo pide texto y hay texto");
-        assertTrue(esp.isComplete(false, false), "No pide nada: siempre completo");
+        // Has text and role, lacks voice.
+        assertFalse(space.isComplete(false, true), "Missing voice");
+        assertTrue(space.isComplete(true, false), "Only asks for text and there is text");
+        assertTrue(space.isComplete(false, false), "Asks for nothing: always complete");
     }
 }

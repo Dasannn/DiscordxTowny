@@ -1,150 +1,148 @@
 # DiscordTowny — Constitution
 
-Documento de principios. Define qué es el proyecto, qué no es, y las reglas que
-ninguna decisión posterior (spec, arquitectura, plan, tareas) puede violar.
+Principles document. Defines what the project is, what it is not, and the rules that
+no subsequent decision (spec, architecture, plan, tasks) may violate.
 
-Estado: **borrador v1** — pendiente de aprobación.
+Status: **draft v1** — pending approval.
 
 ---
 
-## 1. Propósito
+## 1. Purpose
 
-Plugin de Paper que conecta un servidor Minecraft con Towny Advanced a un
-servidor de Discord, de forma que cada town tenga su espacio privado en Discord
-(canal de texto y de voz) creado y mantenido automáticamente por un bot, y que
-los miembros puedan consultar datos de su town desde Discord.
+Paper plugin that connects a Minecraft server running Towny Advanced to a
+Discord server, so that each town has its private space on Discord
+(text and voice channel) automatically created and maintained by a bot, and
+members can query their town data from Discord.
 
-## 2. Producto en una frase
+## 2. Product in one sentence
 
-> El alcalde escribe un comando en el juego y su town tiene canales privados en
-> Discord con los permisos correctos, para siempre, sin intervención de un admin.
+> The mayor types a command in-game and their town gets private channels on
+> Discord with the correct permissions, forever, without admin intervention.
 
-## 3. Alcance v1
+## 3. Scope v1
 
-### Dentro
+### In scope
 
-- **Vinculación verificada** de cuenta Minecraft ↔ cuenta Discord.
-- **Gestión de canales**: creación, renombrado y borrado de los canales de una
-  town, dentro de una categoría contenedora configurable (por defecto
+- **Verified linking** of Minecraft account ↔ Discord account.
+- **Channel management**: creation, renaming, and deletion of a town's
+  channels, within a configurable container category (default
   `Comunidades`).
-- **Gestión de roles**: rol por town y rol de alcalde, asignados y revocados
-  automáticamente por el bot.
-- **Sincronización de pertenencia**: entrar, salir, ser expulsado de una town o
-  cambiar de alcalde se refleja en Discord.
-- **Comandos de información en Discord**: datos detallados de town, residente y
-  listados.
-- **Persistencia** en MySQL/MariaDB, con SQLite como alternativa automática.
+- **Role management**: per-town role and mayor role, assigned and revoked
+  automatically by the bot.
+- **Membership synchronization**: joining, leaving, being kicked from a town, or
+  changing mayors is reflected in Discord.
+- **Information commands on Discord**: detailed town data, resident data, and
+  listings.
+- **Persistence** in MySQL/MariaDB, with SQLite as an automatic fallback.
 
-### Fuera (v1)
+### Out of scope (v1)
 
-Estas exclusiones son deliberadas. Añadir cualquiera de ellas requiere modificar
-este documento primero.
+These exclusions are deliberate. Adding any of them requires modifying
+this document first.
 
-- Chat bridge entre el chat de town y Discord.
-- Canales y roles para naciones.
-- Soporte multi-servidor / red BungeeCord o Velocity.
-- Panel web o API HTTP.
-- Integración con economía o con plugins de guerra (SiegeWar u otros).
-- Internacionalización más allá de un único idioma configurable por archivo.
+- Chat bridge between town chat and Discord.
+- Channels and roles for nations.
+- Multi-server / BungeeCord or Velocity network support.
+- Web panel or HTTP API.
+- Integration with economy or war plugins (SiegeWar or others).
+- Internationalization beyond a single configurable file-based language.
 
-## 4. Plataforma
+## 4. Platform
 
-| Elemento | Decisión |
+| Element | Decision |
 |---|---|
-| Servidor | Paper para Minecraft 26.2 |
+| Server | Paper for Minecraft 26.2 |
 | Java | 25 |
-| Dependencia dura | Towny Advanced |
-| Discord | Un único guild por instancia del plugin |
-| Licencia | Open source en GitHub |
+| Hard dependency | Towny Advanced |
+| Discord | A single guild per plugin instance |
+| License | Open source on GitHub |
 
-El plugin no arranca si Towny no está presente. No se soporta más de un guild
-por servidor de Minecraft en v1.
+The plugin does not start if Towny is not present. More than one guild
+per Minecraft server is not supported in v1.
 
-## 5. Principios
+## 5. Principles
 
-### P1 — Discord refleja Towny, nunca al revés
+### P1 — Discord reflects Towny, never the other way around
 
-Towny es la única fuente de verdad sobre quién pertenece a qué town. Discord es
-una proyección. Ante cualquier discrepancia, gana Towny. No existe ninguna
-acción en Discord que modifique la pertenencia a una town.
+Towny is the single source of truth on who belongs to which town. Discord is
+a projection. In any discrepancy, Towny wins. There is no action on Discord
+that modifies town membership.
 
-### P2 — La pertenencia a un canal no es voluntaria
+### P2 — Channel membership is not voluntary
 
-Ningún usuario puede unirse a un canal de town, ni auto-asignarse un rol, ni
-solicitar acceso. El rol de town lo otorga exclusivamente el bot a partir de la
-lista de residentes de Towny. Un usuario que no es residente no puede ver el
-canal.
+No user can join a town channel, self-assign a role, or request access.
+The town role is granted exclusively by the bot based on Towny's resident
+list. A user who is not a resident cannot see the channel.
 
-### P3 — Identidad verificada o nada
+### P3 — Verified identity or nothing
 
-Ningún permiso se concede sobre una identidad no verificada. La vinculación se
-prueba con un código de un solo uso generado dentro del juego. El rol de alcalde
-se concede solo tras comprobar contra la API de Towny que esa cuenta vinculada
-es efectivamente el alcalde de esa town.
+No permission is granted on an unverified identity. Linking is proven
+with a one-time code generated in-game. The mayor role is granted only
+after checking against the Towny API that the linked account is indeed
+the mayor of that town.
 
-### P4 — El hilo principal es sagrado
+### P4 — The main thread is sacred
 
-Ninguna llamada a la API de Discord ocurre en el hilo principal del servidor.
-Ninguna consulta a la base de datos ocurre en el hilo principal. El rendimiento
-del servidor de Minecraft nunca se degrada por culpa de Discord.
+No Discord API call happens on the server's main thread.
+No database query happens on the main thread. Minecraft server
+performance is never degraded because of Discord.
 
-### P5 — El estado se reconcilia, no se asume
+### P5 — State is reconciled, not assumed
 
-Un admin puede borrar un canal a mano, Discord puede fallar una petición, el
-servidor puede caerse a medias. El sistema asume que el estado se desincroniza
-y debe ser capaz de detectarlo y repararlo, tanto de forma periódica como bajo
-demanda con un comando de administración.
+An admin can delete a channel manually, Discord can fail a request, the
+server can crash midway. The system assumes state gets out of sync
+and must be able to detect and repair it, both periodically and on
+demand with an administration command.
 
-### P6 — Las acciones destructivas se confirman
+### P6 — Destructive actions are confirmed
 
-Borrar los canales de una town destruye historial de conversación. Toda
-destrucción requiere confirmación explícita o un periodo de gracia configurable.
+Deleting a town's channels destroys conversation history. Any
+destruction requires explicit confirmation or a configurable grace period.
 
-### P7 — Los secretos no se versionan
+### P7 — Secrets are not versioned
 
-El token del bot y las credenciales de la base de datos viven en configuración
-local, nunca en el repositorio, nunca en logs, nunca en mensajes de error
-mostrados a usuarios.
+The bot token and database credentials live in local configuration,
+never in the repository, never in logs, never in error messages
+shown to users.
 
-### P8 — Configurable donde importa, opinado donde no
+### P8 — Configurable where it matters, opinionated where it doesn't
 
-Nombres de categoría, plantillas de nombres de canal y de rol, y la política de
-borrado son configurables. La arquitectura interna y el modelo de permisos no lo
-son.
+Category names, channel and role name templates, and the deletion
+policy are configurable. The internal architecture and permission model
+are not.
 
-### P9 — Fallar de forma visible y segura
+### P9 — Fail visibly and safely
 
-Si Discord no responde, el servidor de Minecraft sigue funcionando. Los errores
-se registran con contexto suficiente para diagnosticarlos, y las operaciones que
-fallan a medias no dejan permisos abiertos.
+If Discord does not respond, the Minecraft server keeps running. Errors
+are logged with sufficient context to diagnose them, and operations that
+fail halfway do not leave open permissions.
 
-## 6. Límites conocidos
+## 6. Known limits
 
-Un guild de Discord admite un máximo de 500 canales, 250 roles y **50 canales
-por categoría**. Este último obliga a repartir los espacios en categorías
-numeradas a medida que se llenan. Con dos canales
-y un rol por town, el techo práctico ronda las 240 towns. Ese límite lo impone
-Discord y no es negociable. Lo que sí es configurable es el límite propio del
-plugin (`max_towns`) y los criterios para calificar, de modo que el
-administrador decida qué towns reciben canal antes de chocar contra el techo de
-Discord. Al alcanzar el límite se rechaza la creación con un mensaje claro, en
-lugar de fallar de forma opaca.
+A Discord guild allows a maximum of 500 channels, 250 roles, and **50 channels
+per category**. The latter forces splitting spaces into numbered categories
+as they fill up. With two channels and one role per town, the practical
+ceiling is around 240 towns. That limit is imposed by Discord and is not
+negotiable. What is configurable is the plugin's own limit (`max_towns`)
+and qualification criteria, so that the administrator decides which towns
+receive a channel before hitting Discord's ceiling. Upon reaching the limit,
+creation is rejected with a clear message, rather than failing opaquely.
 
-Las operaciones de creación y borrado de canales y roles están fuertemente
-limitadas por rate limit en Discord. El diseño debe serializar y reintentar esas
-operaciones, no dispararlas en paralelo.
+Channel and role creation and deletion operations are heavily rate-limited
+on Discord. The design must serialize and retry these operations, not fire
+them in parallel.
 
-## 7. Reglas de desarrollo
+## 7. Development rules
 
-- El proyecto se desarrolla con varios agentes en paralelo, un worktree por
-  tarea, y nadie trabaja directamente sobre `main`.
-- Toda rama pasa por revisión de código antes de integrarse.
-- No se implementa nada que no esté documentado en la spec.
-- Cambiar arquitectura o requisitos exige aprobación previa y actualizar estos
-  documentos.
+- The project is developed with multiple agents in parallel, one worktree per
+  task, and no one works directly on `main`.
+- Every branch undergoes code review before merging.
+- Nothing is implemented that is not documented in the spec.
+- Changing architecture or requirements requires prior approval and updating
+  these documents.
 
-## 8. Criterio de éxito
+## 8. Success criteria
 
-Un alcalde ejecuta un comando en el juego y, en menos de un minuto, su town
-tiene canales privados en Discord con los residentes correctos dentro y nadie
-más. Un admin del servidor no tiene que tocar nada.
+A mayor executes an in-game command and, in under a minute, their town
+has private channels on Discord with the correct residents inside and no one
+else. A server admin does not have to touch anything.

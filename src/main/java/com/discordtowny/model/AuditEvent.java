@@ -4,10 +4,10 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * Algo que el plugin hizo o intento hacer.
+ * Something that the plugin did or attempted to do.
  *
- * <p>Se persiste y, en paralelo, se encola hacia el canal de logs de Discord.
- * El detalle NUNCA debe contener el token ni credenciales.
+ * <p>It is persisted and, in parallel, enqueued to the Discord log channel.
+ * The detail must NEVER contain the token or credentials.
  */
 public record AuditEvent(
         Instant at,
@@ -19,11 +19,11 @@ public record AuditEvent(
         Optional<String> detail) {
 
     public enum Severity {
-        /** Operacion normal: creaciones, cambios de rol, vinculaciones. */
+        /** Normal operation: creations, role changes, links. */
         INFO,
-        /** Algo inesperado que no impide operar: reintento, estado corregido. */
+        /** Something unexpected that does not prevent operating: retry, corrected state. */
         WARNING,
-        /** Operacion fallida. */
+        /** Failed operation. */
         ERROR
     }
 }

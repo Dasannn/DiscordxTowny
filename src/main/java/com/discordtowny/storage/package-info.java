@@ -1,8 +1,8 @@
 /**
- * Unico acceso a la base de datos: esquema, migraciones y DAOs.
+ * Sole access to the database: schema, migrations, and DAOs.
  *
- * <p><b>Regla de dependencias:</b> no conoce JDA ni Bukkit. Solo se usa fuera del hilo principal.
+ * <p><b>Dependency rule:</b> does not know JDA or Bukkit. Only used off the main thread.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.storage;

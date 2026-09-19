@@ -5,14 +5,14 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Espacio de Discord de una town.
+ * Discord space of a town.
  *
- * <p>Se identifica por el UUID de la town, nunca por su nombre: los nombres
- * cambian y romperian la correspondencia. {@code townName} es el ultimo nombre
- * conocido, sirve para mostrar y para detectar renombrados.
+ * <p>Identified by the town's UUID, never by its name: names change and would
+ * break mapping. {@code townName} is the last known name, used for display and
+ * for detecting renames.
  *
- * <p>Los identificadores de Discord son opcionales porque una creacion puede
- * estar a medias: cada uno se persiste en cuanto existe.
+ * <p>Discord identifiers are optional because a creation may be midway
+ * through: each one is persisted as soon as it exists.
  */
 public record TownSpace(
         UUID townUuid,
@@ -26,7 +26,7 @@ public record TownSpace(
         Optional<Instant> archivedAt,
         Optional<Instant> lastActivityAt) {
 
-    /** Cierto si todo lo que la configuracion pide crear ya existe. */
+    /** True if everything the configuration requests to create already exists. */
     public boolean isComplete(boolean wantsText, boolean wantsVoice) {
         return roleId.isPresent()
                 && (!wantsText || textChannelId.isPresent())

@@ -4,17 +4,17 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 
 /**
- * Utilidad para sanitizar mensajes y trazas de excepcion antes de enviarlos al log.
- * Garantiza que el token del bot nunca se filtre (P7 de la constitucion).
+ * Utility to sanitize messages and exception traces before sending them to the log.
+ * Guarantees that the bot token is never leaked (P7 of the constitution).
  */
 final class DiscordSanitizer {
 
     private DiscordSanitizer() {}
 
-    /** Reemplaza el token por una mascara segura si aparece en el texto. */
+    /** Replaces the token with a secure mask if it appears in the text. */
     static String sanitize(String message, String token) {
         if (message == null) {
-            return "error desconocido";
+            return "unknown error";
         }
         if (token != null && !token.isBlank() && message.contains(token)) {
             return message.replace(token, "[TOKEN_OCULTO]");
@@ -22,10 +22,10 @@ final class DiscordSanitizer {
         return message;
     }
 
-    /** Convierte una excepcion en traza de texto y oculta el token si aparece. */
+    /** Converts an exception to a text stack trace and masks the token if it appears. */
     static String sanitizeThrowable(Throwable t, String token) {
         if (t == null) {
-            return "error desconocido";
+            return "unknown error";
         }
         StringWriter sw = new StringWriter();
         t.printStackTrace(new PrintWriter(sw));

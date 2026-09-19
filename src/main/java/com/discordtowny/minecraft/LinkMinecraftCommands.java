@@ -20,12 +20,12 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Registro de comandos del juego para la vinculacion de cuentas.
+ * Registration of in-game commands for account linking.
  *
- * <p>Registrados mediante Brigadier, el sistema de Paper moderno.
- * Ninguna llamada a la base de datos bloquea el hilo principal:
- * se responde de inmediato al jugador y se confirma cuando la operacion
- * asincrona termina.
+ * <p>Registered using Brigadier, modern Paper's system.
+ * No call to the database blocks the main thread:
+ * the player is answered immediately and confirmed when the
+ * asynchronous operation completes.
  */
 public final class LinkMinecraftCommands {
 
@@ -34,7 +34,7 @@ public final class LinkMinecraftCommands {
     private LinkMinecraftCommands() {}
 
     /**
-     * Construye el arbol de comandos de Brigadier para /dt (y /discordtowny).
+     * Builds the Brigadier command tree for /dt (and /discordtowny).
      */
     public static LiteralCommandNode<CommandSourceStack> createCommandNode(
             LinkService linkService,
@@ -45,8 +45,8 @@ public final class LinkMinecraftCommands {
     }
 
     /**
-     * Construye el arbol de comandos de Brigadier permitiendo especificar el scheduler
-     * para retornar al hilo principal antes de interactuar con jugadores.
+     * Builds the Brigadier command tree allowing specification of the scheduler
+     * to return to the main thread before interacting with players.
      */
     public static LiteralCommandNode<CommandSourceStack> createCommandNode(
             LinkService linkService,
@@ -68,10 +68,10 @@ public final class LinkMinecraftCommands {
                                 return 1;
                             }
 
-                            // Responder de inmediato en el hilo principal
+                            // Respond immediately on the main thread
                             player.sendMessage(messages.get("general.working"));
 
-                            // Operacion asincrona fuera del hilo principal pasando el nombre capturado
+                            // Asynchronous operation off the main thread passing the captured name
                             linkService.generateCode(player.getUniqueId(), player.getName()).thenAccept(optCode -> {
                                 scheduler.accept(() -> {
                                     if (optCode.isEmpty()) {
@@ -100,10 +100,10 @@ public final class LinkMinecraftCommands {
                                 return 1;
                             }
 
-                            // Responder de inmediato
+                            // Respond immediately
                             player.sendMessage(messages.get("general.working"));
 
-                            // Operacion asincrona
+                            // Asynchronous operation
                             linkService.unlink(player.getUniqueId()).thenAccept(unlinked -> {
                                 scheduler.accept(() -> {
                                     if (unlinked) {
@@ -169,7 +169,7 @@ public final class LinkMinecraftCommands {
     }
 
     /**
-     * Registra los comandos en el gestor de ciclo de vida de Paper.
+     * Registers commands in Paper's lifecycle manager.
      */
     public static void register(
             Plugin plugin,
@@ -182,7 +182,7 @@ public final class LinkMinecraftCommands {
             Commands registrar = event.registrar();
             LiteralCommandNode<CommandSourceStack> node = createCommandNode(
                     linkService, config, messages, townyFacade, scheduler);
-            registrar.register(node, "Comandos de vinculacion de DiscordTowny", List.of("discordtowny"));
+            registrar.register(node, "DiscordTowny linking commands", List.of("discordtowny"));
         });
     }
 
@@ -196,10 +196,10 @@ public final class LinkMinecraftCommands {
                         return;
                     }
                 }
-                LOGGER.warning("[LinkCommands] No se pudo programar respuesta: plugin DiscordTowny no disponible o deshabilitado");
+                LOGGER.warning("[LinkCommands] Could not schedule response: DiscordTowny plugin unavailable or disabled");
             } catch (Throwable t) {
                 LOGGER.log(java.util.logging.Level.SEVERE,
-                        "[LinkCommands] Error al programar respuesta en el scheduler principal", t);
+                        "[LinkCommands] Error scheduling response on the main scheduler", t);
             }
         };
     }
@@ -216,7 +216,7 @@ public final class LinkMinecraftCommands {
                     return resident.get().uuid();
                 }
             } catch (Exception e) {
-                LOGGER.warning("[LinkCommands] Error al consultar residente en Towny para '"
+                LOGGER.warning("[LinkCommands] Error looking up resident in Towny for '"
                         + targetName + "': " + e.getMessage());
             }
         }
@@ -226,7 +226,7 @@ public final class LinkMinecraftCommands {
                 return offline.getUniqueId();
             }
         } catch (Exception ignored) {
-            // Entornos de prueba sin Bukkit completo
+            // Test environments without full Bukkit
         }
         return null;
     }

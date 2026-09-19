@@ -12,20 +12,20 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Implementacion de {@link SpaceRepository} sobre JDBC.
+ * JDBC implementation of {@link SpaceRepository}.
  *
- * <p>Usa la sintaxis de upsert compatible con el motor configurado:
- * REPLACE INTO para MySQL/MariaDB, INSERT OR REPLACE para SQLite.
- * Ambas son equivalentes: borran la fila con la misma PK e insertan
- * la nueva, manteniendo un unico camino de codigo.
+ * <p>Uses the upsert syntax compatible with the configured engine:
+ * REPLACE INTO for MySQL/MariaDB, INSERT OR REPLACE for SQLite.
+ * Both are equivalent: they delete the row with the same PK and insert
+ * the new one, keeping a single code path.
  *
- * <p>Todas las sentencias son preparadas.
+ * <p>All statements are prepared statements.
  */
 final class SqlSpaceRepository implements SpaceRepository {
 
     private final HikariDataSource ds;
     private final String tSpaces;
-    /** Palabra clave de upsert segun el motor de base de datos. */
+    /** Upsert keyword according to the database engine. */
     private final String upsertPrefix;
 
     SqlSpaceRepository(HikariDataSource ds, String prefix, boolean isSqlite) {
@@ -46,7 +46,7 @@ final class SqlSpaceRepository implements SpaceRepository {
                 if (rs.next()) return Optional.of(mapSpace(rs));
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al buscar espacio por UUID de town", e);
+            throw new StorageException("Failed to find space by town UUID", e);
         }
         return Optional.empty();
     }
@@ -63,7 +63,7 @@ final class SqlSpaceRepository implements SpaceRepository {
                 if (rs.next()) return Optional.of(mapSpace(rs));
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al buscar espacio por ID de canal", e);
+            throw new StorageException("Failed to find space by channel ID", e);
         }
         return Optional.empty();
     }
@@ -78,7 +78,7 @@ final class SqlSpaceRepository implements SpaceRepository {
                 return collectAll(rs);
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al buscar espacios por estado", e);
+            throw new StorageException("Failed to find spaces by state", e);
         }
     }
 
@@ -90,21 +90,21 @@ final class SqlSpaceRepository implements SpaceRepository {
              ResultSet rs = ps.executeQuery()) {
             return collectAll(rs);
         } catch (SQLException e) {
-            throw new StorageException("Error al listar todos los espacios", e);
+            throw new StorageException("Failed to list all spaces", e);
         }
     }
 
     /**
-     * Inserta o actualiza el espacio completo.
+     * Inserts or updates the entire space.
      *
-     * <p>REPLACE INTO / INSERT OR REPLACE borra la fila existente e inserta
-     * la nueva si hay conflicto de clave primaria. Es el comportamiento
-     * correcto para el ciclo de vida del espacio: se persiste cada campo
-     * en cuanto se conoce, sin esperar a que el espacio este completo.
+     * <p>REPLACE INTO / INSERT OR REPLACE deletes the existing row and inserts
+     * the new one if there is a primary key conflict. This is the correct
+     * behavior for the space lifecycle: each field is persisted as soon as it
+     * is known, without waiting for the space to be complete.
      */
     @Override
     public void save(TownSpace space) {
-        // Usa la sintaxis adecuada al motor: INSERT OR REPLACE en SQLite, REPLACE en MySQL/MariaDB.
+        // Uses the syntax appropriate for the engine: INSERT OR REPLACE on SQLite, REPLACE on MySQL/MariaDB.
         String sql = upsertPrefix + " INTO " + tSpaces
                 + " (town_uuid, town_name, category_id, text_channel_id, voice_channel_id,"
                 + "  role_id, state, created_at, archived_at, last_activity_at)"
@@ -123,7 +123,7 @@ final class SqlSpaceRepository implements SpaceRepository {
             setNullableInstant(ps, 10, space.lastActivityAt());
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al guardar espacio de town", e);
+            throw new StorageException("Failed to save town space", e);
         }
     }
 
@@ -135,7 +135,7 @@ final class SqlSpaceRepository implements SpaceRepository {
             ps.setString(1, townUuid.toString());
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al borrar espacio de town", e);
+            throw new StorageException("Failed to delete town space", e);
         }
     }
 
@@ -148,7 +148,7 @@ final class SqlSpaceRepository implements SpaceRepository {
             ps.setString(2, townUuid.toString());
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al actualizar estado del espacio", e);
+            throw new StorageException("Failed to update space state", e);
         }
     }
 
@@ -161,7 +161,7 @@ final class SqlSpaceRepository implements SpaceRepository {
             ps.setString(2, townUuid.toString());
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al actualizar actividad del espacio", e);
+            throw new StorageException("Failed to update space activity", e);
         }
     }
 
@@ -175,11 +175,11 @@ final class SqlSpaceRepository implements SpaceRepository {
                 return rs.next() ? rs.getInt(1) : 0;
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al contar espacios activos", e);
+            throw new StorageException("Failed to count active spaces", e);
         }
     }
 
-    // --- utilidades ---
+    // --- utilities ---
 
     private List<TownSpace> collectAll(ResultSet rs) throws SQLException {
         List<TownSpace> result = new ArrayList<>();

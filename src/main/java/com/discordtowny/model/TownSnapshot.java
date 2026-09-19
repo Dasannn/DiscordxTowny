@@ -5,11 +5,11 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Lectura inmutable de una town, tomada de Towny en el hilo principal.
+ * Immutable snapshot of a town, taken from Towny on the main thread.
  *
- * <p>Existe para que el resto del plugin no toque la API de Towny fuera del
- * hilo principal: el listener captura esto y lo pasa al pool. Es una foto, no
- * una vista viva; no se cachea entre operaciones.
+ * <p>Exists so the rest of the plugin does not touch the Towny API off the
+ * main thread: the listener captures this and passes it to the pool. It is a
+ * snapshot, not a live view; it is not cached between operations.
  */
 public record TownSnapshot(
         UUID uuid,

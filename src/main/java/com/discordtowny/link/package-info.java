@@ -1,8 +1,8 @@
 /**
- * Vinculacion verificada entre cuenta de Minecraft y cuenta de Discord.
+ * Verified linking between a Minecraft account and a Discord account.
  *
- * <p><b>Regla de dependencias:</b> dominio: no importa JDA ni Bukkit.
+ * <p><b>Dependency rule:</b> domain: does not import JDA or Bukkit.
  *
- * <p>Ver {@code ARCHITECTURE.md}, seccion 2.
+ * <p>See {@code ARCHITECTURE.md}, section 2.
  */
 package com.discordtowny.link;

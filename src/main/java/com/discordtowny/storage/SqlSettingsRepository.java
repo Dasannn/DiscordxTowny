@@ -8,7 +8,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Optional;
 
-/** Implementacion de {@link SettingsRepository} sobre JDBC. */
+/** JDBC implementation of {@link SettingsRepository}. */
 final class SqlSettingsRepository implements SettingsRepository {
 
     private final HikariDataSource ds;
@@ -33,14 +33,14 @@ final class SqlSettingsRepository implements SettingsRepository {
                 }
             }
         } catch (SQLException e) {
-            throw new StorageException("Error al leer el ajuste " + key, e);
+            throw new StorageException("Failed to read setting " + key, e);
         }
         return Optional.empty();
     }
 
     @Override
     public void put(String key, String value) {
-        // La sintaxis de upsert no es la misma en ambos motores.
+        // The upsert syntax is not the same across both engines.
         String sql = sqlite
                 ? "INSERT INTO " + table + " (setting_key, value) VALUES (?, ?)"
                     + " ON CONFLICT(setting_key) DO UPDATE SET value = excluded.value"
@@ -52,7 +52,7 @@ final class SqlSettingsRepository implements SettingsRepository {
             ps.setString(2, value);
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al guardar el ajuste " + key, e);
+            throw new StorageException("Failed to save setting " + key, e);
         }
     }
 
@@ -64,7 +64,7 @@ final class SqlSettingsRepository implements SettingsRepository {
             ps.setString(1, key);
             ps.executeUpdate();
         } catch (SQLException e) {
-            throw new StorageException("Error al borrar el ajuste " + key, e);
+            throw new StorageException("Failed to delete setting " + key, e);
         }
     }
 }

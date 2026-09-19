@@ -5,7 +5,7 @@ import com.discordtowny.model.LinkCode;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Vinculos verificados y codigos pendientes. Bloquea: ver {@link Storage}. */
+/** Verified links and pending codes. Blocks: see {@link Storage}. */
 public interface LinkRepository {
 
     Optional<AccountLink> findByUuid(UUID uuid);
@@ -13,71 +13,71 @@ public interface LinkRepository {
     Optional<AccountLink> findByDiscordId(String discordId);
 
     /**
-     * Guarda el vinculo.
+     * Saves the link.
      *
-     * @throws StorageException si el UUID o el Discord ID ya estan vinculados.
-     *     La unicidad se garantiza en el esquema, no solo comprobando antes:
-     *     dos peticiones simultaneas pasarian la comprobacion a la vez.
+     * @throws StorageException if the UUID or Discord ID is already linked.
+     *     Uniqueness is guaranteed in the schema, not merely by checking beforehand:
+     *     two simultaneous requests would pass the check at the same time.
      */
     void save(AccountLink link);
 
-    /** @return cierto si habia algo que borrar. */
+    /** @return true if there was something to delete. */
     boolean deleteByUuid(UUID uuid);
 
     /**
-     * Borra el vinculo solo si sigue siendo exactamente el que se leyo.
+     * Deletes the link only if it is still exactly the one that was read.
      *
-     * <p>Comprobar antes y borrar despues no basta: entre ambas cosas el
-     * vinculo puede haberse roto y recreado, y entonces se estaria borrando uno
-     * distinto del autorizado. La condicion viaja dentro del propio DELETE.
+     * <p>Checking before and deleting after is not enough: between the two, the
+     * link could have been broken and recreated, and then one different from the
+     * authorized one would be deleted. The condition travels inside the DELETE itself.
      *
-     * @return cierto si se borro; falso si ya no coincide o no existe
+     * @return true if deleted; false if it no longer matches or does not exist
      */
     boolean deleteByUuidIfMatches(UUID uuid, String discordId, java.time.Instant linkedAt);
 
-    /** Sustituye cualquier codigo vivo del jugador por este. */
+    /** Replaces any active code for the player with this one. */
     void saveCode(LinkCode code);
 
     Optional<LinkCode> findCode(String code);
 
     void deleteCode(String code);
 
-    /** Suma uno a los intentos fallidos y devuelve el total. */
+    /** Adds one to the failed attempts and returns the total. */
     int incrementAttempts(String code);
 
     /**
-     * Borra los codigos caducados a la fecha indicada.
+     * Purges expired codes as of the given timestamp.
      *
-     * <p>El instante se recibe, no se consulta aqui: si el repositorio leyera
-     * el reloj del sistema por su cuenta, su nocion de "ahora" diferiria de la
-     * del servicio que lo llama, y no habria forma de probarlo con un reloj
-     * controlado.
+     * <p>The instant is supplied, not queried here: if the repository read
+     * the system clock on its own, its notion of "now" would differ from that
+     * of the calling service, and there would be no way to test it with a
+     * controlled clock.
      */
     int purgeExpiredCodes(java.time.Instant now);
 
     /**
-     * Consume el codigo y crea el vinculo en una sola transaccion.
+     * Consumes the code and creates the link in a single transaction.
      *
-     * <p>Existe porque hacerlo en tres pasos sueltos (leer el codigo, insertar
-     * el vinculo, borrar el codigo) deja huecos que no se pueden cerrar desde
-     * arriba: dos canjes simultaneos leen el mismo codigo vigente y ambos
-     * terminan con exito, y un fallo al borrar deja un codigo ya usado que
-     * sigue siendo canjeable.
+     * <p>Exists because doing it in three separate steps (read the code, insert
+     * the link, delete the code) leaves gaps that cannot be closed from above:
+     * two concurrent redemptions read the same active code and both finish
+     * successfully, and a failure when deleting leaves an already used code
+     * that remains redeemable.
      *
-     * <p>El codigo se reclama borrandolo: si el borrado no afecta a ninguna
-     * fila, otro lo consumio primero. Si la insercion del vinculo falla, la
-     * transaccion se deshace y el codigo vuelve a estar disponible, de modo que
-     * un choque de unicidad no quema el codigo del jugador.
+     * <p>The code is claimed by deleting it: if the deletion affects zero rows,
+     * someone else consumed it first. If the link insertion fails, the
+     * transaction is rolled back and the code becomes available again, so that
+     * a uniqueness conflict does not burn the player's code.
      *
-     * <p>El UUID del jugador se toma de la fila del codigo dentro de la misma
-     * transaccion, nunca de una lectura previa.
+     * <p>The player's UUID is taken from the code's row within the same
+     * transaction, never from a prior read.
      *
-     * @param now instante con el que se juzga la caducidad
+     * @param now instant against which expiration is evaluated
      */
     ConsumeOutcome consumeCodeAndLink(String code, String discordId, String lastKnownName,
                                       java.time.Instant now);
 
-    /** Resultado de {@link #consumeCodeAndLink}. */
+    /** Result of {@link #consumeCodeAndLink}. */
     record ConsumeOutcome(ConsumeResult result, Optional<AccountLink> link) {
 
         public static ConsumeOutcome of(ConsumeResult result) {
@@ -87,15 +87,15 @@ public interface LinkRepository {
 
     enum ConsumeResult {
         OK,
-        /** No existe, o alguien lo consumio antes. */
+        /** Does not exist, or someone consumed it first. */
         CODE_NOT_FOUND,
         CODE_EXPIRED,
-        /** Ese jugador ya tiene vinculo. */
+        /** That player already has a link. */
         PLAYER_ALREADY_LINKED,
-        /** Esa cuenta de Discord ya esta vinculada a otro jugador. */
+        /** That Discord account is already linked to another player. */
         DISCORD_ALREADY_LINKED
     }
 
-    /** Cuantos vinculos hay. Para {@code /dt admin list}. */
+    /** How many links exist. For {@code /dt admin list}. */
     int count();
 }

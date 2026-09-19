@@ -7,26 +7,26 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Control de intentos fallidos de canje por usuario de Discord.
+ * Control of failed redemption attempts per Discord user.
  *
- * <p>Evita ataques de fuerza bruta sobre el espacio de codigos. Tras
- * alcanzar el limite de intentos fallidos dentro de la ventana temporal
- * configurada, el usuario queda bloqueado durante la duracion del bloqueo.
+ * <p>Prevents brute-force attacks on the code space. After reaching the
+ * limit of failed attempts within the configured time window, the user
+ * is locked out for the lockout duration.
  *
- * <p>Nota sobre seguridad y riesgo residual de fuerza bruta distribuida (hallazgo 13):
- * El alfabeto de codigos utiliza 31 simbolos alfanumericos no ambiguos (excluyendo
- * 0, O, o, 1, I, i, l, L). Con codigos de longitud 6, el espacio total es de
- * 31^6 = 887.503.681 combinaciones (aproximadamente 29,73 bits de entropia).
- * Un limite individual de 5 intentos por usuario confiere una probabilidad de exito
- * de solo 5 / 887.503.681 ≈ 5,63 x 10^-9 contra un codigo vivo especifico.
- * Sin embargo, ante un atacante con capacidad de coordinar multiples cuentas de Discord
- * (por ejemplo 1.000 cuentas de Discord), el presupuesto agregado se eleva
- * a 5.000 intentos y la probabilidad asciende a ≈ 5,63 x 10^-6 contra un codigo
- * concreto (y crece aproximadamente con M codigos activos concurrentes).
- * Esta implementacion protege estrictamente el presupuesto por cuenta individual
- * durante la ventana temporal. Si se requiere mitigar ataques distribuidos masivos
- * entre multiples cuentas, debe someterse a aprobacion del arquitecto una defensa
- * agregada global por ventana.
+ * <p>Note on security and residual risk of distributed brute force (finding 13):
+ * The code alphabet uses 31 non-ambiguous alphanumeric symbols (excluding
+ * 0, O, o, 1, I, i, l, L). With codes of length 6, the total space is
+ * 31^6 = 887,503,681 combinations (approximately 29.73 bits of entropy).
+ * An individual limit of 5 attempts per user provides a success probability
+ * of only 5 / 887,503,681 ≈ 5.63 x 10^-9 against a specific active code.
+ * However, against an attacker capable of coordinating multiple Discord accounts
+ * (for example, 1,000 Discord accounts), the aggregate budget rises
+ * to 5,000 attempts and the probability rises to ≈ 5.63 x 10^-6 against a
+ * particular code (and grows roughly with M concurrent active codes).
+ * This implementation strictly protects the per-individual-account budget
+ * during the time window. If mitigating massive distributed attacks across
+ * multiple accounts is required, an aggregate global defense per window
+ * must be submitted to the architect for approval.
  */
 final class AttemptTracker {
 
@@ -38,7 +38,7 @@ final class AttemptTracker {
     private final ConcurrentHashMap<String, UserAttempts> attempts = new ConcurrentHashMap<>();
 
     /**
-     * Comprueba si el usuario de Discord esta bloqueado en este instante.
+     * Checks whether the Discord user is locked out at this instant.
      */
     boolean isLocked(String discordId, Instant now) {
         if (discordId == null) {
@@ -53,7 +53,7 @@ final class AttemptTracker {
                 if (now.isBefore(user.lockedUntil)) {
                     return true;
                 }
-                // El bloqueo expiro: se levanta el bloqueo y se limpian marcas previas
+                // Lockout expired: remove the lockout and clear previous timestamps
                 user.lockedUntil = null;
                 user.failureTimestamps.clear();
             }
@@ -62,9 +62,9 @@ final class AttemptTracker {
     }
 
     /**
-     * Registra un intento fallido y devuelve cierto si el usuario queda bloqueado.
-     * Mantiene las marcas de fallo dentro de la ventana temporal de lockoutDuration
-     * pase lo que pase, sin ser reiniciadas por vinculaciones o desvinculaciones.
+     * Records a failed attempt and returns true if the user is locked out.
+     * Keeps failure timestamps within the lockoutDuration time window no
+     * matter what, without being reset by linkings or unlinkings.
      */
     boolean recordFailure(String discordId, Instant now, int maxAttempts, Duration lockoutDuration) {
         if (discordId == null) {
@@ -76,7 +76,7 @@ final class AttemptTracker {
                 return true;
             }
 
-            // Purgar marcas anteriores a la ventana temporal (now - lockoutDuration)
+            // Purge timestamps prior to the time window (now - lockoutDuration)
             Instant windowStart = now.minus(lockoutDuration);
             user.failureTimestamps.removeIf(t -> t.isBefore(windowStart));
 
@@ -91,12 +91,12 @@ final class AttemptTracker {
     }
 
     /**
-     * Ya no borra el presupuesto de fallos en canjes exitosos.
-     * Se preserva el metodo sin efecto para garantizar que el presupuesto de fallos
-     * se mantenga durante su ventana temporal pase lo que pase.
+     * No longer clears the failure budget on successful redemptions.
+     * The method is preserved as a no-op to ensure that the failure budget
+     * is maintained during its time window no matter what.
      */
     void clear(String discordId) {
-        // Intencionalmente vacio: el presupuesto de fallos debe mantenerse
-        // durante la ventana temporal independientemente de vinculaciones exitosas.
+        // Intentionally empty: the failure budget must be maintained
+        // during the time window regardless of successful linkings.
     }
 }
