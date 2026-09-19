@@ -497,6 +497,57 @@ public final class DefaultSyncService implements SyncService {
             }
         }
 
+
+        // 6. Role holders audit (ensure every holder of this managed town role is a justified resident)
+        if (space.state() == SpaceState.ACTIVE && !town.ruined() && space.roleId().isPresent()) {
+            String townRoleId = space.roleId().get();
+            try {
+                Set<String> holders = discordGateway.roleHolders(townRoleId);
+                if (holders == null || holders.isEmpty()) {
+                    if (!town.residentUuids().isEmpty()) {
+                        acc.inconsistenciesFound.incrementAndGet();
+                        acc.problems.add("Role holders lookup returned empty for town " + town.name()
+                                + " (role " + townRoleId + "): member cache may be cold or GUILD_MEMBERS intent disabled");
+                    }
+                } else {
+                    Set<String> justifiedDiscordIds = new LinkedHashSet<>();
+                    for (UUID residentUuid : town.residentUuids()) {
+                        linkRepository.findByUuid(residentUuid)
+                                .ifPresent(link -> justifiedDiscordIds.add(link.discordId()));
+                    }
+
+                    for (String holderDiscordId : holders) {
+                        if (!justifiedDiscordIds.contains(holderDiscordId)) {
+                            acc.inconsistenciesFound.incrementAndGet();
+                            acc.problems.add("Member " + holderDiscordId + " holds role for town "
+                                    + town.name() + " (" + townRoleId + ") without being a resident");
+
+                            if (isReportMode) {
+                                acc.rolesRevoked.incrementAndGet();
+                            } else {
+                                futures.add(discordGateway.submit(new GuildOperation.ApplyMemberRoles(
+                                        holderDiscordId, List.of(), List.of(townRoleId)
+                                )).thenAccept(outcome -> {
+                                    if (outcome != null && outcome.succeeded()) {
+                                        acc.rolesRevoked.incrementAndGet();
+                                        acc.inconsistenciesRepaired.incrementAndGet();
+                                    } else {
+                                        acc.problems.add("Failed to revoke unjustified role " + townRoleId
+                                                + " from member " + holderDiscordId + ": "
+                                                + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                acc.inconsistenciesFound.incrementAndGet();
+                acc.problems.add("Failed to lookup role holders for town " + town.name()
+                        + " (role " + townRoleId + "): " + e.getMessage());
+            }
+        }
+
         if (futures.isEmpty()) {
             return CompletableFuture.completedFuture(acc);
         }

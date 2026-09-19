@@ -528,6 +528,7 @@ class DefaultSyncServiceTest {
                 Optional.empty(), 10, 1000.0, 5000L);
 
         when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(mayorDiscordId, resDiscordId));
 
         SyncReport report = service.syncTown(townUuid).join();
 
@@ -798,4 +799,253 @@ class DefaultSyncServiceTest {
         service.syncPlayer(unlinked).join();
         verify(discordGateway, never()).submit(any());
     }
+
+    // --- Tests for Role Holders Audit Gap (AC 8) ---
+
+    @Test
+    @DisplayName("A member holding a town role who is not a resident of that town loses that role and keeps every other role they had")
+    void memberHoldingTownRoleWhoIsNotResidentLosesThatRoleAndKeepsOtherRoles() {
+        UUID townAUuid = UUID.randomUUID();
+        String roleTownA = "role-town-a";
+        String roleTownB = "role-town-b";
+        String unmanagedRole1 = "role-vip";
+        String unmanagedRole2 = "role-staff";
+
+        // Town A space
+        spySpaceRepository.save(new TownSpace(
+                townAUuid, "TownA",
+                Optional.of("cat-1"), Optional.of("txt-a"), Optional.of("vc-a"),
+                Optional.of(roleTownA), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        // Town B space (another managed space)
+        UUID townBUuid = UUID.randomUUID();
+        spySpaceRepository.save(new TownSpace(
+                townBUuid, "TownB",
+                Optional.of("cat-1"), Optional.of("txt-b"), Optional.of("vc-b"),
+                Optional.of(roleTownB), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        // Alice is the resident of Town A
+        UUID aliceUuid = UUID.randomUUID();
+        String aliceDiscordId = "discord-alice";
+        spyLinkRepository.save(new AccountLink(aliceUuid, aliceDiscordId, clock.instant(), "Alice"));
+
+        TownSnapshot townA = new TownSnapshot(
+                townAUuid, "TownA", aliceUuid, List.of(aliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townAUuid)).thenReturn(Optional.of(townA));
+
+        // Member Bob has discord-bob. Bob was manually given roleTownA in Discord.
+        // Bob also has roleTownB, role-vip, and role-staff in Discord.
+        // Bob is NOT a resident of Town A.
+        String bobDiscordId = "discord-bob";
+
+        // Discord gateway reports both Alice and Bob hold roleTownA
+        when(discordGateway.roleHolders(roleTownA)).thenReturn(Set.of(aliceDiscordId, bobDiscordId));
+
+        // Reconcile Town A
+        SyncReport report = service.syncTown(townAUuid).join();
+
+        // Capture operations submitted to Discord
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway, atLeastOnce()).submit(captor.capture());
+
+        // Find the operation submitted for Bob
+        GuildOperation.ApplyMemberRoles bobOp = captor.getAllValues().stream()
+                .filter(op -> op instanceof GuildOperation.ApplyMemberRoles a && a.discordId().equals(bobDiscordId))
+                .map(op -> (GuildOperation.ApplyMemberRoles) op)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected ApplyMemberRoles operation for intruder Bob"));
+
+        // Assert: ONLY roleTownA is revoked
+        assertEquals(List.of(roleTownA), bobOp.revokeRoleIds(),
+                "Bob must lose exactly roleTownA");
+        assertTrue(bobOp.grantRoleIds().isEmpty(),
+                "Bob must not be granted any roles");
+
+        // Assert: Bob keeps every other role he had (managed or not)
+        assertFalse(bobOp.revokeRoleIds().contains(roleTownB),
+                "Bob's other managed role roleTownB must not be touched");
+        assertFalse(bobOp.revokeRoleIds().contains(unmanagedRole1),
+                "Bob's unmanaged role role-vip must not be touched");
+        assertFalse(bobOp.revokeRoleIds().contains(unmanagedRole2),
+                "Bob's unmanaged role role-staff must not be touched");
+
+        // Assert: Report counters
+        assertTrue(report.rolesRevoked() >= 1,
+                "Must count the revoked role");
+        assertTrue(report.inconsistenciesFound() >= 1,
+                "Must report inconsistency found");
+        assertTrue(report.inconsistenciesRepaired() >= 1,
+                "Must report inconsistency repaired in repair mode");
+    }
+
+    @Test
+    @DisplayName("A member who is a resident keeps it")
+    void memberWhoIsResidentKeepsIt() {
+        UUID townUuid = UUID.randomUUID();
+        String townRole = "role-town-alpha";
+
+        spySpaceRepository.save(new TownSpace(
+                townUuid, "TownAlpha",
+                Optional.of("cat-1"), Optional.of("txt-a"), Optional.of("vc-a"),
+                Optional.of(townRole), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        // Alice is the resident of TownAlpha and has linked account
+        UUID aliceUuid = UUID.randomUUID();
+        String aliceDiscordId = "discord-alice";
+        spyLinkRepository.save(new AccountLink(aliceUuid, aliceDiscordId, clock.instant(), "Alice"));
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownAlpha", aliceUuid, List.of(aliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        // Alice legitimately holds townRole on Discord
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(aliceDiscordId));
+
+        // Reconcile
+        SyncReport report = service.syncTown(townUuid).join();
+
+        // Alice must keep her role: no operation should revoke townRole from Alice
+        ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
+        verify(discordGateway, atLeast(0)).submit(captor.capture());
+
+        for (GuildOperation op : captor.getAllValues()) {
+            if (op instanceof GuildOperation.ApplyMemberRoles a && a.discordId().equals(aliceDiscordId)) {
+                assertFalse(a.revokeRoleIds().contains(townRole),
+                        "Resident Alice must keep townRole and never have it in revoke list");
+            }
+        }
+
+        // Alice was not revoked from unjustified holders check
+        assertEquals(0, report.inconsistenciesFound(),
+                "Legitimate resident holding the role is not an inconsistency");
+        assertTrue(report.problems().isEmpty(),
+                "No problems should be reported for legitimate resident");
+    }
+
+    @Test
+    @DisplayName("Report mode finds the same case, reports it, and submits zero operations")
+    void reportModeFindsTheSameCaseReportsItAndSubmitsZeroOperations() {
+        PluginConfig.Sync reportSyncConfig = new PluginConfig.Sync(
+                Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPORT, 10, Duration.ofSeconds(5));
+        PluginConfig reportConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), reportSyncConfig, config.linking(),
+                config.logging(), config.updates(), config.commands());
+
+        DefaultSyncService reportService = new DefaultSyncService(
+                spySpaceRepository,
+                spyLinkRepository,
+                discordGateway,
+                townyFacade,
+                reportConfig,
+                clock,
+                Runnable::run
+        );
+
+        UUID townUuid = UUID.randomUUID();
+        String townRole = "role-town-report";
+
+        spySpaceRepository.save(new TownSpace(
+                townUuid, "TownReport",
+                Optional.of("cat-1"), Optional.of("txt-r"), Optional.of("vc-r"),
+                Optional.of(townRole), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        // Alice is resident
+        UUID aliceUuid = UUID.randomUUID();
+        String aliceDiscordId = "discord-alice";
+        spyLinkRepository.save(new AccountLink(aliceUuid, aliceDiscordId, clock.instant(), "Alice"));
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownReport", aliceUuid, List.of(aliceUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        // Intruder Eve holds townRole without being a resident
+        String intruderDiscordId = "discord-eve";
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of(aliceDiscordId, intruderDiscordId));
+
+        // Reconcile in REPORT mode
+        SyncReport report = reportService.reconcileAll().join();
+
+        // 1. Assert ZERO Discord operations submitted
+        verify(discordGateway, never()).submit(any());
+
+        // 2. Assert report counts what it would have revoked
+        assertEquals(1, report.rolesRevoked(),
+                "Report mode must count what it would have revoked");
+        assertTrue(report.inconsistenciesFound() >= 1,
+                "Report mode must record the inconsistency");
+        assertEquals(0, report.inconsistenciesRepaired(),
+                "Report mode must not repair anything");
+
+        // 3. Assert problems list mentions the intruder and town
+        assertFalse(report.problems().isEmpty(),
+                "Report mode must list the problem");
+        assertTrue(report.problems().stream().anyMatch(p -> p.contains(intruderDiscordId) && p.contains("TownReport")),
+                "Problems list must name the intruder and town");
+    }
+
+    @Test
+    @DisplayName("An empty or failed holder lookup revokes nothing and is reported as a problem")
+    void emptyOrFailedHolderLookupRevokesNothingAndIsReportedAsAProblem() {
+        UUID townUuid = UUID.randomUUID();
+        String townRole = "role-town-check";
+
+        spySpaceRepository.save(new TownSpace(
+                townUuid, "TownCheck",
+                Optional.of("cat-1"), Optional.of("txt-c"), Optional.of("vc-c"),
+                Optional.of(townRole), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty()));
+
+        UUID residentUuid = UUID.randomUUID();
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "TownCheck", residentUuid, List.of(residentUuid), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+
+        // Sub-case A: Empty holder lookup (cache cold / intent off)
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of());
+
+        SyncReport reportEmpty = service.syncTown(townUuid).join();
+
+        // Must revoke nothing
+        assertEquals(0, reportEmpty.rolesRevoked(),
+                "Empty holder lookup must revoke nothing");
+        // Must be reported as a problem
+        assertTrue(reportEmpty.inconsistenciesFound() >= 1,
+                "Empty holder lookup must be recorded as an inconsistency");
+        assertTrue(reportEmpty.problems().stream().anyMatch(p ->
+                p.toLowerCase().contains("empty") || p.toLowerCase().contains("cache")),
+                "Problem description must report the empty lookup / cold cache");
+        // Zero mutations submitted for revoking
+        verify(discordGateway, never()).submit(any());
+
+        // Sub-case B: Failed holder lookup (gateway threw exception)
+        reset(discordGateway);
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.mayorRoleId()).thenReturn(Optional.of("role-mayor-id"));
+        when(discordGateway.roleHolders(townRole))
+                .thenThrow(new IllegalStateException("Discord gateway is disconnected"));
+
+        SyncReport reportFailed = service.syncTown(townUuid).join();
+
+        // Must revoke nothing
+        assertEquals(0, reportFailed.rolesRevoked(),
+                "Failed holder lookup must revoke nothing");
+        // Must be reported as a problem
+        assertTrue(reportFailed.inconsistenciesFound() >= 1,
+                "Failed holder lookup must be recorded as an inconsistency");
+        assertTrue(reportFailed.problems().stream().anyMatch(p ->
+                p.toLowerCase().contains("failed") || p.toLowerCase().contains("disconnected")),
+                "Problem description must report the failed lookup");
+        // Zero mutations submitted for revoking
+        verify(discordGateway, never()).submit(any());
+    }
 }
+

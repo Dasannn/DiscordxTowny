@@ -67,4 +67,23 @@ public interface DiscordGateway {
      * @throws IllegalStateException if the gateway is unavailable or could not be resolved.
      */
     java.util.Optional<String> mayorRoleId();
+
+    /**
+     * Returns the Discord user IDs of all members who currently hold the given role.
+     *
+     * <p>Plain Discord IDs are returned; internal gateway entities never escape
+     * this package.
+     *
+     * <p><b>Important:</b> This operation depends on the bot being connected with the
+     * {@code GUILD_MEMBERS} gateway intent and an active member cache. If a server owner
+     * disables this intent in the Discord developer portal, the member cache will not be
+     * populated and this method will silently return an empty set.
+     *
+     * @param roleId the Discord ID of the role to inspect.
+     * @return an unmodifiable set of Discord user IDs currently holding the role;
+     *         empty if no members hold the role or if the role does not exist.
+     * @throws IllegalStateException if the gateway is unavailable or could not be resolved.
+     */
+    java.util.Set<String> roleHolders(String roleId);
 }
+
