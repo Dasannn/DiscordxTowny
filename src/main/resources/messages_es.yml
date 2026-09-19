@@ -44,6 +44,7 @@ space:
   delete-confirm: "&eEsto archivara los canales de &f{town}&e. Repite el comando para confirmar."
   renamed: "&aLos canales de &f{town}&a fueron renombrados."
   failed: "&cNo se pudo completar la operacion: {reason}. Se reintentara automaticamente."
+  internal-error: "Error interno"
 
 sync:
   started: "&7Sincronizando..."
@@ -88,6 +89,15 @@ admin:
   purge-confirm: "&cEsto borrara definitivamente {count} espacios archivados. Repite el comando para confirmar."
   purged: "&aSe borraron {count} espacios archivados."
   unlinked: "&a{player} ya no tiene cuenta vinculada."
+  channel-text: "texto"
+  channel-voice: "voz"
+  none: "ninguno"
+  problem-db-inconsistent: "Estado en base de datos marcado como INCONSISTENT"
+  problem-missing-text-channel: "Canal de texto {id} no encontrado en Discord"
+  problem-missing-voice-channel: "Canal de voz {id} no encontrado en Discord"
+  problem-missing-role: "Rol {id} no encontrado en Discord"
+  problem-town-deleted: "Town eliminada en Towny pero el espacio sigue ACTIVE"
+  problem-town-ruined: "Town en ruinas en Towny pero el espacio sigue ACTIVE"
 
 # Etiquetas de los embeds que el bot publica en Discord. Spec 9.1: el ajuste de
 # idioma tambien las cubre, por eso no van escritas en el codigo.

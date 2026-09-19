@@ -7,6 +7,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.concurrent.RejectedExecutionException;
+
 /**
  * Plugin entry point and Paper adapter.
  *
@@ -25,8 +27,18 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                 getDataFolder().toPath(),
                 getLogger(),
                 runnable -> {
-                    if (isEnabled() && Bukkit.getServer() != null) {
-                        Bukkit.getScheduler().runTask(this, runnable);
+                    if (!isEnabled() || Bukkit.getServer() == null) {
+                        throw new RejectedExecutionException("DiscordTowny is disabled");
+                    }
+                    try {
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            if (!isEnabled()) {
+                                throw new RejectedExecutionException("DiscordTowny was disabled before task could run");
+                            }
+                            runnable.run();
+                        });
+                    } catch (Throwable t) {
+                        throw new RejectedExecutionException("Failed to schedule task on server thread", t);
                     }
                 },
                 (task, interval) -> {
@@ -42,31 +54,32 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                 w -> {
                     if (!w.isDegraded() && w.getStorage() != null) {
                         try {
-                            PlayerJoinSyncListener.register(this, w.getSyncService(), w.getStorage().links(), w.getConfig());
-                            TownySyncListener.register(this, w.getSyncService(), w.getSpaceService());
+                            PlayerJoinSyncListener.register(this, w::getSyncService, w.getStorage().links(), w::getConfig);
+                            TownySyncListener.register(this, w::getSyncService, w::getSpaceService);
                         } catch (Throwable t) {
                             getLogger().warning("Failed to register sync listeners: " + t.getMessage());
                         }
                     }
-                    try {
-                        MinecraftCommands.register(
-                                this,
-                                w::getConfig,
-                                w::getMessages,
-                                w::getConsoleMessages,
-                                w::getLinkService,
-                                w::getSpaceService,
-                                w::getSyncService,
-                                w::getTownyFacade,
-                                w::getDiscordGateway,
-                                w::reload
-                        );
-                    } catch (Throwable t) {
-                        getLogger().severe("Failed to register in-game commands: " + t.getMessage());
-                    }
                 },
                 getPluginMeta().getVersion()
         );
+
+        try {
+            MinecraftCommands.register(
+                    this,
+                    () -> wiring != null ? wiring.getConfig() : null,
+                    () -> wiring != null ? wiring.getMessages() : null,
+                    () -> wiring != null ? wiring.getConsoleMessages() : null,
+                    () -> wiring != null ? wiring.getLinkService() : null,
+                    () -> wiring != null ? wiring.getSpaceService() : null,
+                    () -> wiring != null ? wiring.getSyncService() : null,
+                    () -> wiring != null ? wiring.getTownyFacade() : null,
+                    () -> wiring != null ? wiring.getDiscordGateway() : null,
+                    () -> { if (wiring != null) wiring.reload(); }
+            );
+        } catch (Throwable t) {
+            getLogger().severe("Failed to register in-game commands: " + t.getMessage());
+        }
 
         wiring.start();
     }

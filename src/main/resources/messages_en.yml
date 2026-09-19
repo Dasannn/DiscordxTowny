@@ -44,6 +44,7 @@ space:
   delete-confirm: "&eThis will archive the channels for &f{town}&e. Repeat the command to confirm."
   renamed: "&aThe channels for &f{town}&a were renamed."
   failed: "&cCould not complete the operation: {reason}. It will be retried automatically."
+  internal-error: "Internal error"
 
 sync:
   started: "&7Synchronizing..."
@@ -88,6 +89,15 @@ admin:
   purge-confirm: "&cThis will permanently delete {count} archived spaces. Repeat the command to confirm."
   purged: "&aDeleted {count} archived spaces."
   unlinked: "&a{player} no longer has a linked account."
+  channel-text: "text"
+  channel-voice: "voice"
+  none: "none"
+  problem-db-inconsistent: "Database state marked INCONSISTENT"
+  problem-missing-text-channel: "Text channel {id} missing in Discord"
+  problem-missing-voice-channel: "Voice channel {id} missing in Discord"
+  problem-missing-role: "Role {id} missing in Discord"
+  problem-town-deleted: "Town deleted in Towny but space still ACTIVE"
+  problem-town-ruined: "Town ruined in Towny but space still ACTIVE"
 
 # Labels for the embeds the bot publishes in Discord. Spec 9.1: the language
 # setting covers these too, so they are not hard-coded in the code.

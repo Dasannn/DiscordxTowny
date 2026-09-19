@@ -22,6 +22,7 @@ import com.discordtowny.towny.TownyFacade;
 
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
@@ -68,6 +69,9 @@ public final class DiscordTownyWiring {
     private PeriodicSyncJob periodicSyncJob;
 
     private boolean degraded = false;
+    private volatile boolean stopped = false;
+    private CompletableFuture<Void> startupFuture;
+    private CompletableFuture<Void> discordConnectFuture;
 
     public DiscordTownyWiring(
             Path dataFolder,
@@ -90,7 +94,9 @@ public final class DiscordTownyWiring {
         this(null, Logger.getLogger("DiscordTowny"), null, null, null, null, "1.0.0");
     }
 
-    public void start() {
+    public synchronized void start() {
+        this.stopped = false;
+
         // 1. Configuration loading
         if (dataFolder != null) {
             configLoader = new YamlConfigLoader(dataFolder, msg -> safeLog(Level.WARNING, msg));
@@ -111,40 +117,90 @@ public final class DiscordTownyWiring {
             townyFacade = new LiveTownyFacade(msg -> safeLog(Level.WARNING, msg));
         }
 
-        // 3. Storage
-        if (!degraded && config != null) {
-            try {
-                if (storage == null) {
-                    storage = new HikariStorage(config.database(), logger);
-                    storage.initialize();
-                }
-            } catch (RuntimeException e) {
-                safeLog(Level.SEVERE, "Database initialization failed: " + e.getMessage());
-                safeLog(Level.SEVERE, "Plugin starting in degraded mode: database and Discord operations disabled.");
-                if (storage != null) {
-                    try {
-                        storage.close();
-                    } catch (Throwable ignored) {}
-                    storage = null;
-                }
-                degraded = true;
+        // If degraded or no config, complete immediately without blocking
+        if (degraded || config == null) {
+            dispatchPostStart();
+            startupFuture = CompletableFuture.completedFuture(null);
+            safeLog(Level.INFO, "DiscordTowny " + version + " started in degraded mode.");
+            return;
+        }
+
+        // 3. Storage and domain services initialized asynchronously off the main thread (P4)
+        startupFuture = CompletableFuture.runAsync(this::initializeServicesAsync,
+                r -> Thread.ofVirtual().name("dt-startup").start(r));
+    }
+
+    private void initializeServicesAsync() {
+        synchronized (this) {
+            if (stopped) {
+                return;
             }
         }
 
-        // 4. Discord Gateway (only when storage succeeded: never touch guild if results cannot be persisted)
-        if (!degraded && storage != null) {
-            try {
-                if (discordGateway == null) {
-                    discordGateway = new JdaDiscordGateway(config, storage.spaces(), storage.settings(), logger);
-                    discordGateway.connect();
-                }
-            } catch (Throwable t) {
-                safeLog(Level.SEVERE, "Failed to start Discord gateway: " + t.getMessage());
+        // Initialize Storage off the main thread
+        Storage newStorage = null;
+        try {
+            if (this.storage == null) {
+                newStorage = new HikariStorage(config.database(), logger);
+                newStorage.initialize();
+            } else {
+                newStorage = this.storage;
             }
+        } catch (RuntimeException e) {
+            safeLog(Level.SEVERE, "Database initialization failed: " + e.getMessage());
+            safeLog(Level.SEVERE, "Plugin starting in degraded mode: database and Discord operations disabled.");
+            if (newStorage != null) {
+                try {
+                    newStorage.close();
+                } catch (Throwable ignored) {}
+            }
+            synchronized (this) {
+                this.storage = null;
+                this.degraded = true;
+            }
+            dispatchPostStart();
+            return;
+        }
+
+        synchronized (this) {
+            if (stopped) {
+                if (newStorage != null && newStorage != this.storage) {
+                    try {
+                        newStorage.close();
+                    } catch (Throwable ignored) {}
+                }
+                return;
+            }
+            this.storage = newStorage;
+        }
+
+        // 4. Discord Gateway: only when storage succeeded
+        try {
+            synchronized (this) {
+                if (!stopped && discordGateway == null) {
+                    discordGateway = new JdaDiscordGateway(config, storage.spaces(), storage.settings(), logger);
+                    discordConnectFuture = discordGateway.connect();
+                    discordConnectFuture.whenComplete((v, t) -> {
+                        synchronized (this) {
+                            if (stopped && discordGateway != null) {
+                                try {
+                                    discordGateway.shutdown();
+                                } catch (Throwable ignored) {}
+                                discordGateway = null;
+                            }
+                        }
+                    });
+                }
+            }
+        } catch (Throwable t) {
+            safeLog(Level.SEVERE, "Failed to start Discord gateway: " + t.getMessage());
         }
 
         // 5. Domain Services
-        if (!degraded && storage != null) {
+        synchronized (this) {
+            if (stopped) {
+                return;
+            }
             DiscordGateway effectiveGateway = discordGateway != null ? discordGateway : DegradedDiscordGateway.INSTANCE;
 
             spaceService = new DefaultSpaceService(storage.spaces(), config, effectiveGateway);
@@ -182,19 +238,49 @@ public final class DiscordTownyWiring {
             }
         }
 
-        // 7. Post-start action (register listeners, in-game commands, etc.)
-        if (postStartAction != null) {
-            try {
-                postStartAction.accept(this);
-            } catch (Throwable t) {
-                safeLog(Level.SEVERE, "Failed to register components: " + t.getMessage());
-            }
-        }
-
-        safeLog(Level.INFO, "DiscordTowny " + version + " started.");
+        // 7. Safely return to the server thread for registration
+        dispatchPostStart();
     }
 
-    public void stop() {
+    private void dispatchPostStart() {
+        Runnable returnAction = () -> {
+            synchronized (this) {
+                if (stopped) {
+                    return;
+                }
+                if (postStartAction != null) {
+                    try {
+                        postStartAction.accept(this);
+                    } catch (Throwable t) {
+                        safeLog(Level.SEVERE, "Failed to register components: " + t.getMessage());
+                    }
+                }
+                safeLog(Level.INFO, "DiscordTowny " + version + " started.");
+            }
+        };
+
+        if (mainThreadExecutor != null) {
+            try {
+                mainThreadExecutor.execute(returnAction);
+            } catch (Throwable t) {
+                safeLog(Level.WARNING, "Could not return to main thread for post-start action: " + t.getMessage());
+            }
+        } else {
+            returnAction.run();
+        }
+    }
+
+    public synchronized void stop() {
+        this.stopped = true;
+
+        if (startupFuture != null && !startupFuture.isDone()) {
+            startupFuture.cancel(true);
+        }
+
+        if (discordConnectFuture != null && !discordConnectFuture.isDone()) {
+            discordConnectFuture.cancel(true);
+        }
+
         // Tolerates incomplete startup: shutdown in reverse order, null-safe
 
         // 1. Periodic sync job
@@ -257,10 +343,113 @@ public final class DiscordTownyWiring {
 
     public synchronized void reload() {
         if (configLoader != null) {
-            PluginConfig newConfig = configLoader.load();
+            PluginConfig oldConfig = this.config;
+            PluginConfig newConfig;
+            try {
+                newConfig = configLoader.load();
+            } catch (ConfigException e) {
+                safeLog(Level.SEVERE, "Invalid configuration during reload: " + e.getMessage());
+                throw e;
+            }
+
             this.config = newConfig;
             this.messages = configLoader.messages();
             this.consoleMessages = EnglishMessages.bundled();
+
+            if (oldConfig != null) {
+                if (!oldConfig.discord().token().equals(newConfig.discord().token())
+                        || !oldConfig.discord().guildId().equals(newConfig.discord().guildId())) {
+                    safeLog(Level.WARNING, "Changes to Discord bot token or guild ID require a server restart to take effect.");
+                }
+                if (!oldConfig.database().equals(newConfig.database())) {
+                    safeLog(Level.WARNING, "Changes to database configuration require a server restart to take effect.");
+                }
+            }
+
+            // Attempt recovery from degraded mode if storage was uninitialized
+            if (degraded && storage == null) {
+                try {
+                    storage = new HikariStorage(newConfig.database(), logger);
+                    storage.initialize();
+                    degraded = false;
+                    safeLog(Level.INFO, "Recovered from degraded mode: database connection established.");
+                } catch (RuntimeException e) {
+                    safeLog(Level.SEVERE, "Database initialization failed during reload: " + e.getMessage());
+                    if (storage != null) {
+                        try {
+                            storage.close();
+                        } catch (Throwable ignored) {}
+                        storage = null;
+                    }
+                    degraded = true;
+                }
+            }
+
+            // When storage is ready, genuinely update the domain services and reschedule the periodic job
+            if (!degraded && storage != null) {
+                if (discordGateway == null) {
+                    try {
+                        discordGateway = new JdaDiscordGateway(newConfig, storage.spaces(), storage.settings(), logger);
+                        discordConnectFuture = discordGateway.connect();
+                        discordConnectFuture.whenComplete((v, t) -> {
+                            synchronized (this) {
+                                if (stopped && discordGateway != null) {
+                                    try {
+                                        discordGateway.shutdown();
+                                    } catch (Throwable ignored) {}
+                                    discordGateway = null;
+                                }
+                            }
+                        });
+                    } catch (Throwable t) {
+                        safeLog(Level.SEVERE, "Failed to start Discord gateway during reload: " + t.getMessage());
+                    }
+                }
+
+                DiscordGateway effectiveGateway = discordGateway != null ? discordGateway : DegradedDiscordGateway.INSTANCE;
+
+                this.spaceService = new DefaultSpaceService(storage.spaces(), newConfig, effectiveGateway);
+                this.syncService = new DefaultSyncService(
+                        spaceService,
+                        storage.spaces(),
+                        storage.links(),
+                        effectiveGateway,
+                        townyFacade,
+                        newConfig,
+                        Clock.systemUTC(),
+                        ForkJoinPool.commonPool(),
+                        null,
+                        mainThreadExecutor
+                );
+                this.linkService = new DefaultLinkService(
+                        storage.links(),
+                        newConfig,
+                        effectiveGateway,
+                        townyFacade,
+                        storage.spaces(),
+                        syncService,
+                        Clock.systemUTC(),
+                        ForkJoinPool.commonPool()
+                );
+
+                if (periodicSyncJob != null) {
+                    try {
+                        periodicSyncJob.stop();
+                    } catch (Throwable t) {
+                        safeLog(Level.WARNING, "Error stopping periodic sync job during reload: " + t.getMessage());
+                    }
+                    periodicSyncJob = null;
+                }
+                if (syncScheduler != null) {
+                    try {
+                        periodicSyncJob = new PeriodicSyncJob(syncService, () -> this.config, syncScheduler, logger);
+                        periodicSyncJob.start();
+                    } catch (Throwable t) {
+                        safeLog(Level.WARNING, "Failed to reschedule periodic sync job during reload: " + t.getMessage());
+                    }
+                }
+            }
+
             safeLog(Level.INFO, "Configuration and messages reloaded.");
         }
     }
@@ -319,6 +508,14 @@ public final class DiscordTownyWiring {
         return degraded;
     }
 
+    public CompletableFuture<Void> getStartupFuture() {
+        return startupFuture;
+    }
+
+    public CompletableFuture<Void> getDiscordConnectFuture() {
+        return discordConnectFuture;
+    }
+
     // Package-private test setters for testing shutdown after failed startup
     void setPeriodicSyncJobForTest(PeriodicSyncJob job) {
         this.periodicSyncJob = job;
@@ -334,6 +531,14 @@ public final class DiscordTownyWiring {
 
     void setTownyFacadeForTest(TownyFacade facade) {
         this.townyFacade = facade;
+    }
+
+    void setConfigLoaderForTest(YamlConfigLoader loader) {
+        this.configLoader = loader;
+    }
+
+    void setConfigForTest(PluginConfig config) {
+        this.config = config;
     }
 
     /**

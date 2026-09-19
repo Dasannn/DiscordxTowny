@@ -13,7 +13,9 @@ import com.discordtowny.space.SpaceService;
 import com.discordtowny.space.SpaceService.CreateResult;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
+import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.mojang.brigadier.tree.LiteralCommandNode;
@@ -21,11 +23,15 @@ import io.papermc.paper.command.brigadier.CommandSourceStack;
 import net.kyori.adventure.text.Component;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -35,8 +41,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -81,9 +91,21 @@ class MinecraftCommandsTest {
 
         when(messages.get(any())).thenAnswer(inv -> Component.text("ES:" + inv.getArgument(0)));
         when(messages.get(any(), any())).thenAnswer(inv -> Component.text("ES:" + inv.getArgument(0)));
+        when(messages.label(any())).thenAnswer(inv -> "ES:" + inv.getArgument(0));
+        when(messages.label(any(), any())).thenAnswer(inv -> "ES:" + inv.getArgument(0));
+        when(messages.label(eq("admin.channel-text"))).thenReturn("texto");
+        when(messages.label(eq("admin.channel-voice"))).thenReturn("voz");
+        when(messages.label(eq("admin.none"))).thenReturn("ninguno");
+        when(messages.label(eq("space.internal-error"))).thenReturn("Error interno");
 
         when(consoleMessages.get(any())).thenAnswer(inv -> Component.text("EN:" + inv.getArgument(0)));
         when(consoleMessages.get(any(), any())).thenAnswer(inv -> Component.text("EN:" + inv.getArgument(0)));
+        when(consoleMessages.label(any())).thenAnswer(inv -> "EN:" + inv.getArgument(0));
+        when(consoleMessages.label(any(), any())).thenAnswer(inv -> "EN:" + inv.getArgument(0));
+        when(consoleMessages.label(eq("admin.channel-text"))).thenReturn("text");
+        when(consoleMessages.label(eq("admin.channel-voice"))).thenReturn("voice");
+        when(consoleMessages.label(eq("admin.none"))).thenReturn("none");
+        when(consoleMessages.label(eq("space.internal-error"))).thenReturn("Internal error");
 
         PluginConfig.Linking linking = new PluginConfig.Linking(
                 Duration.ofMinutes(10), 3, Duration.ofMinutes(15), true);
@@ -109,9 +131,13 @@ class MinecraftCommandsTest {
     }
 
     private LiteralCommandNode<CommandSourceStack> createRoot() {
+        return createRoot(Runnable::run);
+    }
+
+    private LiteralCommandNode<CommandSourceStack> createRoot(java.util.function.Consumer<Runnable> scheduler) {
         return MinecraftCommands.createCommandNode(
                 linkService, spaceService, syncService, townyFacade, discordGateway,
-                config, messages, consoleMessages, reloadAction, Runnable::run
+                config, messages, consoleMessages, reloadAction, scheduler
         );
     }
 
@@ -554,6 +580,32 @@ class MinecraftCommandsTest {
         verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
                 "town", "Rome",
                 "status", "ACTIVE",
+                "channels", "texto voz",
+                "residents", "2",
+                "activity", "ninguno"
+        )));
+    }
+
+    @Test
+    void adminListForConsoleSenderRepliesWithEnglishChannelAndActivityLabels() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        ConsoleCommandSender console = mock(ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        TownSpace space = new TownSpace(UUID.randomUUID(), "Rome", Optional.of("cat"),
+                Optional.of("txt"), Optional.of("vc"), Optional.of("role1"),
+                SpaceState.ACTIVE, Instant.now(), Optional.empty(), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(space)));
+        when(discordGateway.roleHolders("role1")).thenReturn(Set.of("user1", "user2"));
+
+        CommandContext<CommandSourceStack> ctx = createContext(console);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(console).sendMessage(consoleMessages.get("general.working"));
+        verify(console).sendMessage(consoleMessages.get("admin.list-header", Map.of("count", "1")));
+        verify(console).sendMessage(consoleMessages.get("admin.list-entry", Map.of(
+                "town", "Rome",
+                "status", "ACTIVE",
                 "channels", "text voice",
                 "residents", "2",
                 "activity", "none"
@@ -627,6 +679,7 @@ class MinecraftCommandsTest {
 
         // 1st run: requests confirmation
         root.getChild("admin").getChild("purge").getCommand().run(ctx);
+        verify(admin).sendMessage(messages.get("general.working"));
         verify(admin).sendMessage(messages.get("admin.purge-confirm", Map.of("count", "1")));
         verify(spaceService, never()).purgeArchived();
 
@@ -634,7 +687,7 @@ class MinecraftCommandsTest {
         when(spaceService.purgeArchived()).thenReturn(CompletableFuture.completedFuture(1));
         root.getChild("admin").getChild("purge").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(2)).sendMessage(messages.get("general.working"));
         verify(admin).sendMessage(messages.get("admin.purged", Map.of("count", "1")));
         verify(spaceService, times(1)).purgeArchived();
     }
@@ -651,7 +704,277 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("purge").getCommand().run(ctx);
 
+        verify(admin).sendMessage(messages.get("general.working"));
         verify(admin).sendMessage(messages.get("admin.purge-empty"));
         verify(spaceService, never()).purgeArchived();
+    }
+
+    @Test
+    void adminReloadFailsGracefullyWhenActionThrows() throws Exception {
+        Runnable failingReload = mock(Runnable.class);
+        doThrow(new RuntimeException("Configuration syntax error")).when(failingReload).run();
+
+        LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
+                linkService, spaceService, syncService, townyFacade, discordGateway,
+                config, messages, consoleMessages, failingReload, Runnable::run
+        );
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("reload").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("admin.reload-failed", Map.of("reason", "Configuration syntax error")));
+    }
+
+    @Test
+    void adminCommandsEnforcePermissionThroughBrigadierDispatch() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        CommandDispatcher<CommandSourceStack> dispatcher = new CommandDispatcher<>();
+        dispatcher.getRoot().addChild(root);
+
+        // Player without permission
+        Player unauthorizedPlayer = mock(Player.class);
+        when(unauthorizedPlayer.hasPermission("discordtowny.admin")).thenReturn(false);
+        CommandSourceStack unauthorizedStack = mock(CommandSourceStack.class);
+        when(unauthorizedStack.getSender()).thenReturn(unauthorizedPlayer);
+
+        assertThrows(CommandSyntaxException.class, () -> dispatcher.execute("dt admin list", unauthorizedStack));
+
+        // Player with permission
+        Player authorizedAdmin = mock(Player.class);
+        when(authorizedAdmin.hasPermission("discordtowny.admin")).thenReturn(true);
+        CommandSourceStack authorizedStack = mock(CommandSourceStack.class);
+        when(authorizedStack.getSender()).thenReturn(authorizedAdmin);
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of()));
+
+        int result = dispatcher.execute("dt admin list", authorizedStack);
+        assertEquals(1, result);
+        verify(authorizedAdmin).sendMessage(messages.get("admin.list-empty"));
+    }
+
+    @Test
+    void asynchronousCommandRepliesThroughSchedulerOnMainThreadAndNeverOnWorkerThread() throws Exception {
+        BlockingQueue<Runnable> schedulerQueue = new LinkedBlockingQueue<>();
+        LiteralCommandNode<CommandSourceStack> root = createRoot(schedulerQueue::add);
+
+        Player mayor = mock(Player.class);
+        UUID mayorUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+        when(mayor.getUniqueId()).thenReturn(mayorUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.name()).thenReturn("Rome");
+        when(town.isMayor(mayorUuid)).thenReturn(true);
+        when(town.residentCount()).thenReturn(1);
+        when(town.residentUuids()).thenReturn(List.of(mayorUuid));
+        when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
+
+        AccountLink mayorLink = new AccountLink(mayorUuid, "discord_123", Instant.now(), "MayorSteve");
+        when(linkService.findByUuid(mayorUuid)).thenReturn(CompletableFuture.completedFuture(Optional.of(mayorLink)));
+
+        CompletableFuture<CreateResult> delayedFuture = new CompletableFuture<>();
+        when(spaceService.create(any())).thenReturn(delayedFuture);
+
+        AtomicReference<Thread> replyThread = new AtomicReference<>();
+        doAnswer(inv -> {
+            replyThread.set(Thread.currentThread());
+            return null;
+        }).when(mayor).sendMessage(any(Component.class));
+
+        CommandContext<CommandSourceStack> ctx = createContext(mayor);
+        root.getChild("create").getCommand().run(ctx);
+
+        verify(mayor).sendMessage(messages.get("space.creating", Map.of("town", "Rome")));
+        verify(mayor, never()).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
+
+        Thread workerThread = new Thread(() -> delayedFuture.complete(CreateResult.SUCCESS), "async-worker-thread");
+        workerThread.start();
+        workerThread.join();
+
+        verify(mayor, never()).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
+        assertNotEquals(workerThread, replyThread.get(), "Completion callback must not execute on worker thread");
+
+        Runnable scheduledTask = schedulerQueue.poll(2, TimeUnit.SECONDS);
+        assertNotNull(scheduledTask, "Scheduler should have received the response task");
+
+        Thread mainThread = Thread.currentThread();
+        scheduledTask.run();
+
+        verify(mayor).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
+        assertEquals(mainThread, replyThread.get(), "Reply must execute on the thread running the scheduler");
+    }
+
+    // --- /dt sync tests ---
+
+    @Test
+    void syncReportsBothRepairsAndProblemsInRepairMode() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player mayor = mock(Player.class);
+        UUID mayorUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+        when(mayor.getUniqueId()).thenReturn(mayorUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(mayorUuid)).thenReturn(true);
+        when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
+
+        SyncService.SyncReport report = new SyncService.SyncReport(
+                1, 1, 0, 2, 1, List.of("Discord role missing"),
+                PluginConfig.Sync.Mode.REPAIR, 0, 0
+        );
+        when(syncService.syncTown(townUuid)).thenReturn(CompletableFuture.completedFuture(report));
+
+        CommandContext<CommandSourceStack> ctx = createContext(mayor);
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor).sendMessage(messages.get("sync.repaired", Map.of("count", "1", "granted", "1", "revoked", "0")));
+        verify(mayor).sendMessage(messages.get("sync.problems-header", Map.of("count", "1")));
+        verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "Discord role missing")));
+        verify(mayor, never()).sendMessage(messages.get("sync.finished"));
+    }
+
+    @Test
+    void syncReportsProblemsInReportMode() throws Exception {
+        PluginConfig.Sync reportModeSync = new PluginConfig.Sync(
+                Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPORT, 20, Duration.ofSeconds(5));
+        PluginConfig reportConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), reportModeSync, config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+
+        LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
+                linkService, spaceService, syncService, townyFacade, discordGateway,
+                reportConfig, messages, consoleMessages, reloadAction, Runnable::run
+        );
+
+        Player mayor = mock(Player.class);
+        UUID mayorUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+        when(mayor.getUniqueId()).thenReturn(mayorUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(mayorUuid)).thenReturn(true);
+        when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
+
+        SyncService.SyncReport report = new SyncService.SyncReport(
+                1, 0, 0, 1, 0, List.of("Role discord_role missing"),
+                PluginConfig.Sync.Mode.REPORT, 1, 0
+        );
+        when(syncService.syncTown(townUuid)).thenReturn(CompletableFuture.completedFuture(report));
+
+        CommandContext<CommandSourceStack> ctx = createContext(mayor);
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor).sendMessage(messages.get("sync.report-found", Map.of("count", "1")));
+        verify(mayor).sendMessage(messages.get("sync.report-pending", Map.of("granted", "1", "revoked", "0")));
+        verify(mayor).sendMessage(messages.get("sync.problems-header", Map.of("count", "1")));
+        verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "Role discord_role missing")));
+        // No matcher here: mixing any() with a literal in the same call corrupts
+        // Mockito's matcher stack. The rendered message is predictable, so demand it.
+        verify(mayor, never()).sendMessage(messages.get("sync.report-clean", Map.of("spaces", "1")));
+    }
+
+    @Test
+    void syncReportsUnrepairedWhenInconsistenciesRemainAndProblemListEmpty() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player mayor = mock(Player.class);
+        UUID mayorUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+        when(mayor.getUniqueId()).thenReturn(mayorUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(mayorUuid)).thenReturn(true);
+        when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
+
+        SyncService.SyncReport report = new SyncService.SyncReport(
+                1, 0, 0, 3, 1, List.of(),
+                PluginConfig.Sync.Mode.REPAIR, 0, 0
+        );
+        when(syncService.syncTown(townUuid)).thenReturn(CompletableFuture.completedFuture(report));
+
+        CommandContext<CommandSourceStack> ctx = createContext(mayor);
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor).sendMessage(messages.get("sync.repaired", Map.of("count", "1", "granted", "0", "revoked", "0")));
+        verify(mayor).sendMessage(messages.get("sync.unrepaired", Map.of("count", "2")));
+        verify(mayor, never()).sendMessage(messages.get("sync.finished"));
+    }
+
+    @Test
+    void syncReportsFinishedWhenCleanInRepairMode() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player mayor = mock(Player.class);
+        UUID mayorUuid = UUID.randomUUID();
+        UUID townUuid = UUID.randomUUID();
+        when(mayor.getUniqueId()).thenReturn(mayorUuid);
+
+        TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(townUuid);
+        when(town.isMayor(mayorUuid)).thenReturn(true);
+        when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
+
+        SyncService.SyncReport report = new SyncService.SyncReport(
+                1, 0, 0, 0, 0, List.of(),
+                PluginConfig.Sync.Mode.REPAIR, 0, 0
+        );
+        when(syncService.syncTown(townUuid)).thenReturn(CompletableFuture.completedFuture(report));
+
+        CommandContext<CommandSourceStack> ctx = createContext(mayor);
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor).sendMessage(messages.get("sync.finished"));
+    }
+
+    @Test
+    void everyMessageKeyTheCodeUsesExistsInBothCatalogs() throws Exception {
+        YamlConfiguration en = new YamlConfiguration();
+        try (InputStream in = getClass().getResourceAsStream("/messages_en.yml")) {
+            assertNotNull(in, "messages_en.yml must exist on classpath");
+            en.load(new InputStreamReader(in, StandardCharsets.UTF_8));
+        }
+        YamlConfiguration es = new YamlConfiguration();
+        try (InputStream in = getClass().getResourceAsStream("/messages_es.yml")) {
+            assertNotNull(in, "messages_es.yml must exist on classpath");
+            es.load(new InputStreamReader(in, StandardCharsets.UTF_8));
+        }
+
+        // The keys are read from the source rather than listed by hand. A list
+        // written by hand fails for keys nobody uses and, worse, stays silent
+        // about a key that is used and was never added — which is exactly how
+        // 39 keys once reached a release resolving to "[missing message: ...]".
+        java.util.regex.Pattern call = java.util.regex.Pattern.compile(
+                "(?:get|plain|label)\\(\\s*\"([a-z][a-z0-9.-]+)\"");
+        java.nio.file.Path sources = java.nio.file.Path.of("src", "main", "java");
+        assertTrue(java.nio.file.Files.isDirectory(sources), "sources must be readable from the test working directory");
+
+        java.util.Set<String> used = new java.util.TreeSet<>();
+        try (var walk = java.nio.file.Files.walk(sources)) {
+            for (java.nio.file.Path file : walk.filter(f -> f.toString().endsWith(".java")).toList()) {
+                var matcher = call.matcher(java.nio.file.Files.readString(file, StandardCharsets.UTF_8));
+                while (matcher.find()) {
+                    if (matcher.group(1).contains(".")) {
+                        used.add(matcher.group(1));
+                    }
+                }
+            }
+        }
+        assertFalse(used.isEmpty(), "the scan must find keys, otherwise it proves nothing");
+
+        for (String key : used) {
+            assertTrue(en.isString(key) && !en.getString(key, "").isBlank(),
+                    "Key used in code but missing from messages_en.yml: " + key);
+            assertTrue(es.isString(key) && !es.getString(key, "").isBlank(),
+                    "Key used in code but missing from messages_es.yml: " + key);
+        }
     }
 }

@@ -489,7 +489,7 @@ public final class MinecraftCommands {
                                 )));
                                 case MAYOR_NOT_LINKED -> player.sendMessage(msg.get("linking.link-required"));
                                 case DISCORD_UNAVAILABLE -> player.sendMessage(msg.get("general.discord-unavailable"));
-                                case FAILED -> player.sendMessage(msg.get("space.failed", Map.of("reason", "Internal error")));
+                                case FAILED -> player.sendMessage(msg.get("space.failed", Map.of("reason", msg.label("space.internal-error"))));
                             }
                         });
                     }).exceptionally(ex -> {
@@ -694,13 +694,22 @@ public final class MinecraftCommands {
                                         ? String.valueOf(gw.roleHolders(space.roleId().get()).size())
                                         : "N/A";
 
-                                String channels = (space.textChannelId().isPresent() ? "text" : "")
-                                        + (space.voiceChannelId().isPresent() ? " voice" : "");
-                                if (channels.isBlank()) {
-                                    channels = "none";
+                                String textLabel = msg.label("admin.channel-text");
+                                String voiceLabel = msg.label("admin.channel-voice");
+                                String noneLabel = msg.label("admin.none");
+
+                                String channels;
+                                if (space.textChannelId().isPresent() && space.voiceChannelId().isPresent()) {
+                                    channels = textLabel + " " + voiceLabel;
+                                } else if (space.textChannelId().isPresent()) {
+                                    channels = textLabel;
+                                } else if (space.voiceChannelId().isPresent()) {
+                                    channels = voiceLabel;
+                                } else {
+                                    channels = noneLabel;
                                 }
 
-                                String activity = space.lastActivityAt().map(Instant::toString).orElse("none");
+                                String activity = space.lastActivityAt().map(Instant::toString).orElse(noneLabel);
 
                                 sender.sendMessage(msg.get("admin.list-entry", Map.of(
                                         "town", space.townName(),
@@ -795,12 +804,12 @@ public final class MinecraftCommands {
                                     )));
                                     sender.sendMessage(msg.get("admin.info-created", Map.of("created", space.createdAt().toString())));
                                     sender.sendMessage(msg.get("admin.info-archived", Map.of("archived", space.archivedAt().map(Instant::toString).orElse("-"))));
-                                    sender.sendMessage(msg.get("admin.info-activity", Map.of("activity", space.lastActivityAt().map(Instant::toString).orElse("none"))));
+                                    sender.sendMessage(msg.get("admin.info-activity", Map.of("activity", space.lastActivityAt().map(Instant::toString).orElseGet(() -> msg.label("admin.none")))));
 
                                     // Check inconsistencies
                                     List<String> problems = new ArrayList<>();
                                     if (space.state() == SpaceState.INCONSISTENT) {
-                                        problems.add("Database state marked INCONSISTENT");
+                                        problems.add(msg.label("admin.problem-db-inconsistent"));
                                     }
                                     if (gw != null && gw.isAvailable()) {
                                         List<String> idsToCheck = new ArrayList<>();
@@ -809,19 +818,19 @@ public final class MinecraftCommands {
                                         space.roleId().ifPresent(idsToCheck::add);
                                         var existing = gw.existingResourceIds(idsToCheck);
                                         space.textChannelId().ifPresent(id -> {
-                                            if (!existing.contains(id)) problems.add("Text channel " + id + " missing in Discord");
+                                            if (!existing.contains(id)) problems.add(msg.label("admin.problem-missing-text-channel", Map.of("id", id)));
                                         });
                                         space.voiceChannelId().ifPresent(id -> {
-                                            if (!existing.contains(id)) problems.add("Voice channel " + id + " missing in Discord");
+                                            if (!existing.contains(id)) problems.add(msg.label("admin.problem-missing-voice-channel", Map.of("id", id)));
                                         });
                                         space.roleId().ifPresent(id -> {
-                                            if (!existing.contains(id)) problems.add("Role " + id + " missing in Discord");
+                                            if (!existing.contains(id)) problems.add(msg.label("admin.problem-missing-role", Map.of("id", id)));
                                         });
                                     }
                                     if (finalTownSnapshot == null && space.state() == SpaceState.ACTIVE) {
-                                        problems.add("Town deleted in Towny but space still ACTIVE");
+                                        problems.add(msg.label("admin.problem-town-deleted"));
                                     } else if (finalTownSnapshot != null && finalTownSnapshot.ruined() && space.state() == SpaceState.ACTIVE) {
-                                        problems.add("Town ruined in Towny but space still ACTIVE");
+                                        problems.add(msg.label("admin.problem-town-ruined"));
                                     }
 
                                     if (problems.isEmpty()) {
@@ -862,6 +871,7 @@ public final class MinecraftCommands {
 
                     if (pending == null || Instant.now().isAfter(pending)) {
                         // First run: count archived spaces
+                        sender.sendMessage(msg.get("general.working"));
                         spaceService.findAll().thenAccept(all -> {
                             long count = all.stream().filter(s -> s.state() == SpaceState.ARCHIVED).count();
                             scheduler.accept(() -> {
@@ -973,25 +983,34 @@ public final class MinecraftCommands {
         if (reportMode) {
             if (report.inconsistenciesFound() > 0) {
                 sender.sendMessage(messages.get("sync.report-found", Map.of("count", String.valueOf(report.inconsistenciesFound()))));
-                if (report.rolesGranted() > 0 || report.rolesRevoked() > 0) {
+                // In report mode the confirmed counts are zero by definition:
+                // what the operator needs to see is what the pass *would* do.
+                if (report.proposedRolesGranted() > 0 || report.proposedRolesRevoked() > 0) {
                     sender.sendMessage(messages.get("sync.report-pending", Map.of(
-                            "granted", String.valueOf(report.rolesGranted()),
-                            "revoked", String.valueOf(report.rolesRevoked())
+                            "granted", String.valueOf(report.proposedRolesGranted()),
+                            "revoked", String.valueOf(report.proposedRolesRevoked())
                     )));
                 }
             } else {
                 sender.sendMessage(messages.get("sync.report-clean", Map.of("spaces", String.valueOf(report.spacesChecked()))));
             }
+
+            if (!report.problems().isEmpty()) {
+                sender.sendMessage(messages.get("sync.problems-header", Map.of("count", String.valueOf(report.problems().size()))));
+                for (String problem : report.problems()) {
+                    sender.sendMessage(messages.get("sync.problem-entry", Map.of("problem", problem)));
+                }
+            }
             return;
         }
 
+        // Repair mode: report repairs, problems, and any unrepaired discrepancies
         if (report.inconsistenciesRepaired() > 0 || report.rolesGranted() > 0 || report.rolesRevoked() > 0) {
             sender.sendMessage(messages.get("sync.repaired", Map.of(
                     "count", String.valueOf(report.inconsistenciesRepaired()),
                     "granted", String.valueOf(report.rolesGranted()),
                     "revoked", String.valueOf(report.rolesRevoked())
             )));
-            return;
         }
 
         if (!report.problems().isEmpty()) {
@@ -999,10 +1018,14 @@ public final class MinecraftCommands {
             for (String problem : report.problems()) {
                 sender.sendMessage(messages.get("sync.problem-entry", Map.of("problem", problem)));
             }
-            return;
+        } else if (report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
+            int unhandled = report.inconsistenciesFound() - report.inconsistenciesRepaired();
+            sender.sendMessage(messages.get("sync.unrepaired", Map.of(
+                    "count", String.valueOf(unhandled)
+            )));
+        } else if (report.inconsistenciesRepaired() == 0 && report.rolesGranted() == 0 && report.rolesRevoked() == 0) {
+            sender.sendMessage(messages.get("sync.finished"));
         }
-
-        sender.sendMessage(messages.get("sync.finished"));
     }
 
     private static void replySyncError(CommandSender sender, Messages messages, Throwable ex) {

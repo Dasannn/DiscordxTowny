@@ -19,6 +19,7 @@ import org.bukkit.plugin.Plugin;
 
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -39,15 +40,38 @@ public final class TownySyncListener implements Listener {
 
     private final SyncService syncService;
     private final SpaceService spaceService;
+    private final Supplier<SyncService> syncServiceSupplier;
+    private final Supplier<SpaceService> spaceServiceSupplier;
 
     public TownySyncListener(SyncService syncService, SpaceService spaceService) {
         this.syncService = Objects.requireNonNull(syncService, "syncService cannot be null");
         this.spaceService = Objects.requireNonNull(spaceService, "spaceService cannot be null");
+        this.syncServiceSupplier = () -> this.syncService;
+        this.spaceServiceSupplier = () -> this.spaceService;
+    }
+
+    public TownySyncListener(Supplier<SyncService> syncServiceSupplier, Supplier<SpaceService> spaceServiceSupplier) {
+        this.syncServiceSupplier = Objects.requireNonNull(syncServiceSupplier, "syncServiceSupplier cannot be null");
+        this.spaceServiceSupplier = Objects.requireNonNull(spaceServiceSupplier, "spaceServiceSupplier cannot be null");
+        this.syncService = null;
+        this.spaceService = null;
     }
 
     public static void register(Plugin plugin, SyncService syncService, SpaceService spaceService) {
+        register(plugin, () -> syncService, () -> spaceService);
+    }
+
+    public static void register(Plugin plugin, Supplier<SyncService> syncServiceSupplier, Supplier<SpaceService> spaceServiceSupplier) {
         Objects.requireNonNull(plugin, "plugin cannot be null");
-        Bukkit.getPluginManager().registerEvents(new TownySyncListener(syncService, spaceService), plugin);
+        Bukkit.getPluginManager().registerEvents(new TownySyncListener(syncServiceSupplier, spaceServiceSupplier), plugin);
+    }
+
+    private SyncService syncService() {
+        return syncServiceSupplier != null ? syncServiceSupplier.get() : syncService;
+    }
+
+    private SpaceService spaceService() {
+        return spaceServiceSupplier != null ? spaceServiceSupplier.get() : spaceService;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -61,7 +85,11 @@ public final class TownySyncListener implements Listener {
         if (residentUuid == null) {
             return;
         }
-        syncService.syncPlayer(residentUuid).exceptionally(ex -> {
+        SyncService service = syncService();
+        if (service == null) {
+            return;
+        }
+        service.syncPlayer(residentUuid).exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to sync resident join for " + residentUuid, ex);
             return null;
         });
@@ -78,7 +106,11 @@ public final class TownySyncListener implements Listener {
         if (residentUuid == null) {
             return;
         }
-        syncService.syncPlayer(residentUuid).exceptionally(ex -> {
+        SyncService service = syncService();
+        if (service == null) {
+            return;
+        }
+        service.syncPlayer(residentUuid).exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to sync resident leave for " + residentUuid, ex);
             return null;
         });
@@ -95,7 +127,11 @@ public final class TownySyncListener implements Listener {
         if (residentUuid == null) {
             return;
         }
-        syncService.syncPlayer(residentUuid).exceptionally(ex -> {
+        SyncService service = syncService();
+        if (service == null) {
+            return;
+        }
+        service.syncPlayer(residentUuid).exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to sync resident kick for " + residentUuid, ex);
             return null;
         });
@@ -116,14 +152,18 @@ public final class TownySyncListener implements Listener {
     }
 
     void handleMayorChange(UUID oldMayorUuid, UUID newMayorUuid) {
+        SyncService service = syncService();
+        if (service == null) {
+            return;
+        }
         if (oldMayorUuid != null) {
-            syncService.syncPlayer(oldMayorUuid).exceptionally(ex -> {
+            service.syncPlayer(oldMayorUuid).exceptionally(ex -> {
                 LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to sync old mayor " + oldMayorUuid, ex);
                 return null;
             });
         }
         if (newMayorUuid != null) {
-            syncService.syncPlayer(newMayorUuid).exceptionally(ex -> {
+            service.syncPlayer(newMayorUuid).exceptionally(ex -> {
                 LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to sync new mayor " + newMayorUuid, ex);
                 return null;
             });
@@ -141,7 +181,11 @@ public final class TownySyncListener implements Listener {
         if (townUuid == null || newName == null) {
             return;
         }
-        spaceService.rename(townUuid, newName).exceptionally(ex -> {
+        SpaceService service = spaceService();
+        if (service == null) {
+            return;
+        }
+        service.rename(townUuid, newName).exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to rename town " + townUuid + " to " + newName, ex);
             return null;
         });
@@ -156,7 +200,11 @@ public final class TownySyncListener implements Listener {
         if (townUuid == null) {
             return;
         }
-        spaceService.archive(townUuid, "town_deleted").exceptionally(ex -> {
+        SpaceService service = spaceService();
+        if (service == null) {
+            return;
+        }
+        service.archive(townUuid, "town_deleted").exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to archive deleted town " + townUuid, ex);
             return null;
         });
@@ -173,7 +221,11 @@ public final class TownySyncListener implements Listener {
         if (townUuid == null) {
             return;
         }
-        spaceService.archive(townUuid, "town_ruined").exceptionally(ex -> {
+        SpaceService service = spaceService();
+        if (service == null) {
+            return;
+        }
+        service.archive(townUuid, "town_ruined").exceptionally(ex -> {
             LOGGER.log(Level.WARNING, "[TownySyncListener] Failed to archive ruined town " + townUuid, ex);
             return null;
         });
