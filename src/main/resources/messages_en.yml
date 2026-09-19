@@ -97,3 +97,7 @@ embed:
   next: "Next"
   previous: "Previous"
   last-online: "Last online"
+  help-title: "DiscordTowny — Help"
+  help-intro: "Available Discord commands:"
+  town-list-title: "Towns List"
+  no-residents: "No residents found."
