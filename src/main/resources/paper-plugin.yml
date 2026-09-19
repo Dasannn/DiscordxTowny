@@ -2,8 +2,8 @@ name: DiscordTowny
 version: '${version}'
 main: com.discordtowny.DiscordTownyPlugin
 api-version: '1.21'
-description: Canales y roles de Discord gestionados automaticamente para cada town de Towny.
-website: https://github.com/Dasannn/DiscordTowny
+description: Discord channels and roles managed automatically for every Towny town.
+website: https://github.com/Dasannn/DiscordxTowny
 authors:
   - Dasannn
 
