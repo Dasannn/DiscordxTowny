@@ -154,6 +154,9 @@ help:
   cmd-admin-purge: "&f/dt admin purge &7— permanently delete archived spaces."
   cmd-admin-reload: "&f/dt admin reload &7— reload configuration and messages."
   cmd-admin-unlink: "&f/dt admin unlink <player> &7— remove someone's link."
+  cmd-admin-update: "&f/dt admin update &7— check for and download updates."
+  cmd-admin-update-status: "&f/dt admin update status &7— current version and pending updates."
+  cmd-admin-update-confirm: "&f/dt admin update confirm &7— confirm download of breaking updates."
 
 status:
   header: "&bYour DiscordTowny status:"

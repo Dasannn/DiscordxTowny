@@ -139,6 +139,10 @@ public final class SyncMinecraftCommands {
                         sender.sendMessage(msg.get("general.players-only"));
                         return 1;
                     }
+                    if (!player.hasPermission(MinecraftCommands.PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
+                        return 1;
+                    }
 
                     Optional<TownSnapshot> townOpt = getPlayerTown(player.getUniqueId(), townyFacade);
                     if (townOpt.isEmpty()) {
@@ -201,7 +205,7 @@ public final class SyncMinecraftCommands {
             TownyFacade townyFacade,
             Consumer<Runnable> scheduler) {
         return Commands.literal("admin")
-                .requires(source -> source.getSender().hasPermission("discordtowny.admin"))
+                .requires(source -> source.getSender().hasPermission(MinecraftCommands.PERMISSION_ADMIN))
                 .then(createAdminSyncSubcommand(syncService, configSupplier, messages, consoleMessages, townyFacade, scheduler));
     }
 

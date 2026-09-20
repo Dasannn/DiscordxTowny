@@ -112,6 +112,7 @@ class SyncMinecraftCommandsTest {
         UUID playerUuid = UUID.randomUUID();
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         when(townyFacade.townOf(playerUuid)).thenReturn(Optional.empty());
 
@@ -135,6 +136,7 @@ class SyncMinecraftCommandsTest {
         UUID playerUuid = UUID.randomUUID();
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.isMayor(playerUuid)).thenReturn(false);
@@ -168,6 +170,7 @@ class SyncMinecraftCommandsTest {
 
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -216,6 +219,7 @@ class SyncMinecraftCommandsTest {
 
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -261,6 +265,7 @@ class SyncMinecraftCommandsTest {
 
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -307,6 +312,49 @@ class SyncMinecraftCommandsTest {
 
         assertTrue(adminNode.canUse(adminSource), "Admin node must be accessible with discordtowny.admin");
         assertFalse(adminNode.canUse(regularSource), "Admin node must be denied without discordtowny.admin");
+    }
+
+    @Test
+    void dtSyncRefusesWhenMissingUsePermission() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        Player player = mock(Player.class);
+        when(source.getSender()).thenReturn(player);
+        when(player.hasPermission("discordtowny.use")).thenReturn(false);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(player, times(1)).sendMessage(messages.get("general.no-permission"));
+        verify(syncService, never()).syncTown(any());
+        verify(syncService, never()).reconcileAll();
+    }
+
+    @Test
+    void adminPermissionDoesNotGrantDtSync() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
+                syncService, messages, townyFacade);
+
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        Player adminWithoutUse = mock(Player.class);
+        when(source.getSender()).thenReturn(adminWithoutUse);
+        when(adminWithoutUse.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(adminWithoutUse.hasPermission("discordtowny.use")).thenReturn(false);
+
+        @SuppressWarnings("unchecked")
+        CommandContext<CommandSourceStack> ctx = mock(CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(adminWithoutUse, times(1)).sendMessage(messages.get("general.no-permission"));
+        verify(syncService, never()).syncTown(any());
+        verify(syncService, never()).reconcileAll();
     }
 
     @Test
@@ -448,6 +496,7 @@ class SyncMinecraftCommandsTest {
 
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -607,6 +656,7 @@ class SyncMinecraftCommandsTest {
 
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -659,6 +709,7 @@ class SyncMinecraftCommandsTest {
 
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);

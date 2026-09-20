@@ -7,6 +7,14 @@ website: https://github.com/Dasannn/DiscordxTowny
 authors:
   - Dasannn
 
+permissions:
+  discordtowny.use:
+    description: Allows using DiscordTowny player commands.
+    default: true
+  discordtowny.admin:
+    description: Allows using DiscordTowny administration commands.
+    default: op
+
 dependencies:
   server:
     Towny:

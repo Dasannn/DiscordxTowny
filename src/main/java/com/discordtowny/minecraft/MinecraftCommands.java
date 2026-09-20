@@ -55,6 +55,9 @@ import java.util.logging.Logger;
  */
 public final class MinecraftCommands {
 
+    public static final String PERMISSION_USE = "discordtowny.use";
+    public static final String PERMISSION_ADMIN = "discordtowny.admin";
+
     private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
     private static final long CONFIRMATION_EXPIRY_SECONDS = 30L;
 
@@ -216,9 +219,14 @@ public final class MinecraftCommands {
                     CommandSender sender = ctx.getSource().getSender();
                     Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
 
-                    sender.sendMessage(msg.get("help.header"));
-
                     if (sender instanceof Player player) {
+                        if (!player.hasPermission(PERMISSION_USE)) {
+                            sender.sendMessage(msg.get("general.no-permission"));
+                            return 1;
+                        }
+
+                        sender.sendMessage(msg.get("help.header"));
+
                         UUID uuid = player.getUniqueId();
                         TownyFacade tf = townyFacadeSupplier.get();
                         boolean isMayor = false;
@@ -230,44 +238,47 @@ public final class MinecraftCommands {
                                 }
                             } catch (Exception ignored) {}
                         }
-                        boolean isAdmin = player.hasPermission("discordtowny.admin");
 
-                        // General player commands
+                        // General player commands (only if executor has discordtowny.use)
                         sender.sendMessage(msg.get("help.cmd-help"));
                         sender.sendMessage(msg.get("help.cmd-link"));
                         sender.sendMessage(msg.get("help.cmd-unlink"));
                         sender.sendMessage(msg.get("help.cmd-status"));
 
-                        // Mayor commands
+                        // Mayor commands (only if executor has discordtowny.use and is mayor)
                         if (isMayor) {
                             sender.sendMessage(msg.get("help.cmd-create"));
                             sender.sendMessage(msg.get("help.cmd-delete"));
                             sender.sendMessage(msg.get("help.cmd-sync"));
                         }
 
-                        // Admin commands
-                        if (isAdmin) {
-                            sender.sendMessage(msg.get("help.cmd-admin-sync"));
-                            sender.sendMessage(msg.get("help.cmd-admin-unlink"));
-                            sender.sendMessage(msg.get("help.cmd-admin-reload"));
-                            sender.sendMessage(msg.get("help.cmd-admin-list"));
-                            sender.sendMessage(msg.get("help.cmd-admin-info"));
-                            sender.sendMessage(msg.get("help.cmd-admin-purge"));
+                        // Admin commands (only if executor has discordtowny.admin)
+                        if (player.hasPermission(PERMISSION_ADMIN)) {
+                            sendAdminHelp(sender, msg);
                         }
                     } else {
                         // Console sender
+                        sender.sendMessage(msg.get("help.header"));
                         sender.sendMessage(msg.get("help.cmd-help"));
-                        sender.sendMessage(msg.get("help.cmd-status"));
-                        sender.sendMessage(msg.get("help.cmd-admin-sync"));
-                        sender.sendMessage(msg.get("help.cmd-admin-unlink"));
-                        sender.sendMessage(msg.get("help.cmd-admin-reload"));
-                        sender.sendMessage(msg.get("help.cmd-admin-list"));
-                        sender.sendMessage(msg.get("help.cmd-admin-info"));
-                        sender.sendMessage(msg.get("help.cmd-admin-purge"));
+                        if (sender.hasPermission(PERMISSION_ADMIN)) {
+                            sendAdminHelp(sender, msg);
+                        }
                     }
 
                     return 1;
                 });
+    }
+
+    private static void sendAdminHelp(CommandSender sender, Messages msg) {
+        sender.sendMessage(msg.get("help.cmd-admin-sync"));
+        sender.sendMessage(msg.get("help.cmd-admin-unlink"));
+        sender.sendMessage(msg.get("help.cmd-admin-reload"));
+        sender.sendMessage(msg.get("help.cmd-admin-list"));
+        sender.sendMessage(msg.get("help.cmd-admin-info"));
+        sender.sendMessage(msg.get("help.cmd-admin-purge"));
+        sender.sendMessage(msg.get("help.cmd-admin-update"));
+        sender.sendMessage(msg.get("help.cmd-admin-update-status"));
+        sender.sendMessage(msg.get("help.cmd-admin-update-confirm"));
     }
 
     /**
@@ -286,6 +297,10 @@ public final class MinecraftCommands {
                     Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
                     if (!(sender instanceof Player player)) {
                         sender.sendMessage(msg.get("general.players-only"));
+                        return 1;
+                    }
+                    if (!player.hasPermission(PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
                         return 1;
                     }
 
@@ -376,6 +391,10 @@ public final class MinecraftCommands {
                         sender.sendMessage(msg.get("general.players-only"));
                         return 1;
                     }
+                    if (!player.hasPermission(PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
+                        return 1;
+                    }
 
                     LinkService linkService = linkServiceSupplier.get();
                     PluginConfig config = configSupplier.get();
@@ -423,6 +442,10 @@ public final class MinecraftCommands {
                         sender.sendMessage(msg.get("general.players-only"));
                         return 1;
                     }
+                    if (!player.hasPermission(PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
+                        return 1;
+                    }
 
                     LinkService linkService = linkServiceSupplier.get();
                     if (linkService == null) {
@@ -467,6 +490,10 @@ public final class MinecraftCommands {
                     Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
                     if (!(sender instanceof Player player)) {
                         sender.sendMessage(msg.get("general.players-only"));
+                        return 1;
+                    }
+                    if (!player.hasPermission(PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
                         return 1;
                     }
 
@@ -582,6 +609,10 @@ public final class MinecraftCommands {
                         sender.sendMessage(msg.get("general.players-only"));
                         return 1;
                     }
+                    if (!player.hasPermission(PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
+                        return 1;
+                    }
 
                     TownyFacade tf = townyFacadeSupplier.get();
                     if (tf == null || !tf.isAvailable()) {
@@ -646,6 +677,10 @@ public final class MinecraftCommands {
                     Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
                     if (!(sender instanceof Player player)) {
                         sender.sendMessage(msg.get("general.players-only"));
+                        return 1;
+                    }
+                    if (!player.hasPermission(PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
                         return 1;
                     }
 
@@ -733,7 +768,7 @@ public final class MinecraftCommands {
             Runnable reloadAction,
             Consumer<Runnable> scheduler) {
         LiteralArgumentBuilder<CommandSourceStack> admin = Commands.literal("admin")
-                .requires(source -> source.getSender().hasPermission("discordtowny.admin"));
+                .requires(source -> source.getSender().hasPermission(PERMISSION_ADMIN));
 
         // /dt admin reload
         admin.then(Commands.literal("reload")

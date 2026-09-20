@@ -26,6 +26,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.yaml.snakeyaml.Yaml;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -166,6 +167,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(uuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
         when(player.hasPermission("discordtowny.admin")).thenReturn(false);
         when(townyFacade.townOf(uuid)).thenReturn(Optional.empty());
 
@@ -188,6 +190,9 @@ class MinecraftCommandsTest {
         verify(player, never()).sendMessage(messages.get("help.cmd-admin-sync"));
         verify(player, never()).sendMessage(messages.get("help.cmd-admin-reload"));
         verify(player, never()).sendMessage(messages.get("help.cmd-admin-list"));
+        verify(player, never()).sendMessage(messages.get("help.cmd-admin-update"));
+        verify(player, never()).sendMessage(messages.get("help.cmd-admin-update-status"));
+        verify(player, never()).sendMessage(messages.get("help.cmd-admin-update-confirm"));
     }
 
     @Test
@@ -196,6 +201,7 @@ class MinecraftCommandsTest {
         Player mayor = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(uuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
         when(mayor.hasPermission("discordtowny.admin")).thenReturn(false);
 
         TownSnapshot town = mock(TownSnapshot.class);
@@ -215,6 +221,9 @@ class MinecraftCommandsTest {
         // Admin commands NOT shown
         verify(mayor, never()).sendMessage(messages.get("help.cmd-admin-sync"));
         verify(mayor, never()).sendMessage(messages.get("help.cmd-admin-reload"));
+        verify(mayor, never()).sendMessage(messages.get("help.cmd-admin-update"));
+        verify(mayor, never()).sendMessage(messages.get("help.cmd-admin-update-status"));
+        verify(mayor, never()).sendMessage(messages.get("help.cmd-admin-update-confirm"));
     }
 
     @Test
@@ -223,6 +232,7 @@ class MinecraftCommandsTest {
         Player admin = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(admin.getUniqueId()).thenReturn(uuid);
+        when(admin.hasPermission("discordtowny.use")).thenReturn(true);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
         when(townyFacade.townOf(uuid)).thenReturn(Optional.empty());
 
@@ -237,6 +247,9 @@ class MinecraftCommandsTest {
         verify(admin).sendMessage(messages.get("help.cmd-admin-list"));
         verify(admin).sendMessage(messages.get("help.cmd-admin-info"));
         verify(admin).sendMessage(messages.get("help.cmd-admin-purge"));
+        verify(admin).sendMessage(messages.get("help.cmd-admin-update"));
+        verify(admin).sendMessage(messages.get("help.cmd-admin-update-status"));
+        verify(admin).sendMessage(messages.get("help.cmd-admin-update-confirm"));
 
         // Mayor commands NOT shown since not in town
         verify(admin, never()).sendMessage(messages.get("help.cmd-create"));
@@ -255,8 +268,49 @@ class MinecraftCommandsTest {
         // English messages received by console
         verify(console).sendMessage(consoleMessages.get("help.header"));
         verify(console).sendMessage(consoleMessages.get("help.cmd-help"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-sync"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-unlink"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-reload"));
         verify(console).sendMessage(consoleMessages.get("help.cmd-admin-list"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-info"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-purge"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-update"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-update-status"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-admin-update-confirm"));
+
+        // Player-only commands NOT advertised to console
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-status"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-link"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-unlink"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-create"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-delete"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-sync"));
+
         verify(console, never()).sendMessage(messages.get("help.header"));
+    }
+
+    @Test
+    void helpForConsoleSenderLackingAdminPermissionShowsOnlyHelp() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        ConsoleCommandSender console = mock(ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(false);
+
+        CommandContext<CommandSourceStack> ctx = createContext(console);
+        root.getChild("help").getCommand().run(ctx);
+
+        verify(console).sendMessage(consoleMessages.get("help.header"));
+        verify(console).sendMessage(consoleMessages.get("help.cmd-help"));
+
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-status"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-sync"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-unlink"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-reload"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-list"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-info"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-purge"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-update"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-update-status"));
+        verify(console, never()).sendMessage(consoleMessages.get("help.cmd-admin-update-confirm"));
     }
 
     // --- /dt status tests ---
@@ -279,6 +333,7 @@ class MinecraftCommandsTest {
         UUID playerUuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -307,6 +362,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID playerUuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(playerUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
         when(townyFacade.townOf(playerUuid)).thenReturn(Optional.empty());
 
         when(linkService.findByUuid(playerUuid)).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
@@ -326,6 +382,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(uuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
         when(townyFacade.townOf(uuid)).thenReturn(Optional.empty());
 
         CommandContext<CommandSourceStack> ctx = createContext(player);
@@ -341,6 +398,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(uuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.isMayor(uuid)).thenReturn(false);
@@ -359,6 +417,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(uuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.isMayor(uuid)).thenReturn(true);
@@ -378,6 +437,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(uuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(UUID.randomUUID());
@@ -403,6 +463,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID uuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(uuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         UUID townUuid = UUID.randomUUID();
@@ -441,6 +502,7 @@ class MinecraftCommandsTest {
         Player player = mock(Player.class);
         UUID mayorUuid = UUID.randomUUID();
         when(player.getUniqueId()).thenReturn(mayorUuid);
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         UUID resident2Uuid = UUID.randomUUID();
         UUID resident3Uuid = UUID.randomUUID();
@@ -499,6 +561,7 @@ class MinecraftCommandsTest {
         UUID uuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(uuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -776,6 +839,7 @@ class MinecraftCommandsTest {
         UUID mayorUuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(mayorUuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -829,6 +893,7 @@ class MinecraftCommandsTest {
         UUID mayorUuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(mayorUuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -870,6 +935,7 @@ class MinecraftCommandsTest {
         UUID mayorUuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(mayorUuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -902,6 +968,7 @@ class MinecraftCommandsTest {
         UUID mayorUuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(mayorUuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -930,6 +997,7 @@ class MinecraftCommandsTest {
         UUID mayorUuid = UUID.randomUUID();
         UUID townUuid = UUID.randomUUID();
         when(mayor.getUniqueId()).thenReturn(mayorUuid);
+        when(mayor.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
         when(town.uuid()).thenReturn(townUuid);
@@ -1239,5 +1307,135 @@ class MinecraftCommandsTest {
             assertTrue(es.isString(key) && !es.getString(key, "").isBlank(),
                     "Key used in code but missing from messages_es.yml: " + key);
         }
+    }
+
+    @Test
+    void playerCommandsDeniedWhenLackingUsePermission() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+
+        // /dt help without any permission refuses
+        Player unprivileged = mock(Player.class);
+        when(unprivileged.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(unprivileged.hasPermission("discordtowny.use")).thenReturn(false);
+        when(unprivileged.hasPermission("discordtowny.admin")).thenReturn(false);
+        CommandContext<CommandSourceStack> unprivilegedCtx = createContext(unprivileged);
+
+        root.getChild("help").getCommand().run(unprivilegedCtx);
+        verify(unprivileged).sendMessage(messages.get("general.no-permission"));
+        verify(unprivileged, never()).sendMessage(messages.get("help.header"));
+
+        // Player commands refuse and never invoke services
+        Player player = mock(Player.class);
+        when(player.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(player.hasPermission("discordtowny.use")).thenReturn(false);
+        CommandContext<CommandSourceStack> ctx = createContext(player);
+
+        root.getChild("status").getCommand().run(ctx);
+        root.getChild("link").getCommand().run(ctx);
+        root.getChild("unlink").getCommand().run(ctx);
+        root.getChild("create").getCommand().run(ctx);
+        root.getChild("delete").getCommand().run(ctx);
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(player, times(6)).sendMessage(messages.get("general.no-permission"));
+        verify(linkService, never()).findByUuid(any());
+        verify(linkService, never()).generateCode(any(), any());
+        verify(linkService, never()).unlink(any());
+        verify(spaceService, never()).create(any());
+        verify(spaceService, never()).archive(any(), any());
+        verify(syncService, never()).syncTown(any());
+    }
+
+    @Test
+    void adminPermissionDoesNotImplyUsePermissionForPlayerCommands() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+
+        Player admin = mock(Player.class);
+        UUID adminUuid = UUID.randomUUID();
+        when(admin.getUniqueId()).thenReturn(adminUuid);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.hasPermission("discordtowny.use")).thenReturn(false);
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+
+        // /dt help refuses for player lacking discordtowny.use, even if holding admin
+        root.getChild("help").getCommand().run(ctx);
+        verify(admin, never()).sendMessage(messages.get("help.header"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-help"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-sync"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-unlink"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-reload"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-list"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-info"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-purge"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-update"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-update-status"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-admin-update-confirm"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-link"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-unlink"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-status"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-create"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-delete"));
+        verify(admin, never()).sendMessage(messages.get("help.cmd-sync"));
+
+        // Player commands refuse for admin lacking discordtowny.use
+        root.getChild("status").getCommand().run(ctx);
+        root.getChild("link").getCommand().run(ctx);
+        root.getChild("unlink").getCommand().run(ctx);
+        root.getChild("create").getCommand().run(ctx);
+        root.getChild("delete").getCommand().run(ctx);
+        root.getChild("sync").getCommand().run(ctx);
+
+        verify(admin, times(7)).sendMessage(messages.get("general.no-permission"));
+        verify(spaceService, never()).create(any());
+        verify(spaceService, never()).archive(any(), any());
+        verify(syncService, never()).syncTown(any());
+
+        // Admin command still works as expected
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of()));
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+        verify(admin).sendMessage(messages.get("admin.list-empty"));
+    }
+
+    @Test
+    void paperPluginYmlDeclaresPermissionNodesWithCorrectDefaults() throws Exception {
+        Yaml yaml = new Yaml();
+        Map<String, Object> root;
+        try (InputStream in = getClass().getResourceAsStream("/paper-plugin.yml")) {
+            assertNotNull(in, "paper-plugin.yml must exist on classpath");
+            root = yaml.load(in);
+        }
+
+        assertNotNull(root, "paper-plugin.yml must parse to a map");
+        Object permissionsObj = root.get("permissions");
+        assertInstanceOf(Map.class, permissionsObj, "paper-plugin.yml must have a permissions section");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> permissions = (Map<String, Object>) permissionsObj;
+
+        // Raw keys must be literal node names, not nested under "discordtowny"
+        assertTrue(permissions.containsKey("discordtowny.use"), "permissions must contain raw key discordtowny.use");
+        assertTrue(permissions.containsKey("discordtowny.admin"), "permissions must contain raw key discordtowny.admin");
+        assertFalse(permissions.containsKey("discordtowny"), "permissions must not have a nested 'discordtowny' section");
+        assertEquals(Set.of("discordtowny.use", "discordtowny.admin"), permissions.keySet(),
+                "permissions must only declare discordtowny.use and discordtowny.admin");
+
+        // discordtowny.use
+        assertInstanceOf(Map.class, permissions.get("discordtowny.use"), "discordtowny.use must be a mapping");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> useNode = (Map<String, Object>) permissions.get("discordtowny.use");
+        assertEquals(Boolean.TRUE, useNode.get("default"), "discordtowny.use default must be boolean true");
+        assertNotNull(useNode.get("description"), "description must not be null");
+        assertFalse(String.valueOf(useNode.get("description")).isBlank(), "description must not be blank");
+        assertNull(useNode.get("children"), "discordtowny.use must not define children");
+
+        // discordtowny.admin
+        assertInstanceOf(Map.class, permissions.get("discordtowny.admin"), "discordtowny.admin must be a mapping");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> adminNode = (Map<String, Object>) permissions.get("discordtowny.admin");
+        assertEquals("op", adminNode.get("default"), "discordtowny.admin default must be 'op'");
+        assertNotNull(adminNode.get("description"), "description must not be null");
+        assertFalse(String.valueOf(adminNode.get("description")).isBlank(), "description must not be blank");
+        assertNull(adminNode.get("children"), "discordtowny.admin must not define children");
     }
 }

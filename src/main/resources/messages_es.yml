@@ -154,6 +154,9 @@ help:
   cmd-admin-purge: "&f/dt admin purge &7— borra definitivamente los espacios archivados."
   cmd-admin-reload: "&f/dt admin reload &7— recarga configuración y mensajes."
   cmd-admin-unlink: "&f/dt admin unlink <jugador> &7— quita el vínculo de alguien."
+  cmd-admin-update: "&f/dt admin update &7— busca y descarga actualizaciones."
+  cmd-admin-update-status: "&f/dt admin update status &7— versión actual y actualizaciones pendientes."
+  cmd-admin-update-confirm: "&f/dt admin update confirm &7— confirma la descarga de cambios incompatibles."
 
 status:
   header: "&bTu estado en DiscordTowny:"
