@@ -17,6 +17,8 @@ discord:
   guild-id: ""
   # Canal donde el bot publica lo que hace. Vacio lo desactiva.
   log-channel-id: ""
+  # Dedicated channel for linking commands (/link and /unlink). Empty disables the restriction.
+  link-channel-id: ""
 
 database:
   # mysql, mariadb o sqlite. Con sqlite se ignora todo lo demas de este bloque.

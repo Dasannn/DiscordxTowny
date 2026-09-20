@@ -53,7 +53,16 @@ public record PluginConfig(
      * The token is sensitive: do not include it in toString, logs, or error
      * messages. That is why this record overrides it.
      */
-    public record Discord(String token, String guildId, Optional<String> logChannelId) {
+    public record Discord(
+            String token,
+            String guildId,
+            Optional<String> logChannelId,
+            Optional<String> linkChannelId) {
+
+        public Discord(String token, String guildId, Optional<String> logChannelId) {
+            this(token, guildId, logChannelId, Optional.empty());
+        }
+
         @Override
         public String toString() {
             return "Discord[guildId=" + guildId + ", token=REDACTED]";

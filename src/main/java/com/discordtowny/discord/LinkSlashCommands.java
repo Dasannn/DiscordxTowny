@@ -22,6 +22,13 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.logging.Logger;
+import net.dv8tion.jda.api.Permission;
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
 
 /**
  * Discord adapter for the linking slash commands (/link and /unlink).
@@ -35,17 +42,29 @@ public final class LinkSlashCommands extends ListenerAdapter {
     private final PluginConfig config;
     private final Messages messages;
     private final Clock clock;
+    private final Consumer<String> warning;
     private final ConcurrentHashMap<String, Instant> userCooldowns = new ConcurrentHashMap<>();
+    private final AtomicBoolean channelWarningLogged = new AtomicBoolean(false);
 
-    public LinkSlashCommands(LinkService linkService, PluginConfig config, Messages messages, Clock clock) {
+    public LinkSlashCommands(
+            LinkService linkService,
+            PluginConfig config,
+            Messages messages,
+            Clock clock,
+            Consumer<String> warning) {
         this.linkService = Objects.requireNonNull(linkService, "linkService");
         this.config = Objects.requireNonNull(config, "config");
         this.messages = Objects.requireNonNull(messages, "messages");
         this.clock = clock != null ? clock : Clock.systemUTC();
+        this.warning = warning != null ? warning : (msg -> Logger.getLogger("DiscordTowny").warning(msg));
     }
 
     public LinkSlashCommands(LinkService linkService, PluginConfig config, Messages messages) {
-        this(linkService, config, messages, Clock.systemUTC());
+        this(linkService, config, messages, Clock.systemUTC(), null);
+    }
+
+    public LinkSlashCommands(LinkService linkService, PluginConfig config, Messages messages, Consumer<String> warning) {
+        this(linkService, config, messages, Clock.systemUTC(), warning);
     }
 
     /**
@@ -84,6 +103,21 @@ public final class LinkSlashCommands extends ListenerAdapter {
         if (cmdOpt.isPresent() && !cmdOpt.get().enabled()) {
             event.reply(messages.plain("general.no-permission", Map.of())).setEphemeral(true).queue();
             return;
+        }
+
+        // Check if linking commands are restricted to a specific channel
+        Optional<String> linkChannelId = config.discord().linkChannelId();
+        if (linkChannelId.isPresent()) {
+            String allowedId = linkChannelId.get();
+            checkConfiguredChannel(event.getGuild(), allowedId);
+
+            String currentChannelId = event.getChannelId();
+            if (!allowedId.equals(currentChannelId)) {
+                String channelMention = "<#" + allowedId + ">";
+                String msg = messages.plain("linking.wrong-channel", Map.of("channel", channelMention));
+                event.reply(msg).setEphemeral(true).queue();
+                return;
+            }
         }
 
         // Check per-user cooldown
@@ -174,5 +208,34 @@ public final class LinkSlashCommands extends ListenerAdapter {
                 return null;
             });
         });
+    }
+
+    private void checkConfiguredChannel(Guild guild, String allowedId) {
+        if (channelWarningLogged.get() || guild == null) {
+            return;
+        }
+        GuildChannel channel = guild.getGuildChannelById(allowedId);
+        if (channel == null) {
+            if (channelWarningLogged.compareAndSet(false, true)) {
+                warning.accept("discord.link-channel-id: configured channel " + allowedId
+                        + " was not found in guild '" + guild.getName() + "' (" + guild.getId()
+                        + "); channel may not exist in this guild or is not visible to the bot");
+            }
+            return;
+        }
+        Member self = guild.getSelfMember();
+        if (self != null) {
+            if (!self.hasAccess(channel)) {
+                if (channelWarningLogged.compareAndSet(false, true)) {
+                    warning.accept("discord.link-channel-id: bot lacks access to view configured channel "
+                            + allowedId + " in guild '" + guild.getName() + "' (" + guild.getId() + ")");
+                }
+            } else if (!self.hasPermission(channel, Permission.MESSAGE_SEND)) {
+                if (channelWarningLogged.compareAndSet(false, true)) {
+                    warning.accept("discord.link-channel-id: bot lacks MESSAGE_SEND permission in configured channel "
+                            + allowedId + " in guild '" + guild.getName() + "' (" + guild.getId() + ")");
+                }
+            }
+        }
     }
 }
