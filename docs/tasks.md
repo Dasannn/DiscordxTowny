@@ -625,7 +625,7 @@ mechanics that keep a Discord interaction alive.
 ## T21 — Reload cannot change anything about Discord
 
 - **Branch**: `fix/recarga-discord` · **Phase** 6 · **Depends on**: T15
-- **Status**: pending · **Zone**: `discord/`, `DiscordTownyWiring.java`
+- **Status**: integrated · **Zone**: `discord/`, `DiscordTownyWiring.java`
 
 **Why**
 
