@@ -136,9 +136,6 @@ public final class LinkMinecraftCommands {
                         return 1;
                     }
 
-                    // Respond immediately on the main thread
-                    player.sendMessage(msg.get("general.working"));
-
                     // Asynchronous operation off the main thread passing the captured name
                     linkService.generateCode(player.getUniqueId(), player.getName()).thenAccept(optCode -> {
                         scheduler.accept(() -> {
@@ -181,9 +178,6 @@ public final class LinkMinecraftCommands {
                         player.sendMessage(msg.get("general.no-permission"));
                         return 1;
                     }
-
-                    // Respond immediately
-                    player.sendMessage(msg.get("general.working"));
 
                     // Asynchronous operation
                     linkService.unlink(player.getUniqueId()).thenAccept(unlinked -> {
@@ -306,8 +300,6 @@ public final class LinkMinecraftCommands {
                                 sender.sendMessage(msg.get("linking.not-linked"));
                                 return 1;
                             }
-
-                            sender.sendMessage(msg.get("general.working"));
 
                             linkService.unlink(targetUuid).thenAccept(unlinked -> {
                                 scheduler.accept(() -> {

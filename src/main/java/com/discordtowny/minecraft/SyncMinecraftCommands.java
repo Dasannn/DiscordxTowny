@@ -156,9 +156,6 @@ public final class SyncMinecraftCommands {
                         return 1;
                     }
 
-                    // Respond immediately on the main thread
-                    player.sendMessage(msg.get("sync.started"));
-
                     UUID townUuid = town.uuid();
                     syncService.syncTown(townUuid).thenAccept(report -> {
                         scheduler.accept(() -> replyReport(player, report, isReportMode(configSupplier), msg));
@@ -272,8 +269,6 @@ public final class SyncMinecraftCommands {
                         return 1;
                     }
 
-                    sender.sendMessage(msg.get("sync.started"));
-
                     syncService.reconcileAll().thenAccept(report -> {
                         scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), msg));
                     }).exceptionally(ex -> {
@@ -322,7 +317,6 @@ public final class SyncMinecraftCommands {
                             }
 
                             UUID townUuid = townOpt.get().uuid();
-                            sender.sendMessage(msg.get("sync.started"));
 
                             syncService.syncTown(townUuid).thenAccept(report -> {
                                 scheduler.accept(() -> replyReport(sender, report, isReportMode(configSupplier), msg));

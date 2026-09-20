@@ -182,9 +182,7 @@ class LinkMinecraftCommandsTest {
     @SuppressWarnings("unchecked")
     void consoleSenderRepliesInEnglishForAdminUnlink() throws Exception {
         Messages consoleMessages = mock(Messages.class);
-        net.kyori.adventure.text.Component englishWorking = net.kyori.adventure.text.Component.text("Working on it...");
         net.kyori.adventure.text.Component englishUnlinked = net.kyori.adventure.text.Component.text("Steve no longer has a linked account.");
-        when(consoleMessages.get("general.working")).thenReturn(englishWorking);
         when(consoleMessages.get(eq("admin.unlinked"), any())).thenReturn(englishUnlinked);
 
         UUID targetUuid = UUID.randomUUID();
@@ -209,8 +207,8 @@ class LinkMinecraftCommandsTest {
 
         root.getChild("admin").getChild("unlink").getChild("jugador").getCommand().run(ctx);
 
-        verify(console, times(1)).sendMessage(englishWorking);
-        verify(console, times(1)).sendMessage(englishUnlinked);
+        verify(console, times(1)).sendMessage(any(net.kyori.adventure.text.Component.class));
+        verify(console).sendMessage(englishUnlinked);
         verify(messages, never()).get(eq("admin.unlinked"), any());
     }
 
@@ -218,9 +216,7 @@ class LinkMinecraftCommandsTest {
     @SuppressWarnings("unchecked")
     void playerSenderRepliesInConfiguredLanguageForAdminUnlink() throws Exception {
         Messages consoleMessages = mock(Messages.class);
-        net.kyori.adventure.text.Component spanishWorking = net.kyori.adventure.text.Component.text("Trabajando en ello...");
         net.kyori.adventure.text.Component spanishUnlinked = net.kyori.adventure.text.Component.text("Steve ya no tiene cuenta vinculada.");
-        when(messages.get("general.working")).thenReturn(spanishWorking);
         when(messages.get(eq("admin.unlinked"), any())).thenReturn(spanishUnlinked);
 
         UUID targetUuid = UUID.randomUUID();
@@ -245,8 +241,8 @@ class LinkMinecraftCommandsTest {
 
         root.getChild("admin").getChild("unlink").getChild("jugador").getCommand().run(ctx);
 
-        verify(adminPlayer, times(1)).sendMessage(spanishWorking);
-        verify(adminPlayer, times(1)).sendMessage(spanishUnlinked);
+        verify(adminPlayer, times(1)).sendMessage(any(net.kyori.adventure.text.Component.class));
+        verify(adminPlayer).sendMessage(spanishUnlinked);
         verify(consoleMessages, never()).get(eq("admin.unlinked"), any());
     }
 

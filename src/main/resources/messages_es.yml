@@ -15,7 +15,6 @@ general:
   cooldown: "&cEspera {seconds} segundos antes de volver a usarlo."
   players-only: "&cEste comando solo funciona dentro del juego."
   unknown-command: "&cComando desconocido. Usa &f/dt help&c."
-  working: "&7Trabajando en ello, te aviso al terminar."
   discord-unavailable: "&cDiscord no está disponible ahora mismo. Inténtalo más tarde."
   database-unavailable: "&cNo se puede acceder a la base de datos. Avisa a un administrador."
   not-in-town: "&cNo perteneces a ninguna town."
@@ -39,7 +38,6 @@ linking:
 space:
   created: "&aEl espacio de &f{town}&a está listo en Discord."
   already-exists: "&cLa town &f{town}&c ya tiene su espacio en Discord."
-  creating: "&7Creando el espacio de &f{town}&7 en Discord..."
   too-few-residents: "&cTu town necesita al menos {min} residents para tener espacio."
   limit-reached: "&cSe alcanzó el límite de {max} towns con espacio. Avisa a un administrador."
   cooldown: "&cEspera {seconds} segundos antes de volver a intentarlo."
@@ -51,7 +49,6 @@ space:
   internal-error: "Error interno"
 
 sync:
-  started: "&7Sincronizando..."
   finished: "&aSincronización terminada."
   player-synced: "&aTus roles de Discord están al día."
   # Modo informe: encontrado y deliberadamente sin tocar.
