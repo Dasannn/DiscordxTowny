@@ -344,7 +344,7 @@ only these two documents.
 ## T12 — Hardening
 
 - **Branch**: `chore/endurecimiento` · **Phase** 7 · **Depends on**: T8, T9, T10
-- **Responsible**: architect · **Status**: pending
+- **Responsible**: architect · **Status**: integrated — twelve of twelve acceptance criteria passed on a live server
 
 **Does**
 
@@ -412,7 +412,7 @@ from `messages.yml` altogether, report it instead of inventing it.
 ## T15 — A channel for the commands that carry a secret
 
 - **Branch**: `feat/canal-vinculacion` · **Phase** 6 · **Depends on**: T9
-- **Status**: pending · **Zone**: `discord/` slash commands, `config/`,
+- **Status**: integrated · **Zone**: `discord/` slash commands, `config/`,
   `src/main/resources/config.yml`
 
 **Builds**
@@ -437,7 +437,7 @@ command, not a change to how linking works.
 ## T16 — Persist the audit log
 
 - **Branch**: `fix/auditoria` · **Phase** 6 · **Depends on**: T2
-- **Status**: pending · **Zone**: `link/`, `space/`, `update/`, the wiring
+- **Status**: integrated · **Zone**: `link/`, `space/`, `update/`, the wiring
 
 **Why**
 

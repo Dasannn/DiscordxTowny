@@ -60,4 +60,5 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0-T11 and T14. Remaining: T12 hardening on a real server, T13 release.
+See `docs/tasks.md`. Integrated: T0-T12 and T14-T16. Remaining: T13 release,
+T17 one language at a time, T18 permission nodes.
