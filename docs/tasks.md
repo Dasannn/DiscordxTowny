@@ -593,7 +593,7 @@ refusal is correct; it is the silence about it that is not.
 ## T20 — The commands stop saying they are thinking
 
 - **Branch**: `fix/acuses` · **Phase** 6 · **Depends on**: T17
-- **Status**: pending · **Zone**: `minecraft/`, `discord/`, the two catalogs
+- **Status**: integrated · **Zone**: `minecraft/`, `discord/`, the two catalogs
 
 **Why**
 
