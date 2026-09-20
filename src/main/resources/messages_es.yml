@@ -70,6 +70,10 @@ updates:
   up-to-date: "&aEstas en la ultima version."
   breaking: "&c&lATENCIÓN: &cLa versión &f{latest}&c contiene cambios incompatibles. La descarga automática está deshabilitada; se requiere confirmación."
   summary: "&7Resumen de cambios: &f{summary}"
+  disabled: "&7La comprobacion de actualizaciones esta desactivada."
+  status-current: "&7Version actual: &f{current}"
+  confirm-breaking: "&cLa version &f{latest}&c contiene cambios incompatibles. Repite el comando o usa &f/dt admin update confirm&c para descargar."
+  no-confirmation-needed: "&7No hay ninguna actualizacion esperando confirmacion."
 
 admin:
   list-header: "&b{count} &7espacios registrados:"
