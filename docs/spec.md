@@ -156,6 +156,26 @@ or public response, configurable per command.
   knowing who you are (`/mytown`, and `/town` and `/res` without an argument).
 - Every command respects a configurable per-user cooldown.
 
+### 5.1.1 Where linking commands may be used
+
+`config.yml` carries an optional channel for the commands that carry a secret:
+`/link` and `/unlink`. When it is set, those two commands work **only** in that
+channel. Used anywhere else, the bot answers privately naming the right channel
+and **does not redeem the code**, so the player simply tries again where they
+should.
+
+The code is not burned by the mistake. Refusing it and invalidating it would
+punish a player for a wrong guess about which channel to use, and they would
+have to request another one for no security gain: the code was already exposed
+by being typed, and it expires on its own.
+
+Information commands are unaffected. `/town`, `/res`, `/residents`, `/townlist`
+and `/mytown` reveal nothing that is not already public on the server, so
+confining them would be inconvenience without a reason.
+
+When the setting is empty, linking works in any channel the bot can read. That
+is the default, because a server with a single channel needs no rule.
+
 ### 5.2 Mandatory linking for access
 
 Viewing or typing in a town channel requires having a linked account. An
