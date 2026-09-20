@@ -156,8 +156,11 @@ public final class CompositeAuditSink implements Consumer<AuditEvent>, AutoClose
             es.shutdown();
             boolean terminated = es.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS);
             if (!terminated) {
-                List<Runnable> dropped = es.shutdownNow();
+                // Read the count BEFORE shutting down: shutdownNow interrupts the running
+                // write, whose finally block decrements the counter. Reading afterwards can
+                // report zero dropped rows while one was in fact lost.
                 int droppedEvents = pendingWrites.get();
+                List<Runnable> dropped = es.shutdownNow();
                 safeLog(Level.WARNING, "Timed out waiting for audit log to drain: "
                         + droppedEvents + " queued audit event(s) were dropped.");
                 return false;
