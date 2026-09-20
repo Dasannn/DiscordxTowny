@@ -500,7 +500,7 @@ descriptions while one set to English shows English, in the same guild.
 ## T18 — Permission nodes
 
 - **Branch**: `feat/permisos` · **Phase** 6 · **Depends on**: T8
-- **Status**: pending · **Zone**: `minecraft/`, `src/main/resources/paper-plugin.yml`
+- **Status**: integrated · **Zone**: `minecraft/`, `src/main/resources/paper-plugin.yml`
 
 **Why**
 
