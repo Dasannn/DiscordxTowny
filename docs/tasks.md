@@ -589,3 +589,35 @@ recording the refusal and its cause.
 refusal is correct; it is the silence about it that is not.
 
 ---
+
+## T20 — The commands stop saying they are thinking
+
+- **Branch**: `fix/acuses` · **Phase** 6 · **Depends on**: T17
+- **Status**: pending · **Zone**: `minecraft/`, `discord/`, the two catalogs
+
+**Why**
+
+A command that answers "Sincronizando..." and then answers again is talking
+twice about one action. The owner asked for the acknowledgements to go: the
+result is the message that matters, and on a fast server the two arrive close
+enough together to read as a glitch.
+
+**Builds**
+
+- Remove the interim acknowledgements a command sends before its real reply:
+  the sync "working on it", the create "creating", and any other message whose
+  only content is that the plugin received the command.
+- The final reply stays exactly as it is, in the configured language.
+- Where an operation is genuinely slow and Discord requires an acknowledgement
+  to keep the interaction alive, that is a protocol requirement, not a message:
+  keep the deferral, drop the text.
+- Remove the orphaned catalog keys in **both** files, and nothing else.
+
+**Acceptance**: a player running a command sees exactly one reply, the one that
+reports the outcome. No slash command interaction expires or errors for lack of
+an acknowledgement.
+
+**Do not touch**: the outcome messages, the error paths, or the deferral
+mechanics that keep a Discord interaction alive.
+
+---
