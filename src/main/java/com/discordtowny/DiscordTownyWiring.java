@@ -302,7 +302,7 @@ public final class DiscordTownyWiring {
                             updateFolder,
                             dataFolder,
                             logger,
-                            effectiveGateway::log,
+                            auditSink,
                             () -> messages != null ? messages : EnglishMessages.bundled()
                     );
                     this.updateService = updater;
@@ -582,7 +582,7 @@ public final class DiscordTownyWiring {
                                 updateFolder,
                                 dataFolder,
                                 logger,
-                                effectiveGateway::log,
+                                auditSink,
                                 () -> this.messages != null ? this.messages : EnglishMessages.bundled()
                         );
                         this.updateService = updater;
