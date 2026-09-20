@@ -7,7 +7,9 @@ import com.discordtowny.storage.Storage;
 import com.discordtowny.sync.PeriodicSyncJob;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.requests.restaction.CommandListUpdateAction;
+import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.InOrder;
@@ -221,6 +223,7 @@ class DiscordTownyPluginTest {
         assertNotNull(wiring.getLinkService());
         assertNotNull(wiring.getPeriodicSyncJob());
         assertNotNull(wiring.getUpdateService());
+        verify(gateway, times(1)).updateConfig(newConfig);
         verify(gateway, times(1)).registerSlashCommands(any(), any(), any(), any());
     }
 
@@ -338,5 +341,217 @@ class DiscordTownyPluginTest {
         assertNull(wiring.getTownySlashCommands(), "TownySlashCommands must be cleared on disable");
         verify(jda, atLeastOnce()).removeEventListener(any());
         verify(storage, times(1)).close();
+    }
+
+    private PluginConfig createTestConfig(PluginConfig.Discord discord, PluginConfig.Database database) {
+        return new PluginConfig(
+                discord,
+                database,
+                new PluginConfig.Structure("Cat", "Arch", true, true, "{town}", "{town}"),
+                new PluginConfig.Roles("Alcalde", "{town}", Optional.empty(), false),
+                new PluginConfig.Limits(200, 2, Duration.ofSeconds(60)),
+                new PluginConfig.Lifecycle(PluginConfig.Lifecycle.Action.ARCHIVE, PluginConfig.Lifecycle.Action.ARCHIVE, 30),
+                new PluginConfig.Sync(Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPAIR, 20, Duration.ofSeconds(5)),
+                new PluginConfig.Linking(Duration.ofMinutes(10), 3, Duration.ofMinutes(15), true),
+                new PluginConfig.Logging(Duration.ofSeconds(10), 100, PluginConfig.Logging.Detail.FULL),
+                new PluginConfig.Updates(false, Duration.ofHours(24), false, false),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of())
+        );
+    }
+
+    @Test
+    void reloadWithLinkChannelIdConfinesLinkSlashCommandImmediately() {
+        Storage storage = mock(Storage.class);
+        when(storage.spaces()).thenReturn(mock(com.discordtowny.storage.SpaceRepository.class));
+        when(storage.links()).thenReturn(mock(com.discordtowny.storage.LinkRepository.class));
+        when(storage.settings()).thenReturn(mock(com.discordtowny.storage.SettingsRepository.class));
+
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        CommandListUpdateAction action = mock(CommandListUpdateAction.class);
+        when(guild.updateCommands()).thenReturn(action);
+        when(action.addCommands(anyCollection())).thenReturn(action);
+
+        PluginConfig.Discord oldDiscord = new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.empty());
+        PluginConfig.Database db = new PluginConfig.Database(
+                PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db", "", "", "dt_", 1, 1, Duration.ofSeconds(5));
+        PluginConfig oldConfig = createTestConfig(oldDiscord, db);
+
+        PluginConfig.Discord newDiscord = new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.of("111222333444555666"));
+        PluginConfig newConfig = createTestConfig(newDiscord, db);
+
+        YamlConfigLoader configLoader = mock(YamlConfigLoader.class);
+        com.discordtowny.config.Messages mockMessages = mock(com.discordtowny.config.Messages.class);
+        when(configLoader.load()).thenReturn(newConfig);
+        when(configLoader.messages()).thenReturn(mockMessages);
+        when(mockMessages.plain(eq("linking.wrong-channel"), any())).thenReturn("Wrong channel");
+
+        JdaDiscordGateway gateway = com.discordtowny.discord.GatewayTestSupport.connectedGateway(
+                oldConfig, storage.spaces(), storage.settings(),
+                java.util.logging.Logger.getLogger("test"), jda, guild
+        );
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(null, null, Runnable::run, (t, i) -> () -> {}, () -> {}, null, "1.0.0");
+        wiring.setConfigForTest(oldConfig);
+        wiring.setConfigLoaderForTest(configLoader);
+        wiring.setTownyFacadeForTest(mock(com.discordtowny.towny.TownyFacade.class));
+        wiring.setStorageForTest(storage);
+        wiring.setDiscordGatewayForTest(gateway);
+
+        gateway.registerSlashCommands(wiring.getTownyFacade(), mock(com.discordtowny.link.LinkService.class), mockMessages, Runnable::run);
+
+        // Before reload: /link in channel 999888 is NOT confined by link-channel-id
+        SlashCommandInteractionEvent event1 = mock(SlashCommandInteractionEvent.class);
+        net.dv8tion.jda.api.entities.User user = mock(net.dv8tion.jda.api.entities.User.class);
+        when(user.getId()).thenReturn("123456789012345678");
+        when(event1.getUser()).thenReturn(user);
+        when(event1.getName()).thenReturn("link");
+        when(event1.getChannelId()).thenReturn("999888777666555444");
+        ReplyCallbackAction deferAction1 = mock(ReplyCallbackAction.class);
+        when(event1.deferReply(anyBoolean())).thenReturn(deferAction1);
+
+        gateway.linkSlashCommands().orElseThrow().onSlashCommandInteraction(event1);
+        verify(event1).deferReply(true);
+        verify(event1, never()).reply(anyString());
+
+        // Live reload happens
+        wiring.reload();
+
+        // After reload: gateway and listeners now hold newConfig with link-channel-id
+        assertEquals(newConfig, wiring.getConfig());
+        assertEquals(newConfig, gateway.getConfig());
+
+        // Interaction in wrong channel: immediately refused ephemerally, linkService never touched
+        SlashCommandInteractionEvent wrongChannelEvent = mock(SlashCommandInteractionEvent.class);
+        when(wrongChannelEvent.getUser()).thenReturn(user);
+        when(wrongChannelEvent.getName()).thenReturn("link");
+        when(wrongChannelEvent.getChannelId()).thenReturn("999888777666555444");
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(wrongChannelEvent.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(true)).thenReturn(wrongReplyAction);
+
+        gateway.linkSlashCommands().orElseThrow().onSlashCommandInteraction(wrongChannelEvent);
+
+        verify(wrongChannelEvent).reply("Wrong channel");
+        verify(wrongReplyAction).setEphemeral(true);
+        verify(wrongReplyAction).queue();
+        verify(wrongChannelEvent, never()).deferReply(anyBoolean());
+
+        // Interaction in configured channel: allowed to proceed
+        SlashCommandInteractionEvent rightChannelEvent = mock(SlashCommandInteractionEvent.class);
+        when(rightChannelEvent.getUser()).thenReturn(user);
+        when(rightChannelEvent.getName()).thenReturn("link");
+        when(rightChannelEvent.getChannelId()).thenReturn("111222333444555666");
+        ReplyCallbackAction deferAction2 = mock(ReplyCallbackAction.class);
+        when(rightChannelEvent.deferReply(anyBoolean())).thenReturn(deferAction2);
+
+        gateway.linkSlashCommands().orElseThrow().onSlashCommandInteraction(rightChannelEvent);
+
+        verify(rightChannelEvent).deferReply(true);
+    }
+
+    @Test
+    void reloadWithChangedDiscordTokenThrowsAndDoesNotUpdateConfig() {
+        Storage storage = mock(Storage.class);
+        JdaDiscordGateway gateway = mock(JdaDiscordGateway.class);
+        when(gateway.isAvailable()).thenReturn(true);
+
+        PluginConfig.Database db = new PluginConfig.Database(
+                PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db", "", "", "dt_", 1, 1, Duration.ofSeconds(5));
+        PluginConfig.Discord oldDiscord = new PluginConfig.Discord("token-A", "guild-1", Optional.empty());
+        PluginConfig oldConfig = createTestConfig(oldDiscord, db);
+
+        PluginConfig.Discord newDiscord = new PluginConfig.Discord("token-B", "guild-1", Optional.empty());
+        PluginConfig newConfig = createTestConfig(newDiscord, db);
+
+        YamlConfigLoader configLoader = mock(YamlConfigLoader.class);
+        com.discordtowny.config.Messages mockMessages = mock(com.discordtowny.config.Messages.class);
+        when(configLoader.load()).thenReturn(newConfig);
+        when(configLoader.messages()).thenReturn(mockMessages);
+        when(mockMessages.label("admin.reload-restart-discord")).thenReturn("Changes to Discord bot token or guild ID require a server restart.");
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(null, null, Runnable::run, (t, i) -> () -> {}, () -> {}, null, "1.0.0");
+        wiring.setConfigForTest(oldConfig);
+        wiring.setConfigLoaderForTest(configLoader);
+        wiring.setTownyFacadeForTest(mock(com.discordtowny.towny.TownyFacade.class));
+        wiring.setStorageForTest(storage);
+        wiring.setDiscordGatewayForTest(gateway);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, wiring::reload);
+        assertEquals("Changes to Discord bot token or guild ID require a server restart.", ex.getMessage());
+
+        assertEquals("token-A", wiring.getConfig().discord().token(), "Wiring config must NOT be updated when reload fails");
+        verify(gateway, never()).updateConfig(any());
+        verify(gateway, never()).registerSlashCommands(any(), any(), any(), any());
+    }
+
+    @Test
+    void reloadWithChangedDiscordGuildIdThrowsAndDoesNotUpdateConfig() {
+        Storage storage = mock(Storage.class);
+        JdaDiscordGateway gateway = mock(JdaDiscordGateway.class);
+        when(gateway.isAvailable()).thenReturn(true);
+
+        PluginConfig.Database db = new PluginConfig.Database(
+                PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db", "", "", "dt_", 1, 1, Duration.ofSeconds(5));
+        PluginConfig.Discord oldDiscord = new PluginConfig.Discord("token-1", "guild-A", Optional.empty());
+        PluginConfig oldConfig = createTestConfig(oldDiscord, db);
+
+        PluginConfig.Discord newDiscord = new PluginConfig.Discord("token-1", "guild-B", Optional.empty());
+        PluginConfig newConfig = createTestConfig(newDiscord, db);
+
+        YamlConfigLoader configLoader = mock(YamlConfigLoader.class);
+        com.discordtowny.config.Messages mockMessages = mock(com.discordtowny.config.Messages.class);
+        when(configLoader.load()).thenReturn(newConfig);
+        when(configLoader.messages()).thenReturn(mockMessages);
+        when(mockMessages.label("admin.reload-restart-discord")).thenReturn("Changes to Discord bot token or guild ID require a server restart.");
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(null, null, Runnable::run, (t, i) -> () -> {}, () -> {}, null, "1.0.0");
+        wiring.setConfigForTest(oldConfig);
+        wiring.setConfigLoaderForTest(configLoader);
+        wiring.setTownyFacadeForTest(mock(com.discordtowny.towny.TownyFacade.class));
+        wiring.setStorageForTest(storage);
+        wiring.setDiscordGatewayForTest(gateway);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, wiring::reload);
+        assertEquals("Changes to Discord bot token or guild ID require a server restart.", ex.getMessage());
+
+        assertEquals("guild-A", wiring.getConfig().discord().guildId(), "Wiring config must NOT be updated when reload fails");
+        verify(gateway, never()).updateConfig(any());
+        verify(gateway, never()).registerSlashCommands(any(), any(), any(), any());
+    }
+
+    @Test
+    void reloadWithChangedDatabaseThrowsWhenStorageActive() {
+        Storage storage = mock(Storage.class);
+        JdaDiscordGateway gateway = mock(JdaDiscordGateway.class);
+        when(gateway.isAvailable()).thenReturn(true);
+
+        PluginConfig.Database oldDb = new PluginConfig.Database(
+                PluginConfig.Database.Type.SQLITE, "localhost", 3306, "old.db", "", "", "dt_", 1, 1, Duration.ofSeconds(5));
+        PluginConfig oldConfig = createTestConfig(new PluginConfig.Discord("token", "guild", Optional.empty()), oldDb);
+
+        PluginConfig.Database newDb = new PluginConfig.Database(
+                PluginConfig.Database.Type.MYSQL, "mysql.example.com", 3306, "new_db", "user", "pass", "dt_", 5, 5, Duration.ofSeconds(5));
+        PluginConfig newConfig = createTestConfig(new PluginConfig.Discord("token", "guild", Optional.empty()), newDb);
+
+        YamlConfigLoader configLoader = mock(YamlConfigLoader.class);
+        com.discordtowny.config.Messages mockMessages = mock(com.discordtowny.config.Messages.class);
+        when(configLoader.load()).thenReturn(newConfig);
+        when(configLoader.messages()).thenReturn(mockMessages);
+        when(mockMessages.label("admin.reload-restart-database")).thenReturn("Changes to database configuration require a server restart.");
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(null, null, Runnable::run, (t, i) -> () -> {}, () -> {}, null, "1.0.0");
+        wiring.setConfigForTest(oldConfig);
+        wiring.setConfigLoaderForTest(configLoader);
+        wiring.setTownyFacadeForTest(mock(com.discordtowny.towny.TownyFacade.class));
+        wiring.setStorageForTest(storage);
+        wiring.setDiscordGatewayForTest(gateway);
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, wiring::reload);
+        assertEquals("Changes to database configuration require a server restart.", ex.getMessage());
+
+        assertEquals(oldDb, wiring.getConfig().database(), "Wiring config must NOT be updated when reload fails");
+        verify(gateway, never()).updateConfig(any());
+        verify(gateway, never()).registerSlashCommands(any(), any(), any(), any());
     }
 }

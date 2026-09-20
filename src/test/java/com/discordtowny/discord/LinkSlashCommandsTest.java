@@ -94,6 +94,10 @@ class LinkSlashCommandsTest {
 
         WebhookMessageEditAction editAction = mock(WebhookMessageEditAction.class);
         when(hook.editOriginal(anyString())).thenReturn(editAction);
+
+        when(event.reply(anyString())).thenReturn(replyAction);
+        when(replyAction.setEphemeral(anyBoolean())).thenReturn(replyAction);
+        doAnswer(inv -> null).when(replyAction).queue();
     }
 
     @Test
@@ -585,5 +589,87 @@ class LinkSlashCommandsTest {
         // Restriction is still enforced
         verify(event).reply("Wrong channel");
         verify(wrongReplyAction).queue();
+    }
+
+    @Test
+    void updateConfigConfinesCommandsImmediately() {
+        when(event.getName()).thenReturn("link");
+        when(event.getChannelId()).thenReturn("999888777666555444");
+        OptionMapping codeOption = mock(OptionMapping.class);
+        when(codeOption.getAsString()).thenReturn("ABC123");
+        when(event.getOption("code")).thenReturn(codeOption);
+        when(linkService.redeem("ABC123", "123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+        when(messages.plain(eq("linking.link-success"), any())).thenReturn("Linked successfully");
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(event).deferReply(true);
+        verify(linkService).redeem("ABC123", "123456789012345678");
+
+        // Live reload happens: operator configures discord.link-channel-id
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        commands.updateConfig(restrictedConfig);
+        assertEquals(restrictedConfig, commands.getConfig());
+
+        // Interaction in the wrong channel is now immediately refused
+        SlashCommandInteractionEvent wrongEvent = mock(SlashCommandInteractionEvent.class);
+        when(wrongEvent.getUser()).thenReturn(user);
+        when(wrongEvent.getName()).thenReturn("link");
+        when(wrongEvent.getChannelId()).thenReturn("999888777666555444");
+        when(wrongEvent.getOption("code")).thenReturn(codeOption);
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(wrongEvent.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(anyBoolean())).thenReturn(wrongReplyAction);
+        doAnswer(inv -> null).when(wrongReplyAction).queue();
+
+        ArgumentCaptor<Map<String, String>> placeholdersCaptor = ArgumentCaptor.forClass(Map.class);
+        when(messages.plain(eq("linking.wrong-channel"), placeholdersCaptor.capture()))
+                .thenReturn("Only allowed in <#111222333444555666>");
+
+        commands.onSlashCommandInteraction(wrongEvent);
+
+        verify(wrongEvent).reply("Only allowed in <#111222333444555666>");
+        verify(wrongReplyAction).setEphemeral(true);
+        verify(wrongReplyAction).queue();
+        assertEquals("<#111222333444555666>", placeholdersCaptor.getValue().get("channel"));
+        verify(wrongEvent, never()).deferReply(anyBoolean());
+        verify(linkService, times(1)).redeem(any(), any());
+
+        // Interaction in the right channel succeeds for a user not on cooldown
+        User rightUser = mock(User.class);
+        when(rightUser.getId()).thenReturn("987654321098765432");
+        SlashCommandInteractionEvent rightEvent = mock(SlashCommandInteractionEvent.class);
+        when(rightEvent.getUser()).thenReturn(rightUser);
+        when(rightEvent.getName()).thenReturn("link");
+        when(rightEvent.getChannelId()).thenReturn("111222333444555666");
+        when(rightEvent.getOption("code")).thenReturn(codeOption);
+
+        ReplyCallbackAction rightDeferAction = mock(ReplyCallbackAction.class);
+        when(rightEvent.deferReply(anyBoolean())).thenReturn(rightDeferAction);
+        when(rightEvent.reply(anyString())).thenReturn(wrongReplyAction);
+        InteractionHook rightHook = mock(InteractionHook.class);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> callback = inv.getArgument(0);
+            callback.accept(rightHook);
+            return null;
+        }).when(rightDeferAction).queue(any());
+        WebhookMessageEditAction editAction = mock(WebhookMessageEditAction.class);
+        when(rightHook.editOriginal(anyString())).thenReturn(editAction);
+
+        when(linkService.redeem("ABC123", "987654321098765432"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+
+        commands.onSlashCommandInteraction(rightEvent);
+
+        verify(rightEvent).deferReply(true);
+        verify(linkService).redeem("ABC123", "987654321098765432");
+        verify(rightHook).editOriginal("Linked successfully");
+        verify(rightEvent, never()).reply(anyString());
     }
 }

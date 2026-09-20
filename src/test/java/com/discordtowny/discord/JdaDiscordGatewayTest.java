@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -54,6 +55,7 @@ class JdaDiscordGatewayTest {
         when(commandsConfig.byName(anyString())).thenReturn(Optional.empty());
         when(discordConfig.token()).thenReturn("mi-token-super-secreto-999");
         when(rolesConfig.mayorRoleName()).thenReturn("Alcalde");
+        when(config.logging()).thenReturn(new PluginConfig.Logging(Duration.ofSeconds(10), 100, PluginConfig.Logging.Detail.FULL));
     }
 
     @Test
@@ -401,6 +403,113 @@ class JdaDiscordGatewayTest {
         verify(action, times(1)).addCommands(anyCollection());
         assertTrue(gateway.linkSlashCommands().isPresent());
         assertTrue(gateway.townySlashCommands().isPresent());
+    }
+
+    @Test
+    @DisplayName("updateConfig updates gateway, operationExecutor, and slash command listeners")
+    void updateConfigUpdatesGatewayAndExecutorAndListeners() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        CommandListUpdateAction action = mock(CommandListUpdateAction.class);
+        when(guild.updateCommands()).thenReturn(action);
+        when(action.addCommands(anyCollection())).thenReturn(action);
+
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+        gateway.registerSlashCommands(mock(TownyFacade.class), mock(LinkService.class), mock(Messages.class), Runnable::run);
+
+        PluginConfig.Linking linking = new PluginConfig.Linking(
+                Duration.ofMinutes(10), 3, Duration.ofMinutes(15), true);
+        PluginConfig.Limits limits = new PluginConfig.Limits(200, 2, Duration.ofSeconds(60));
+        PluginConfig.Sync sync = new PluginConfig.Sync(Duration.ofMinutes(30), PluginConfig.Sync.Mode.REPAIR, 20, Duration.ofSeconds(5));
+        PluginConfig.Updates updates = new PluginConfig.Updates(true, Duration.ofHours(12), false, false);
+        PluginConfig newConfig = new PluginConfig(
+                new PluginConfig.Discord("mi-token-super-secreto-999", "guild", Optional.empty(), Optional.of("999888777666555444")),
+                new PluginConfig.Database(PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db", "", "", "dt_", 1, 1, Duration.ofSeconds(5)),
+                new PluginConfig.Structure("NuevoCat", "NuevoArch", true, true, "{town}", "{town}"),
+                new PluginConfig.Roles("Burgomaestre", "{town}", Optional.empty(), false),
+                limits,
+                new PluginConfig.Lifecycle(PluginConfig.Lifecycle.Action.ARCHIVE, PluginConfig.Lifecycle.Action.ARCHIVE, 30),
+                sync,
+                linking,
+                new PluginConfig.Logging(Duration.ofSeconds(10), 100, PluginConfig.Logging.Detail.FULL),
+                updates,
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of())
+        );
+
+        gateway.updateConfig(newConfig);
+
+        assertEquals(newConfig, gateway.getConfig());
+        assertNotNull(gateway.operationExecutor());
+        assertEquals(newConfig, gateway.operationExecutor().config());
+        assertTrue(gateway.linkSlashCommands().isPresent());
+        assertEquals(newConfig, gateway.linkSlashCommands().get().getConfig());
+        assertTrue(gateway.townySlashCommands().isPresent());
+        assertEquals(newConfig, gateway.townySlashCommands().get().getConfig());
+    }
+
+    @Test
+    @DisplayName("updateConfig restarts log queue when logging configuration changes")
+    void updateConfigRestartsLogQueueWhenLoggingChanges() {
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
+        LogQueue initialQueue = mock(LogQueue.class);
+        gateway.setLogQueueForTest(initialQueue);
+
+        PluginConfig.Logging oldLogging = new PluginConfig.Logging(Duration.ofSeconds(10), 100, PluginConfig.Logging.Detail.FULL);
+        PluginConfig.Logging newLogging = new PluginConfig.Logging(Duration.ofSeconds(60), 500, PluginConfig.Logging.Detail.ERRORS);
+
+        PluginConfig currentConfig = mock(PluginConfig.class);
+        when(currentConfig.logging()).thenReturn(oldLogging);
+        gateway.updateConfig(currentConfig);
+        gateway.setLogQueueForTest(initialQueue);
+
+        PluginConfig newConfig = mock(PluginConfig.class);
+        when(newConfig.logging()).thenReturn(newLogging);
+        PluginConfig.Discord discord = mock(PluginConfig.Discord.class);
+        when(newConfig.discord()).thenReturn(discord);
+        when(discord.logChannelId()).thenReturn(Optional.empty());
+
+        gateway.updateConfig(newConfig);
+
+        verify(initialQueue).shutdown();
+        assertNotSame(initialQueue, gateway.logQueue());
+        assertNotNull(gateway.logQueue());
+        gateway.shutdown();
+    }
+
+    @Test
+    @DisplayName("updateConfig preserves log queue when logging configuration is unchanged")
+    void updateConfigPreservesLogQueueWhenLoggingUnchanged() {
+        PluginConfig.Logging sameLogging = new PluginConfig.Logging(Duration.ofSeconds(10), 100, PluginConfig.Logging.Detail.FULL);
+
+        PluginConfig currentConfig = mock(PluginConfig.class);
+        when(currentConfig.logging()).thenReturn(sameLogging);
+
+        var gateway = new JdaDiscordGateway(currentConfig, spaces, settings, LOGGER);
+        LogQueue initialQueue = mock(LogQueue.class);
+        gateway.setLogQueueForTest(initialQueue);
+
+        PluginConfig newConfig = mock(PluginConfig.class);
+        when(newConfig.logging()).thenReturn(sameLogging);
+
+        gateway.updateConfig(newConfig);
+
+        verify(initialQueue, never()).shutdown();
+        assertSame(initialQueue, gateway.logQueue());
+    }
+
+    @Test
+    @DisplayName("updateConfig with null logging configuration does not throw exception")
+    void updateConfigWithNullLoggingDoesNotThrow() {
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
+        LogQueue initialQueue = mock(LogQueue.class);
+        gateway.setLogQueueForTest(initialQueue);
+
+        PluginConfig nullLoggingConfig = mock(PluginConfig.class);
+        when(nullLoggingConfig.logging()).thenReturn(null);
+
+        assertDoesNotThrow(() -> gateway.updateConfig(nullLoggingConfig));
+        assertSame(initialQueue, gateway.logQueue());
+        verify(initialQueue, never()).shutdown();
     }
 }
 

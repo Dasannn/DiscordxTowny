@@ -104,6 +104,17 @@ public interface DiscordGateway {
     }
 
     /**
+     * Updates the gateway configuration with a reloaded configuration.
+     *
+     * <p>Applies live configuration updates (such as link-channel-id, log-channel-id,
+     * role templates, and command visibility) to the connected gateway without
+     * dropping the active connection.
+     *
+     * @param config the updated plugin configuration
+     */
+    default void updateConfig(com.discordtowny.config.PluginConfig config) {}
+
+    /**
      * Registers slash command listeners and publishes command definitions to Discord.
      *
      * <p>Registration is performed inside the discord package without leaking JDA.
