@@ -409,6 +409,62 @@ from `messages.yml` altogether, report it instead of inventing it.
 
 ---
 
+## T15 — A channel for the commands that carry a secret
+
+- **Branch**: `feat/canal-vinculacion` · **Phase** 6 · **Depends on**: T9
+- **Status**: pending · **Zone**: `discord/` slash commands, `config/`,
+  `src/main/resources/config.yml`
+
+**Builds**
+
+- An optional `discord.link-channel-id` in `config.yml`, surfaced through
+  `PluginConfig` like any other setting.
+- When set, `/link` and `/unlink` work only in that channel. Elsewhere the bot
+  answers privately, names the right channel, and **does not redeem the code**.
+- The refused code stays valid: the player retries where they should.
+- Information commands are untouched.
+- Empty means no restriction, which is the default.
+
+**Acceptance**: spec 5.1.1. With the setting empty everything behaves as today;
+with it set, `/link` in the wrong channel is refused without burning the code and
+the reply names the channel; `/town` keeps working anywhere.
+
+**Do not touch**: the linking domain. This is a guard in front of an existing
+command, not a change to how linking works.
+
+---
+
+## T16 — Persist the audit log
+
+- **Branch**: `fix/auditoria` · **Phase** 6 · **Depends on**: T2
+- **Status**: pending · **Zone**: `link/`, `space/`, `update/`, the wiring
+
+**Why**
+
+Found on a live server. `docs/spec.md` section 8 lists the bot action log among
+the stored data, migration v1 creates `dt_audit_log`, `AuditRepository` and
+`SqlAuditRepository` exist and are tested — and **nothing outside `storage/` ever
+calls `storage.audit()`**. Every `AuditEvent` goes only to
+`DiscordGateway.log(...)`, so an operator with no log channel configured, which
+is the default, keeps no record at all. The published `PRIVACY.md` already tells
+players this log is kept.
+
+**Builds**
+
+- Every audit event reaches the database as well as the log channel.
+- `discord/` does not gain a dependency on `storage/`: publishing to Discord and
+  recording to the database are two sinks, and the wiring is what composes them.
+- A failure of one sink does not prevent the other. A log channel that is down
+  must not cost the database row, and vice versa.
+
+**Acceptance**: after creating a space, linking an account and archiving a town,
+`dt_audit_log` holds a row per action with its reason. With the log channel
+unconfigured the rows are still written.
+
+**Do not touch**: the events themselves, or what they carry.
+
+---
+
 ## Quick Map
 
 | Task | Phase | Depends on | Parallel to | Zone |
