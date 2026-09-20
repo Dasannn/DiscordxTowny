@@ -468,7 +468,7 @@ unconfigured the rows are still written.
 ## T17 — One language at a time
 
 - **Branch**: `feat/idioma-completo` · **Phase** 6 · **Depends on**: T14
-- **Status**: pending · **Zone**: `discord/` slash commands, `minecraft/`,
+- **Status**: integrated · **Zone**: `discord/` slash commands, `minecraft/`,
   the two message catalogs
 
 **Why**
@@ -550,3 +550,42 @@ nodes appear in `/lp` completion.
 | T12 Hardening | 7 | T8, T9, T10 | — | all |
 | T13 Release | 8 | T12 | — | pipeline |
 | T14 Language | 6 | T4 | almost everything | `config/`, messages |
+
+## T19 — What the sync report says, and what it does not record
+
+- **Branch**: `fix/informe-sync` · **Phase** 6 · **Depends on**: T16, T17
+- **Status**: pending · **Zone**: `sync/`, `space/`
+
+**Why**
+
+Two gaps found while integrating T16 and T17, both left alone on purpose
+because they were outside the zone of the task that found them.
+
+`DefaultSyncService` builds its problem descriptions as English literals —
+`Towny is unavailable`, `Space for town … is missing required channels` — and
+`/dt sync` hands them to the player unchanged. T17 translated everything else
+a player reads; these are the remainder, and they cannot be fixed from the
+command side because that is not where the text is written.
+
+Separately, when Discord is unavailable `/dt create` is refused at admission
+and **writes no audit row at all**. The operator whose bot is down gets nothing
+in `dt_audit_log` to say that someone tried. That is the run where the record
+matters most.
+
+**Builds**
+
+- Sync problems carry a key and its placeholders rather than a finished
+  sentence, so the command can render them in the configured language and the
+  log can keep them English.
+- An admission refusal is audited, with the reason, without pretending the
+  operation succeeded.
+
+**Acceptance**: with `language: es`, no part of a `/dt sync` report reaches a
+player in English except the invariant domain terms; the console report stays
+English. With Discord unreachable, `/dt create` leaves a row in `dt_audit_log`
+recording the refusal and its cause.
+
+**Do not touch**: the audit sink itself, and the decision to refuse. The
+refusal is correct; it is the silence about it that is not.
+
+---
