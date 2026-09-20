@@ -156,7 +156,7 @@ admin:
   channel-text: "texto"
   channel-voice: "voz"
   none: "sin registrar"
-  not-applicable: "N/A"
+  not-applicable: "no disponible"
   state-active: "activo"
   state-archived: "archivado"
   state-inconsistent: "inconsistente"

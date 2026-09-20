@@ -621,3 +621,44 @@ an acknowledgement.
 mechanics that keep a Discord interaction alive.
 
 ---
+
+## T21 — Reload cannot change anything about Discord
+
+- **Branch**: `fix/recarga-discord` · **Phase** 6 · **Depends on**: T15
+- **Status**: pending · **Zone**: `discord/`, `DiscordTownyWiring.java`
+
+**Why**
+
+Found on a live server. An operator added `discord.link-channel-id` and ran
+`/dt admin reload`; the setting had no effect, and `/link` ran unconfined in
+every channel as if the key were absent.
+
+`JdaDiscordGateway` holds its `PluginConfig` in a final field set at
+construction, and reload never rebuilds the gateway - it only asks it to
+register the slash commands again, which it does with its own stale config.
+So no `discord.*` setting can be changed without a full restart, and nothing
+says so: the reload reports success.
+
+This was predicted in `docs/revisiones/t15-canal-link.md` and deferred; the
+live run confirmed it.
+
+**Builds**
+
+- A reload applies the new configuration to the Discord side, or refuses to
+  claim it did.
+- Whatever cannot be applied without reconnecting is named explicitly, so an
+  operator knows a restart is needed instead of believing the change took
+  effect.
+- The token and the guild are the obvious cases that need a reconnection:
+  decide deliberately and document the decision rather than silently ignoring
+  a change.
+
+**Acceptance**: with the server running, adding `discord.link-channel-id` and
+running `/dt admin reload` either confines `/link` immediately, or the reload
+states that the change needs a restart. A reload never reports success for a
+setting it did not apply.
+
+**Do not touch**: the linking logic, or the guard itself. Both are correct;
+they are simply never given the new value.
+
+---
