@@ -199,8 +199,8 @@ class SyncMinecraftCommandsTest {
 
         root.getChild("sync").getCommand().run(ctx);
 
-        // Immediate acknowledgment on main thread
-        inOrder.verify(player, times(1)).sendMessage(messages.get("sync.started"));
+        // No interim acknowledgment before async future completes
+        verify(player, never()).sendMessage(any(Component.class));
         assertFalse(scheduled.get(), "Scheduler must not run before async future completes");
 
         // Complete the future off-thread
@@ -208,6 +208,7 @@ class SyncMinecraftCommandsTest {
         CompletableFuture.runAsync(() -> asyncFuture.complete(report)).join();
 
         assertTrue(scheduled.get(), "Scheduler must have been invoked after completion");
+        verify(player, times(1)).sendMessage(any(Component.class));
         inOrder.verify(player, times(1)).sendMessage(messages.get("sync.finished"));
         inOrder.verifyNoMoreInteractions();
     }
@@ -248,12 +249,13 @@ class SyncMinecraftCommandsTest {
 
         root.getChild("sync").getCommand().run(ctx);
 
-        // Immediate acknowledgment on main thread
-        inOrder.verify(player, times(1)).sendMessage(messages.get("sync.started"));
+        // No interim acknowledgment before async future completes
+        verify(player, never()).sendMessage(any(Component.class));
 
         CompletableFuture.runAsync(() -> asyncFuture.completeExceptionally(new RuntimeException("DB offline"))).join();
 
         assertTrue(scheduled.get());
+        verify(player, times(1)).sendMessage(any(Component.class));
         inOrder.verify(player, times(1)).sendMessage(messages.get("general.database-unavailable"));
         inOrder.verifyNoMoreInteractions();
     }
@@ -294,12 +296,13 @@ class SyncMinecraftCommandsTest {
 
         root.getChild("sync").getCommand().run(ctx);
 
-        // Immediate acknowledgment on main thread
-        inOrder.verify(player, times(1)).sendMessage(messages.get("sync.started"));
+        // No interim acknowledgment before async future completes
+        verify(player, never()).sendMessage(any(Component.class));
 
         CompletableFuture.runAsync(() -> asyncFuture.completeExceptionally(new RuntimeException("Discord gateway unavailable"))).join();
 
         assertTrue(scheduled.get());
+        verify(player, times(1)).sendMessage(any(Component.class));
         inOrder.verify(player, times(1)).sendMessage(messages.get("general.discord-unavailable"));
         inOrder.verifyNoMoreInteractions();
     }
@@ -395,13 +398,15 @@ class SyncMinecraftCommandsTest {
         CommandNode<CommandSourceStack> adminSync = root.getChild("admin").getChild("sync");
         adminSync.getCommand().run(ctx);
 
-        inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.started"));
+        // No interim acknowledgment before async future completes
+        verify(sender, never()).sendMessage(any(Component.class));
         verify(syncService, times(1)).reconcileAll();
 
         SyncService.SyncReport report = new SyncService.SyncReport(5, 3, 1, 0, 0, List.of());
         CompletableFuture.runAsync(() -> asyncFuture.complete(report)).join();
 
         assertTrue(scheduled.get());
+        verify(sender, times(1)).sendMessage(any(Component.class));
         inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.finished"));
         inOrder.verifyNoMoreInteractions();
         verifyNoInteractions(messages);
@@ -440,12 +445,14 @@ class SyncMinecraftCommandsTest {
         CommandNode<CommandSourceStack> townArgNode = root.getChild("admin").getChild("sync").getChild("town");
         townArgNode.getCommand().run(ctx);
 
-        inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.started"));
+        // No interim acknowledgment before async future completes
+        verify(sender, never()).sendMessage(any(Component.class));
         verify(syncService, times(1)).syncTown(spartaUuid);
 
         CompletableFuture.runAsync(() -> asyncFuture.complete(new SyncService.SyncReport(1, 0, 0, 0, 0, List.of()))).join();
 
         assertTrue(scheduled.get());
+        verify(sender, times(1)).sendMessage(any(Component.class));
         inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.finished"));
         inOrder.verifyNoMoreInteractions();
         verifyNoInteractions(messages);

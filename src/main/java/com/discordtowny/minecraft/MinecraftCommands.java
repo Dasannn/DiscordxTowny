@@ -304,9 +304,6 @@ public final class MinecraftCommands {
                         return 1;
                     }
 
-                    // Acknowledge immediately on main thread
-                    player.sendMessage(msg.get("general.working"));
-
                     UUID uuid = player.getUniqueId();
                     TownyFacade tf = townyFacadeSupplier.get();
                     TownSnapshot town = null;
@@ -403,8 +400,6 @@ public final class MinecraftCommands {
                         return 1;
                     }
 
-                    player.sendMessage(msg.get("general.working"));
-
                     linkService.generateCode(player.getUniqueId(), player.getName()).thenAccept(optCode -> {
                         scheduler.accept(() -> {
                             if (optCode.isEmpty()) {
@@ -452,8 +447,6 @@ public final class MinecraftCommands {
                         sender.sendMessage(msg.get("general.database-unavailable"));
                         return 1;
                     }
-
-                    player.sendMessage(msg.get("general.working"));
 
                     linkService.unlink(player.getUniqueId()).thenAccept(unlinked -> {
                         scheduler.accept(() -> {
@@ -530,9 +523,6 @@ public final class MinecraftCommands {
                         player.sendMessage(msg.get("general.database-unavailable"));
                         return 1;
                     }
-
-                    // Acknowledge immediately
-                    player.sendMessage(msg.get("space.creating", Map.of("town", town.name())));
 
                     // Async check for mayor link and space creation
                     linkService.findByUuid(playerUuid).thenCompose(mayorLinkOpt -> {
@@ -649,7 +639,6 @@ public final class MinecraftCommands {
 
                     // Confirmed: perform archive deletion
                     pendingDeletes.remove(playerUuid);
-                    player.sendMessage(msg.get("general.working"));
 
                     spaceService.archive(town.uuid(), "mayor-deleted").thenAccept(v -> {
                         scheduler.accept(() -> player.sendMessage(msg.get("space.archived", Map.of("town", town.name()))));
@@ -709,8 +698,6 @@ public final class MinecraftCommands {
                         player.sendMessage(msg.get("general.database-unavailable"));
                         return 1;
                     }
-
-                    player.sendMessage(msg.get("sync.started"));
 
                     UUID townUuid = town.uuid();
                     syncService.syncTown(townUuid).thenAccept(report -> {
@@ -808,8 +795,6 @@ public final class MinecraftCommands {
                         return 1;
                     }
 
-                    sender.sendMessage(msg.get("general.working"));
-
                     spaceService.findAll().thenAccept(spaces -> {
                         scheduler.accept(() -> {
                             if (spaces.isEmpty()) {
@@ -890,8 +875,6 @@ public final class MinecraftCommands {
                                 sender.sendMessage(msg.get("general.database-unavailable"));
                                 return 1;
                             }
-
-                            sender.sendMessage(msg.get("general.working"));
 
                             TownyFacade tf = townyFacadeSupplier.get();
                             TownSnapshot townSnapshot = null;
@@ -1005,7 +988,6 @@ public final class MinecraftCommands {
 
                     if (pending == null || Instant.now().isAfter(pending)) {
                         // First run: count archived spaces
-                        sender.sendMessage(msg.get("general.working"));
                         spaceService.findAll().thenAccept(all -> {
                             long count = all.stream().filter(s -> s.state() == SpaceState.ARCHIVED).count();
                             scheduler.accept(() -> {
@@ -1025,7 +1007,6 @@ public final class MinecraftCommands {
 
                     // Confirmed run
                     pendingPurges.remove(senderKey);
-                    sender.sendMessage(msg.get("general.working"));
 
                     spaceService.purgeArchived().thenAccept(deleted -> {
                         scheduler.accept(() -> sender.sendMessage(msg.get("admin.purged", Map.of("count", String.valueOf(deleted)))));
@@ -1100,8 +1081,6 @@ public final class MinecraftCommands {
             String senderKey = (sender instanceof Player p) ? p.getUniqueId().toString() : "console";
             Instant pending = pendingUpdateConfirmations.get(senderKey);
             boolean isConfirmed = pending != null && Instant.now().isBefore(pending);
-
-            sender.sendMessage(msg.get("general.working"));
 
             updateService.checkForUpdate().thenAccept(optRelease -> {
                 scheduler.accept(() -> {
@@ -1215,8 +1194,6 @@ public final class MinecraftCommands {
                     UpdateService.Release release = opt.get();
                     String senderKey = (sender instanceof Player p) ? p.getUniqueId().toString() : "console";
                     pendingUpdateConfirmations.remove(senderKey);
-
-                    sender.sendMessage(msg.get("general.working"));
 
                     updateService.download(release).thenAccept(result -> {
                         scheduler.accept(() -> {

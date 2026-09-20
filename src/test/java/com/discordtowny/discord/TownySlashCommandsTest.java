@@ -329,6 +329,7 @@ class TownySlashCommandsTest {
 
         commands.onSlashCommandInteraction(event);
 
+        verify(event).deferReply(anyBoolean());
         verify(hook).editOriginal("linking.link-required");
         verify(hook, never()).editOriginalEmbeds(any(MessageEmbed.class));
         verifyNoInteractions(townyFacade);

@@ -269,12 +269,12 @@ class YamlConfigLoaderTest {
         Messages messages = loader.messages();
         yaml.set("limits.max-towns", 100);
         save();
-        Files.writeString(folder.resolve("messages_en.yml"), "prefix: '[nuevo] '\ngeneral:\n  working: nuevo\n");
+        Files.writeString(folder.resolve("messages_en.yml"), "prefix: '[nuevo] '\ngeneral:\n  no-permission: nuevo\n");
         assertTrue(loader.validate().isEmpty());
         assertSame(messages, loader.messages());
         assertEquals(200, previous.limits().maxTowns());
         assertEquals(100, loader.load().limits().maxTowns());
-        assertEquals("[nuevo] nuevo", loader.messages().plain("general.working", Map.of()));
+        assertEquals("[nuevo] nuevo", loader.messages().plain("general.no-permission", Map.of()));
         Messages valid = loader.messages();
         yaml.set("discord.token", "");
         save();
@@ -313,8 +313,8 @@ class YamlConfigLoaderTest {
         assertNotNull(config);
 
         assertTrue(warnings.stream().anyMatch(w -> w.contains("messages_en.yml")));
-        String text = loader.messages().plain("general.working", Map.of());
-        assertTrue(text.contains("Working on it"));
+        String text = loader.messages().plain("general.no-permission", Map.of());
+        assertTrue(text.contains("You do not have permission"));
     }
 
     @Test
@@ -328,8 +328,8 @@ class YamlConfigLoaderTest {
         assertEquals("es", config.language());
 
         assertTrue(warnings.stream().anyMatch(w -> w.contains("messages_es.yml")));
-        String text = loader.messages().plain("general.working", Map.of());
-        assertTrue(text.contains("Working on it"));
+        String text = loader.messages().plain("general.no-permission", Map.of());
+        assertTrue(text.contains("You do not have permission"));
     }
 
     @Test
@@ -463,20 +463,20 @@ class YamlConfigLoaderTest {
         save();
         loader.load();
         Messages retained = loader.messages();
-        assertTrue(retained.plain("general.working", Map.of()).contains("Working on it"));
+        assertTrue(retained.plain("general.no-permission", Map.of()).contains("You do not have permission"));
 
         // Change to es and reload - retained reference must see Spanish without asking loader for a fresh one
         yaml.set("language", "es");
         save();
         loader.load();
-        assertTrue(retained.plain("general.working", Map.of()).contains("Trabajando en ello"));
+        assertTrue(retained.plain("general.no-permission", Map.of()).contains("No tienes permiso"));
         assertSame(retained, loader.messages());
 
         // Change back to en and reload - retained reference must see English again
         yaml.set("language", "en");
         save();
         loader.load();
-        assertTrue(retained.plain("general.working", Map.of()).contains("Working on it"));
+        assertTrue(retained.plain("general.no-permission", Map.of()).contains("You do not have permission"));
         assertSame(retained, loader.messages());
     }
 
@@ -494,17 +494,17 @@ class YamlConfigLoaderTest {
             }
 
             String reply() {
-                return messages.plain("general.working", Map.of());
+                return messages.plain("general.no-permission", Map.of());
             }
         }
 
         CommandHandler handler = new CommandHandler(loader.messages());
-        assertTrue(handler.reply().contains("Working on it"));
+        assertTrue(handler.reply().contains("You do not have permission"));
 
         yaml.set("language", "es");
         save();
         loader.load();
 
-        assertTrue(handler.reply().contains("Trabajando en ello"));
+        assertTrue(handler.reply().contains("No tienes permiso"));
     }
 }

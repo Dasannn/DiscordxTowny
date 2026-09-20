@@ -371,7 +371,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(player);
         root.getChild("status").getCommand().run(ctx);
 
-        verify(player).sendMessage(messages.get("general.working"));
+        verify(player, times(3)).sendMessage(any(Component.class));
         verify(player).sendMessage(messages.get("status.header"));
         verify(player).sendMessage(messages.get("status.linked", Map.of("discord", "123456789")));
         verify(player).sendMessage(messages.get("status.space-active", Map.of("town", "Rome")));
@@ -486,7 +486,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(player);
         root.getChild("create").getCommand().run(ctx);
 
-        verify(player).sendMessage(messages.get("space.creating", Map.of("town", "Rome")));
+        verify(player, times(1)).sendMessage(any(Component.class));
         verify(player).sendMessage(messages.get("linking.link-required"));
         verify(spaceService, never()).create(any());
     }
@@ -516,7 +516,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(player);
         root.getChild("create").getCommand().run(ctx);
 
-        verify(player).sendMessage(messages.get("space.creating", Map.of("town", "Rome")));
+        verify(player, times(1)).sendMessage(any(Component.class));
         verify(player).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
 
         ArgumentCaptor<SpaceRequest> captor = ArgumentCaptor.forClass(SpaceRequest.class);
@@ -582,7 +582,7 @@ class MinecraftCommandsTest {
         // townyResidentCount is the town's whole population (4), not the number of linked residents (2)
         assertEquals(4, request.townyResidentCount());
 
-        verify(player).sendMessage(messages.get("space.creating", Map.of("town", "Rome")));
+        verify(player, times(1)).sendMessage(any(Component.class));
         verify(player).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
     }
 
@@ -607,6 +607,7 @@ class MinecraftCommandsTest {
 
         // 1st run: requests confirmation
         root.getChild("delete").getCommand().run(ctx);
+        verify(mayor, times(1)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("space.delete-confirm", Map.of("town", "Rome")));
         verify(spaceService, never()).archive(any(), any());
 
@@ -614,7 +615,7 @@ class MinecraftCommandsTest {
         when(spaceService.archive(eq(townUuid), any())).thenReturn(CompletableFuture.completedFuture(null));
         root.getChild("delete").getCommand().run(ctx);
 
-        verify(mayor).sendMessage(messages.get("general.working"));
+        verify(mayor, times(2)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("space.archived", Map.of("town", "Rome")));
         verify(spaceService, times(1)).archive(eq(townUuid), any());
     }
@@ -663,7 +664,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("list").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("admin.list-empty"));
     }
 
@@ -683,7 +684,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("list").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(2)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
         verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
                 "town", "Rome",
@@ -709,7 +710,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(console);
         root.getChild("admin").getChild("list").getCommand().run(ctx);
 
-        verify(console).sendMessage(consoleMessages.get("general.working"));
+        verify(console, times(2)).sendMessage(any(Component.class));
         verify(console).sendMessage(consoleMessages.get("admin.list-header", Map.of("count", "1")));
         verify(console).sendMessage(consoleMessages.get("admin.list-entry", Map.of(
                 "town", "Rome",
@@ -789,7 +790,7 @@ class MinecraftCommandsTest {
 
         // 1st run: requests confirmation
         root.getChild("admin").getChild("purge").getCommand().run(ctx);
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("admin.purge-confirm", Map.of("count", "1")));
         verify(spaceService, never()).purgeArchived();
 
@@ -797,7 +798,7 @@ class MinecraftCommandsTest {
         when(spaceService.purgeArchived()).thenReturn(CompletableFuture.completedFuture(1));
         root.getChild("admin").getChild("purge").getCommand().run(ctx);
 
-        verify(admin, times(2)).sendMessage(messages.get("general.working"));
+        verify(admin, times(2)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("admin.purged", Map.of("count", "1")));
         verify(spaceService, times(1)).purgeArchived();
     }
@@ -814,7 +815,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("purge").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("admin.purge-empty"));
         verify(spaceService, never()).purgeArchived();
     }
@@ -898,14 +899,13 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(mayor);
         root.getChild("create").getCommand().run(ctx);
 
-        verify(mayor).sendMessage(messages.get("space.creating", Map.of("town", "Rome")));
-        verify(mayor, never()).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
+        verify(mayor, never()).sendMessage(any(Component.class));
 
         Thread workerThread = new Thread(() -> delayedFuture.complete(CreateResult.SUCCESS), "async-worker-thread");
         workerThread.start();
         workerThread.join();
 
-        verify(mayor, never()).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
+        verify(mayor, never()).sendMessage(any(Component.class));
         assertNotEquals(workerThread, replyThread.get(), "Completion callback must not execute on worker thread");
 
         Runnable scheduledTask = schedulerQueue.poll(2, TimeUnit.SECONDS);
@@ -914,6 +914,7 @@ class MinecraftCommandsTest {
         Thread mainThread = Thread.currentThread();
         scheduledTask.run();
 
+        verify(mayor, times(1)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("space.created", Map.of("town", "Rome")));
         assertEquals(mainThread, replyThread.get(), "Reply must execute on the thread running the scheduler");
     }
@@ -943,7 +944,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(mayor);
         root.getChild("sync").getCommand().run(ctx);
 
-        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor, times(3)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("sync.repaired", Map.of("count", "1", "granted", "1", "revoked", "0")));
         verify(mayor).sendMessage(messages.get("sync.problems-header", Map.of("count", "1")));
         verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "ES:sync.problem-missing-role")));
@@ -985,7 +986,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(mayor);
         root.getChild("sync").getCommand().run(ctx);
 
-        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor, times(4)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("sync.report-found", Map.of("count", "1")));
         verify(mayor).sendMessage(messages.get("sync.report-pending", Map.of("granted", "1", "revoked", "0")));
         verify(mayor).sendMessage(messages.get("sync.problems-header", Map.of("count", "1")));
@@ -1018,7 +1019,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(mayor);
         root.getChild("sync").getCommand().run(ctx);
 
-        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor, times(2)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("sync.repaired", Map.of("count", "1", "granted", "0", "revoked", "0")));
         verify(mayor).sendMessage(messages.get("sync.unrepaired", Map.of("count", "2")));
         verify(mayor, never()).sendMessage(messages.get("sync.finished"));
@@ -1047,7 +1048,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(mayor);
         root.getChild("sync").getCommand().run(ctx);
 
-        verify(mayor).sendMessage(messages.get("sync.started"));
+        verify(mayor, times(1)).sendMessage(any(Component.class));
         verify(mayor).sendMessage(messages.get("sync.finished"));
     }
 
@@ -1099,7 +1100,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("update").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("updates.up-to-date"));
         verify(updateService, never()).download(any());
     }
@@ -1121,7 +1122,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("update").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(updateService).download(release);
         verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "1.1.0")));
     }
@@ -1146,13 +1147,14 @@ class MinecraftCommandsTest {
 
         // 1st run: prompts for confirmation, never stages automatically
         root.getChild("admin").getChild("update").getCommand().run(ctx);
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("updates.confirm-breaking", Map.of("latest", "2.0.0")));
         verify(updateService, never()).download(any());
 
         // 2nd run: confirmed, downloads
         root.getChild("admin").getChild("update").getCommand().run(ctx);
         verify(updateService, times(1)).download(release);
+        verify(admin, times(2)).sendMessage(any(Component.class));
         verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "2.0.0")));
     }
 
@@ -1175,7 +1177,7 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("update").getChild("confirm").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin, times(1)).sendMessage(any(Component.class));
         verify(updateService).download(release);
         verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "2.0.0")));
     }
