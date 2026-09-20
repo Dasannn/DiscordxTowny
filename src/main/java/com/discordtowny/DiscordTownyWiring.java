@@ -11,6 +11,7 @@ import com.discordtowny.discord.TownySlashCommands;
 import com.discordtowny.link.DefaultLinkService;
 import com.discordtowny.link.LinkService;
 import com.discordtowny.minecraft.EnglishMessages;
+import com.discordtowny.model.AuditEvent;
 import com.discordtowny.space.DefaultSpaceService;
 import com.discordtowny.space.SpaceService;
 import com.discordtowny.storage.HikariStorage;
@@ -26,9 +27,14 @@ import com.discordtowny.update.UpdateService;
 
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -67,10 +73,14 @@ public final class DiscordTownyWiring {
 
     private Storage storage;
     private JdaDiscordGateway discordGateway;
+    private DiscordGateway testDiscordGateway;
     private TownyFacade townyFacade;
     private SpaceService spaceService;
     private SyncService syncService;
     private LinkService linkService;
+    private CompositeAuditSink auditSink;
+    private ExecutorService auditExecutor;
+    private Duration auditDrainTimeout = Duration.ofSeconds(3);
     private PeriodicSyncJob periodicSyncJob;
     private UpdateService updateService;
 
@@ -152,6 +162,21 @@ public final class DiscordTownyWiring {
                 r -> Thread.ofVirtual().name("dt-startup").start(r));
     }
 
+    private DiscordGateway resolveEffectiveGateway() {
+        if (testDiscordGateway != null) {
+            return testDiscordGateway;
+        }
+        return discordGateway != null ? discordGateway : DegradedDiscordGateway.INSTANCE;
+    }
+
+    private synchronized ExecutorService getOrCreateAuditExecutor() {
+        if (auditExecutor == null || auditExecutor.isShutdown() || auditExecutor.isTerminated()) {
+            auditExecutor = Executors.newSingleThreadExecutor(r ->
+                    Thread.ofVirtual().name("dt-audit-worker").unstarted(r));
+        }
+        return auditExecutor;
+    }
+
     private void initializeServicesAsync() {
         synchronized (this) {
             if (stopped) {
@@ -199,7 +224,7 @@ public final class DiscordTownyWiring {
         // 4. Discord Gateway: only when storage succeeded
         try {
             synchronized (this) {
-                if (!stopped && discordGateway == null) {
+                if (!stopped && discordGateway == null && testDiscordGateway == null) {
                     discordGateway = new JdaDiscordGateway(config, storage.spaces(), storage.settings(), logger);
                     discordConnectFuture = discordGateway.connect();
                     discordConnectFuture.whenComplete((v, t) -> {
@@ -223,9 +248,17 @@ public final class DiscordTownyWiring {
             if (stopped) {
                 return;
             }
-            DiscordGateway effectiveGateway = discordGateway != null ? discordGateway : DegradedDiscordGateway.INSTANCE;
+            DiscordGateway effectiveGateway = resolveEffectiveGateway();
 
-            spaceService = new DefaultSpaceService(storage.spaces(), config, effectiveGateway);
+            ExecutorService auditExec = getOrCreateAuditExecutor();
+            this.auditSink = new CompositeAuditSink(
+                    () -> storage != null ? storage.audit() : null,
+                    this::resolveEffectiveGateway,
+                    auditExec,
+                    logger
+            );
+
+            spaceService = new DefaultSpaceService(storage.spaces(), config, effectiveGateway, auditSink, Clock.systemUTC(), ForkJoinPool.commonPool());
             syncService = new DefaultSyncService(
                     spaceService,
                     storage.spaces(),
@@ -245,6 +278,7 @@ public final class DiscordTownyWiring {
                     townyFacade,
                     storage.spaces(),
                     syncService,
+                    auditSink,
                     Clock.systemUTC(),
                     ForkJoinPool.commonPool()
             );
@@ -369,8 +403,12 @@ public final class DiscordTownyWiring {
             }
             discordGateway = null;
         }
+        testDiscordGateway = null;
 
-        // 4. Database storage
+        // 4. Drain queued audit writes BEFORE closing database storage
+        drainAuditSink();
+
+        // 5. Database storage
         if (storage != null) {
             try {
                 storage.close();
@@ -384,6 +422,7 @@ public final class DiscordTownyWiring {
         syncService = null;
         linkService = null;
         updateService = null;
+        auditSink = null;
         townyFacade = null;
         config = null;
         messages = null;
@@ -448,7 +487,7 @@ public final class DiscordTownyWiring {
 
             // When storage is ready, genuinely update the domain services and reschedule the periodic job
             if (!degraded && storage != null) {
-                if (discordGateway == null) {
+                if (discordGateway == null && testDiscordGateway == null) {
                     try {
                         discordGateway = new JdaDiscordGateway(newConfig, storage.spaces(), storage.settings(), logger);
                         discordConnectFuture = discordGateway.connect();
@@ -467,9 +506,25 @@ public final class DiscordTownyWiring {
                     }
                 }
 
-                DiscordGateway effectiveGateway = discordGateway != null ? discordGateway : DegradedDiscordGateway.INSTANCE;
+                DiscordGateway effectiveGateway = resolveEffectiveGateway();
 
-                this.spaceService = new DefaultSpaceService(storage.spaces(), newConfig, effectiveGateway);
+                if (auditSink != null) {
+                    try {
+                        auditSink.drain(auditDrainTimeout);
+                    } catch (Throwable t) {
+                        safeLog(Level.WARNING, "Error draining previous audit sink during reload: " + t.getMessage());
+                    }
+                }
+
+                ExecutorService auditExec = getOrCreateAuditExecutor();
+                this.auditSink = new CompositeAuditSink(
+                        () -> storage != null ? storage.audit() : null,
+                        this::resolveEffectiveGateway,
+                        auditExec,
+                        logger
+                );
+
+                this.spaceService = new DefaultSpaceService(storage.spaces(), newConfig, effectiveGateway, auditSink, Clock.systemUTC(), ForkJoinPool.commonPool());
                 this.syncService = new DefaultSyncService(
                         spaceService,
                         storage.spaces(),
@@ -489,6 +544,7 @@ public final class DiscordTownyWiring {
                         townyFacade,
                         storage.spaces(),
                         syncService,
+                        auditSink,
                         Clock.systemUTC(),
                         ForkJoinPool.commonPool()
                 );
@@ -557,6 +613,37 @@ public final class DiscordTownyWiring {
         } catch (Throwable ignored) {}
     }
 
+    private void drainAuditSink() {
+        if (auditSink != null) {
+            try {
+                auditSink.drain(auditDrainTimeout);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                safeLog(Level.WARNING, "Interrupted while waiting for audit log to drain: " + e.getMessage());
+            } catch (Throwable t) {
+                safeLog(Level.WARNING, "Error draining audit sink: " + t.getMessage());
+            }
+            auditSink = null;
+        } else if (auditExecutor != null) {
+            try {
+                auditExecutor.shutdown();
+                if (!auditExecutor.awaitTermination(auditDrainTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
+                    List<Runnable> dropped = auditExecutor.shutdownNow();
+                    safeLog(Level.WARNING, "Timed out waiting for audit log to drain: "
+                            + dropped.size() + " queued audit task(s) were dropped.");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                List<Runnable> dropped = auditExecutor.shutdownNow();
+                safeLog(Level.WARNING, "Interrupted while waiting for audit log to drain: "
+                        + dropped.size() + " queued audit task(s) were dropped.");
+            } catch (Throwable t) {
+                safeLog(Level.WARNING, "Error draining audit executor: " + t.getMessage());
+            }
+        }
+        auditExecutor = null;
+    }
+
     // Accessors for diagnostics and testing
 
     public Storage getStorage() {
@@ -577,6 +664,10 @@ public final class DiscordTownyWiring {
 
     public LinkService getLinkService() {
         return linkService;
+    }
+
+    public CompositeAuditSink getAuditSink() {
+        return auditSink;
     }
 
     public TownyFacade getTownyFacade() {
@@ -631,12 +722,33 @@ public final class DiscordTownyWiring {
         this.periodicSyncJob = job;
     }
 
-    void setDiscordGatewayForTest(JdaDiscordGateway gateway) {
-        this.discordGateway = gateway;
+    void setDiscordGatewayForTest(DiscordGateway gateway) {
+        if (gateway instanceof JdaDiscordGateway jda) {
+            this.discordGateway = jda;
+            this.testDiscordGateway = null;
+        } else {
+            this.testDiscordGateway = gateway;
+        }
     }
 
     void setStorageForTest(Storage storage) {
         this.storage = storage;
+    }
+
+    void setAuditSinkForTest(CompositeAuditSink auditSink) {
+        this.auditSink = auditSink;
+    }
+
+    ExecutorService getAuditExecutorForTest() {
+        return auditExecutor;
+    }
+
+    void setAuditExecutorForTest(ExecutorService executor) {
+        this.auditExecutor = executor;
+    }
+
+    void setAuditDrainTimeoutForTest(Duration timeout) {
+        this.auditDrainTimeout = timeout;
     }
 
     void setTownyFacadeForTest(TownyFacade facade) {

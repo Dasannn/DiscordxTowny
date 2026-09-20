@@ -25,6 +25,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Default implementation of {@link LinkService}.
@@ -35,12 +38,15 @@ import java.util.concurrent.ForkJoinPool;
  */
 public final class DefaultLinkService implements LinkService {
 
+    private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
+
     private final LinkRepository linkRepository;
     private final PluginConfig config;
     private final DiscordGateway discordGateway;
     private final TownyFacade townyFacade;
     private final SpaceRepository spaceRepository;
     private final SyncService syncService;
+    private final Consumer<AuditEvent> auditSink;
     private final Clock clock;
     private final Executor executor;
     private final CodeGenerator codeGenerator;
@@ -56,6 +62,7 @@ public final class DefaultLinkService implements LinkService {
             TownyFacade townyFacade,
             SpaceRepository spaceRepository,
             SyncService syncService,
+            Consumer<AuditEvent> auditSink,
             Clock clock,
             Executor executor) {
         this.linkRepository = Objects.requireNonNull(linkRepository, "linkRepository");
@@ -64,21 +71,19 @@ public final class DefaultLinkService implements LinkService {
         this.townyFacade = townyFacade;
         this.spaceRepository = Objects.requireNonNull(spaceRepository, "spaceRepository");
         this.syncService = Objects.requireNonNull(syncService, "syncService");
+        this.auditSink = Objects.requireNonNull(auditSink, "auditSink cannot be null");
         this.clock = clock != null ? clock : Clock.systemUTC();
         this.executor = executor != null ? executor : ForkJoinPool.commonPool();
         this.codeGenerator = new CodeGenerator();
         this.attemptTracker = new AttemptTracker();
     }
 
-    public DefaultLinkService(
-            LinkRepository linkRepository,
-            PluginConfig config,
-            DiscordGateway discordGateway,
-            TownyFacade townyFacade,
-            SpaceRepository spaceRepository,
-            SyncService syncService) {
-        this(linkRepository, config, discordGateway, townyFacade, spaceRepository, syncService,
-                Clock.systemUTC(), ForkJoinPool.commonPool());
+    private void audit(AuditEvent event) {
+        try {
+            auditSink.accept(event);
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING, "Failed to deliver audit event: " + t.getMessage(), t);
+        }
     }
 
     @Override
@@ -158,7 +163,7 @@ public final class DefaultLinkService implements LinkService {
                     case CODE_NOT_FOUND -> {
                         boolean locked = attemptTracker.recordFailure(discordId, now, maxAttempts, lockoutDuration);
                         // Without exposing the code in the audit
-                        discordGateway.log(new AuditEvent(
+                        audit(new AuditEvent(
                                 now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
                                 "", false, Optional.of("Invalid code")));
                         return CompletableFuture.completedFuture(
@@ -168,14 +173,14 @@ public final class DefaultLinkService implements LinkService {
                         pendingCodeNames.remove(code);
                         boolean locked = attemptTracker.recordFailure(discordId, now, maxAttempts, lockoutDuration);
                         // Without exposing the code in the audit
-                        discordGateway.log(new AuditEvent(
+                        audit(new AuditEvent(
                                 now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
                                 "", false, Optional.of("Expired code")));
                         return CompletableFuture.completedFuture(
                                 locked ? LinkResult.TOO_MANY_ATTEMPTS : LinkResult.CODE_EXPIRED);
                     }
                     case PLAYER_ALREADY_LINKED -> {
-                        discordGateway.log(new AuditEvent(
+                        audit(new AuditEvent(
                                 now, AuditEvent.Severity.WARNING, discordId, "link_attempt",
                                 "", false, Optional.of("Player already linked")));
                         return CompletableFuture.completedFuture(LinkResult.PLAYER_ALREADY_LINKED);
@@ -191,7 +196,7 @@ public final class DefaultLinkService implements LinkService {
 
                         // Failure counter is not reset: preserved during its time window
 
-                        discordGateway.log(new AuditEvent(
+                        audit(new AuditEvent(
                                 now, AuditEvent.Severity.INFO, discordId, "link",
                                 playerUuid.toString(), true, Optional.of("Account linked successfully")));
 
@@ -275,7 +280,7 @@ public final class DefaultLinkService implements LinkService {
                 }
 
                 Instant now = clock.instant();
-                discordGateway.log(new AuditEvent(
+                audit(new AuditEvent(
                         now, AuditEvent.Severity.INFO, "server", "unlink",
                         uuid.toString(), true, Optional.of("Link deleted")));
                 return true;
