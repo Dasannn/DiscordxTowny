@@ -466,7 +466,10 @@ public final class JdaDiscordGateway implements DiscordGateway {
         }
 
         Messages effectiveMessages = reg.messages() != null ? reg.messages() : com.discordtowny.minecraft.EnglishMessages.bundled();
-        this.linkCommands = new LinkSlashCommands(reg.linkService(), config, effectiveMessages);
+        // The warning about an unusable link channel has to reach the operator, so it
+        // goes to the plugin logger rather than to a logger nobody is watching.
+        this.linkCommands = new LinkSlashCommands(
+                reg.linkService(), config, effectiveMessages, logger::warning);
         this.townyCommands = new TownySlashCommands(reg.townyFacade(), reg.linkService(), config, effectiveMessages, reg.mainThreadExecutor());
 
         jda.addEventListener(this.linkCommands, this.townyCommands);

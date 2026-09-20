@@ -59,10 +59,6 @@ public final class LinkSlashCommands extends ListenerAdapter {
         this.warning = warning != null ? warning : (msg -> Logger.getLogger("DiscordTowny").warning(msg));
     }
 
-    public LinkSlashCommands(LinkService linkService, PluginConfig config, Messages messages, Clock clock) {
-        this(linkService, config, messages, clock, null);
-    }
-
     public LinkSlashCommands(LinkService linkService, PluginConfig config, Messages messages) {
         this(linkService, config, messages, Clock.systemUTC(), null);
     }
