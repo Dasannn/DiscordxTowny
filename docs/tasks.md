@@ -662,3 +662,40 @@ setting it did not apply.
 they are simply never given the new value.
 
 ---
+
+## T22 — The admin list tells the truth, and fits on the screen
+
+- **Branch**: `feat/lista-admin` · **Phase** 6 · **Depends on**: T18, T19
+- **Status**: pending · **Zone**: `minecraft/`, `sync/`, the two catalogs
+
+**Why**
+
+Both found on a live server.
+
+An administrator deleted the channels of an archived space by hand in Discord.
+`/dt admin list` still lists that space as if it existed. The plugin is
+reporting its own database rather than what Discord actually holds, and an
+operator cleaning up has no way to tell which rows are now orphans.
+
+Separately, the list prints every space in one burst. On a server with many
+towns it scrolls the chat away, which makes the command useless exactly when
+it matters most.
+
+**Builds**
+
+- An archived space whose channels no longer exist is reported as such, or
+  reconciled. Decide which, and say why in the report: purging a row is
+  destructive and must not happen silently as a side effect of listing.
+- `/dt admin list` paginates, like `/townlist` already does on the Discord
+  side. Follow that command's page size and argument shape rather than
+  inventing a second convention.
+- The page indicator and any new wording come from both catalogs.
+
+**Acceptance**: with more spaces than one page, `/dt admin list` shows a page
+and says how to reach the next. An archived space whose Discord channels were
+deleted by hand is visibly distinguished from one whose channels are intact.
+
+**Do not touch**: `/dt admin purge`, which already exists to delete archived
+spaces deliberately. Listing must never delete anything.
+
+---
