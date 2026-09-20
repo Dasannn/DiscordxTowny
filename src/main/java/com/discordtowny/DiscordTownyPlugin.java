@@ -23,8 +23,16 @@ public final class DiscordTownyPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
 
+        java.nio.file.Path updateFolder = null;
+        try {
+            if (getServer() != null && getServer().getUpdateFolderFile() != null) {
+                updateFolder = getServer().getUpdateFolderFile().toPath();
+            }
+        } catch (Throwable ignored) {}
+
         wiring = new DiscordTownyWiring(
                 getDataFolder().toPath(),
+                updateFolder,
                 getLogger(),
                 runnable -> {
                     if (!isEnabled() || Bukkit.getServer() == null) {
@@ -75,6 +83,7 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                     () -> wiring != null ? wiring.getSyncService() : null,
                     () -> wiring != null ? wiring.getTownyFacade() : null,
                     () -> wiring != null ? wiring.getDiscordGateway() : null,
+                    () -> wiring != null ? wiring.getUpdateService() : null,
                     () -> { if (wiring != null) wiring.reload(); }
             );
         } catch (Throwable t) {
@@ -133,5 +142,17 @@ public final class DiscordTownyPlugin extends JavaPlugin {
 
     public boolean isDegraded() {
         return wiring != null && wiring.isDegraded();
+    }
+
+    public com.discordtowny.update.UpdateService getUpdateService() {
+        return wiring != null ? wiring.getUpdateService() : null;
+    }
+
+    public com.discordtowny.discord.LinkSlashCommands getLinkSlashCommands() {
+        return wiring != null ? wiring.getLinkSlashCommands() : null;
+    }
+
+    public com.discordtowny.discord.TownySlashCommands getTownySlashCommands() {
+        return wiring != null ? wiring.getTownySlashCommands() : null;
     }
 }

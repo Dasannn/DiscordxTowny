@@ -1,9 +1,13 @@
 package com.discordtowny.discord;
 
+import com.discordtowny.config.Messages;
 import com.discordtowny.config.PluginConfig;
+import com.discordtowny.link.LinkService;
 import com.discordtowny.model.AuditEvent;
 import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
+import com.discordtowny.towny.TownyFacade;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
@@ -18,6 +22,7 @@ import net.dv8tion.jda.api.utils.cache.CacheFlag;
 import java.awt.Color;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -25,6 +30,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -56,6 +62,17 @@ public final class JdaDiscordGateway implements DiscordGateway {
     private volatile LogQueue logQueue;
     private volatile boolean available = false;
 
+    private record PendingSlashCommandRegistration(
+            TownyFacade townyFacade,
+            LinkService linkService,
+            Messages messages,
+            Executor mainThreadExecutor
+    ) {}
+
+    private final AtomicReference<PendingSlashCommandRegistration> pendingCommands = new AtomicReference<>();
+    private volatile LinkSlashCommands linkCommands;
+    private volatile TownySlashCommands townyCommands;
+
     public JdaDiscordGateway(PluginConfig config, SpaceRepository spaces,
                              SettingsRepository settings, Logger logger) {
         this.config = config;
@@ -75,6 +92,16 @@ public final class JdaDiscordGateway implements DiscordGateway {
         this.jdaRef.set(jda);
         this.guild = guild;
         this.available = true;
+    }
+
+    void initJdaForTest(JDA jda, Guild guild) {
+        this.jdaRef.set(jda);
+        this.guild = guild;
+        this.available = true;
+        PendingSlashCommandRegistration pending = pendingCommands.getAndSet(null);
+        if (pending != null) {
+            performSlashCommandRegistration(pending);
+        }
     }
 
     // -- Startup and shutdown --
@@ -143,6 +170,11 @@ public final class JdaDiscordGateway implements DiscordGateway {
             verifyPermissions().ifPresent(msg ->
                     logger.warning("[Discord] Permissions warning: " + msg));
 
+            PendingSlashCommandRegistration pending = pendingCommands.getAndSet(null);
+            if (pending != null) {
+                performSlashCommandRegistration(pending);
+            }
+
         } catch (Exception e) {
             String safeMessage = sanitizeMessage(e.getMessage());
             logger.severe("[Discord] Failed to connect: " + safeMessage);
@@ -153,6 +185,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
     /** Shuts down the connection cleanly. */
     public void shutdown() {
         available = false;
+        pendingCommands.set(null);
 
         if (logQueue != null) {
             logQueue.shutdown();
@@ -164,6 +197,18 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
         JDA jda = jdaRef.getAndSet(null);
         if (jda != null) {
+            if (linkCommands != null) {
+                try {
+                    jda.removeEventListener(linkCommands);
+                } catch (Throwable ignored) {}
+                linkCommands = null;
+            }
+            if (townyCommands != null) {
+                try {
+                    jda.removeEventListener(townyCommands);
+                } catch (Throwable ignored) {}
+                townyCommands = null;
+            }
             jda.shutdown();
             logger.info("[Discord] Connection closed");
         }
@@ -385,5 +430,79 @@ public final class JdaDiscordGateway implements DiscordGateway {
      */
     String sanitizeMessage(String message) {
         return DiscordSanitizer.sanitize(message, config.discord().token());
+    }
+
+    @Override
+    public void registerSlashCommands(
+            TownyFacade townyFacade,
+            LinkService linkService,
+            Messages messages,
+            Executor mainThreadExecutor) {
+        PendingSlashCommandRegistration reg = new PendingSlashCommandRegistration(
+                townyFacade, linkService, messages, mainThreadExecutor);
+        if (isAvailable() && guild != null && jdaRef.get() != null) {
+            performSlashCommandRegistration(reg);
+        } else {
+            pendingCommands.set(reg);
+        }
+    }
+
+    private synchronized void performSlashCommandRegistration(PendingSlashCommandRegistration reg) {
+        JDA jda = jdaRef.get();
+        Guild g = this.guild;
+        if (jda == null || g == null) {
+            return;
+        }
+
+        if (this.linkCommands != null) {
+            try {
+                jda.removeEventListener(this.linkCommands);
+            } catch (Throwable ignored) {}
+        }
+        if (this.townyCommands != null) {
+            try {
+                jda.removeEventListener(this.townyCommands);
+            } catch (Throwable ignored) {}
+        }
+
+        Messages effectiveMessages = reg.messages() != null ? reg.messages() : com.discordtowny.minecraft.EnglishMessages.bundled();
+        this.linkCommands = new LinkSlashCommands(reg.linkService(), config, effectiveMessages);
+        this.townyCommands = new TownySlashCommands(reg.townyFacade(), reg.linkService(), config, effectiveMessages, reg.mainThreadExecutor());
+
+        jda.addEventListener(this.linkCommands, this.townyCommands);
+
+        List<SlashCommandData> commandData = new ArrayList<>();
+        commandData.addAll(LinkSlashCommands.getCommandData(config));
+        commandData.addAll(TownySlashCommands.getCommandData(config));
+
+        try {
+            var updateAction = g.updateCommands();
+            if (updateAction != null) {
+                updateAction.addCommands(commandData).queue(
+                        cmds -> logger.info("[Discord] Published " + commandData.size() + " slash commands to guild '" + g.getName() + "'"),
+                        t -> logger.warning("[Discord] Failed to publish slash commands: " + sanitizeMessage(t.getMessage()))
+                );
+            }
+        } catch (Throwable t) {
+            logger.warning("[Discord] Error updating guild slash commands: " + sanitizeMessage(t.getMessage()));
+        }
+    }
+
+    @Override
+    public Optional<LinkSlashCommands> linkSlashCommands() {
+        return Optional.ofNullable(linkCommands);
+    }
+
+    @Override
+    public Optional<TownySlashCommands> townySlashCommands() {
+        return Optional.ofNullable(townyCommands);
+    }
+
+    public LinkSlashCommands getLinkSlashCommands() {
+        return linkCommands;
+    }
+
+    public TownySlashCommands getTownySlashCommands() {
+        return townyCommands;
     }
 }

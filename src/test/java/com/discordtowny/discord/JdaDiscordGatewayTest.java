@@ -3,10 +3,14 @@ package com.discordtowny.discord;
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.SpaceRepository;
+import com.discordtowny.config.Messages;
+import com.discordtowny.link.LinkService;
+import com.discordtowny.towny.TownyFacade;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.requests.restaction.CommandListUpdateAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,6 +37,7 @@ class JdaDiscordGatewayTest {
     private SettingsRepository settings;
     private PluginConfig.Discord discordConfig;
     private PluginConfig.Roles rolesConfig;
+    private PluginConfig.Commands commandsConfig;
 
     @BeforeEach
     void setUp() {
@@ -41,9 +46,12 @@ class JdaDiscordGatewayTest {
         settings = mock(SettingsRepository.class);
         discordConfig = mock(PluginConfig.Discord.class);
         rolesConfig = mock(PluginConfig.Roles.class);
+        commandsConfig = mock(PluginConfig.Commands.class);
 
         when(config.discord()).thenReturn(discordConfig);
         when(config.roles()).thenReturn(rolesConfig);
+        when(config.commands()).thenReturn(commandsConfig);
+        when(commandsConfig.byName(anyString())).thenReturn(Optional.empty());
         when(discordConfig.token()).thenReturn("mi-token-super-secreto-999");
         when(rolesConfig.mayorRoleName()).thenReturn("Alcalde");
     }
@@ -318,6 +326,81 @@ class JdaDiscordGatewayTest {
 
         Set<String> result = gateway.existingResourceIds(List.of("role-1", "text-1", "vc-1", "missing-id"));
         assertEquals(Set.of("role-1", "text-1", "vc-1"), result);
+    }
+
+    @Test
+    @DisplayName("registerSlashCommands attaches listeners to JDA and updates commands in Guild")
+    void registerSlashCommandsAttachesListenersAndUpdatesGuild() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        CommandListUpdateAction action = mock(CommandListUpdateAction.class);
+        when(guild.updateCommands()).thenReturn(action);
+        when(action.addCommands(anyCollection())).thenReturn(action);
+
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+        TownyFacade facade = mock(TownyFacade.class);
+        LinkService linkService = mock(LinkService.class);
+        Messages messages = mock(Messages.class);
+
+        gateway.registerSlashCommands(facade, linkService, messages, Runnable::run);
+
+        verify(jda, times(1)).addEventListener(any(LinkSlashCommands.class), any(TownySlashCommands.class));
+        verify(guild, times(1)).updateCommands();
+        verify(action, times(1)).addCommands(anyCollection());
+        assertTrue(gateway.linkSlashCommands().isPresent());
+        assertTrue(gateway.townySlashCommands().isPresent());
+    }
+
+    @Test
+    @DisplayName("shutdown removes registered slash command listeners from JDA")
+    void shutdownRemovesSlashCommandListenersFromJda() {
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        CommandListUpdateAction action = mock(CommandListUpdateAction.class);
+        when(guild.updateCommands()).thenReturn(action);
+        when(action.addCommands(anyCollection())).thenReturn(action);
+
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER, jda, guild);
+        gateway.registerSlashCommands(mock(TownyFacade.class), mock(LinkService.class), mock(Messages.class), Runnable::run);
+
+        assertTrue(gateway.linkSlashCommands().isPresent());
+        assertTrue(gateway.townySlashCommands().isPresent());
+
+        gateway.shutdown();
+
+        verify(jda, times(2)).removeEventListener(any());
+        assertTrue(gateway.linkSlashCommands().isEmpty());
+        assertTrue(gateway.townySlashCommands().isEmpty());
+    }
+
+    @Test
+    @DisplayName("registerSlashCommands called before gateway is ready queues registration and applies on init")
+    void registerSlashCommandsBeforeJdaReadyQueuesRegistration() {
+        var gateway = new JdaDiscordGateway(config, spaces, settings, LOGGER);
+        TownyFacade facade = mock(TownyFacade.class);
+        LinkService linkService = mock(LinkService.class);
+        Messages messages = mock(Messages.class);
+
+        gateway.registerSlashCommands(facade, linkService, messages, Runnable::run);
+
+        // Before init, slash command listeners are not instantiated yet
+        assertTrue(gateway.linkSlashCommands().isEmpty());
+        assertTrue(gateway.townySlashCommands().isEmpty());
+
+        // Now gateway finishes connecting / init
+        JDA jda = mock(JDA.class);
+        Guild guild = mock(Guild.class);
+        CommandListUpdateAction action = mock(CommandListUpdateAction.class);
+        when(guild.updateCommands()).thenReturn(action);
+        when(action.addCommands(anyCollection())).thenReturn(action);
+
+        gateway.initJdaForTest(jda, guild);
+
+        verify(jda, times(1)).addEventListener(any(LinkSlashCommands.class), any(TownySlashCommands.class));
+        verify(guild, times(1)).updateCommands();
+        verify(action, times(1)).addCommands(anyCollection());
+        assertTrue(gateway.linkSlashCommands().isPresent());
+        assertTrue(gateway.townySlashCommands().isPresent());
     }
 }
 

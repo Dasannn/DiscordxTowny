@@ -102,5 +102,36 @@ public interface DiscordGateway {
     default java.util.Set<String> existingIds(java.util.Collection<String> ids) {
         return existingResourceIds(ids);
     }
+
+    /**
+     * Registers slash command listeners and publishes command definitions to Discord.
+     *
+     * <p>Registration is performed inside the discord package without leaking JDA.
+     * If the gateway is not yet connected, registration is performed once connection completes.
+     *
+     * @param townyFacade live Towny facade
+     * @param linkService link service
+     * @param messages messages catalog
+     * @param mainThreadExecutor executor returning to server main thread
+     */
+    default void registerSlashCommands(
+            com.discordtowny.towny.TownyFacade townyFacade,
+            com.discordtowny.link.LinkService linkService,
+            com.discordtowny.config.Messages messages,
+            java.util.concurrent.Executor mainThreadExecutor) {}
+
+    /**
+     * Returns the registered LinkSlashCommands listener, if registered.
+     */
+    default java.util.Optional<LinkSlashCommands> linkSlashCommands() {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * Returns the registered TownySlashCommands listener, if registered.
+     */
+    default java.util.Optional<TownySlashCommands> townySlashCommands() {
+        return java.util.Optional.empty();
+    }
 }
 

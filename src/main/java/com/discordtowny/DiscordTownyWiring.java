@@ -6,6 +6,8 @@ import com.discordtowny.config.PluginConfig;
 import com.discordtowny.config.YamlConfigLoader;
 import com.discordtowny.discord.DiscordGateway;
 import com.discordtowny.discord.JdaDiscordGateway;
+import com.discordtowny.discord.LinkSlashCommands;
+import com.discordtowny.discord.TownySlashCommands;
 import com.discordtowny.link.DefaultLinkService;
 import com.discordtowny.link.LinkService;
 import com.discordtowny.minecraft.EnglishMessages;
@@ -19,6 +21,8 @@ import com.discordtowny.sync.SyncScheduler;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.LiveTownyFacade;
 import com.discordtowny.towny.TownyFacade;
+import com.discordtowny.update.DefaultUpdateService;
+import com.discordtowny.update.UpdateService;
 
 import java.nio.file.Path;
 import java.time.Clock;
@@ -48,6 +52,7 @@ import java.util.logging.Logger;
 public final class DiscordTownyWiring {
 
     private final Path dataFolder;
+    private final Path updateFolder;
     private final Logger logger;
     private final Executor mainThreadExecutor;
     private final SyncScheduler syncScheduler;
@@ -67,11 +72,34 @@ public final class DiscordTownyWiring {
     private SyncService syncService;
     private LinkService linkService;
     private PeriodicSyncJob periodicSyncJob;
+    private UpdateService updateService;
 
     private boolean degraded = false;
     private volatile boolean stopped = false;
     private CompletableFuture<Void> startupFuture;
     private CompletableFuture<Void> discordConnectFuture;
+
+    public DiscordTownyWiring(
+            Path dataFolder,
+            Path updateFolder,
+            Logger logger,
+            Executor mainThreadExecutor,
+            SyncScheduler syncScheduler,
+            Runnable cancelTasksAction,
+            Consumer<DiscordTownyWiring> postStartAction,
+            String version) {
+        this.dataFolder = dataFolder;
+        this.updateFolder = updateFolder != null ? updateFolder
+                : (dataFolder != null && dataFolder.getParent() != null
+                        ? dataFolder.getParent().resolve("update")
+                        : (dataFolder != null ? dataFolder.resolve("update") : Path.of("update")));
+        this.logger = logger != null ? logger : Logger.getLogger("DiscordTowny");
+        this.mainThreadExecutor = mainThreadExecutor;
+        this.syncScheduler = syncScheduler;
+        this.cancelTasksAction = cancelTasksAction;
+        this.postStartAction = postStartAction;
+        this.version = version != null ? version : "unknown";
+    }
 
     public DiscordTownyWiring(
             Path dataFolder,
@@ -81,17 +109,11 @@ public final class DiscordTownyWiring {
             Runnable cancelTasksAction,
             Consumer<DiscordTownyWiring> postStartAction,
             String version) {
-        this.dataFolder = dataFolder;
-        this.logger = logger != null ? logger : Logger.getLogger("DiscordTowny");
-        this.mainThreadExecutor = mainThreadExecutor;
-        this.syncScheduler = syncScheduler;
-        this.cancelTasksAction = cancelTasksAction;
-        this.postStartAction = postStartAction;
-        this.version = version != null ? version : "unknown";
+        this(dataFolder, null, logger, mainThreadExecutor, syncScheduler, cancelTasksAction, postStartAction, version);
     }
 
     public DiscordTownyWiring() {
-        this(null, Logger.getLogger("DiscordTowny"), null, null, null, null, "1.0.0");
+        this(null, null, Logger.getLogger("DiscordTowny"), null, null, null, null, "1.0.0");
     }
 
     public synchronized void start() {
@@ -236,9 +258,37 @@ public final class DiscordTownyWiring {
                     safeLog(Level.WARNING, "Failed to start periodic sync job: " + t.getMessage());
                 }
             }
+
+            // 7. Updater
+            if (config != null && config.updates() != null) {
+                try {
+                    DefaultUpdateService updater = new DefaultUpdateService(
+                            version,
+                            config.updates(),
+                            updateFolder,
+                            dataFolder,
+                            logger,
+                            effectiveGateway::log,
+                            () -> messages != null ? messages : EnglishMessages.bundled()
+                    );
+                    this.updateService = updater;
+                    if (config.updates().checkEnabled()) {
+                        updater.start();
+                    }
+                } catch (Throwable t) {
+                    safeLog(Level.WARNING, "Failed to start update service: " + t.getMessage());
+                }
+            }
+
+            // 8. Register Discord Slash Commands
+            try {
+                effectiveGateway.registerSlashCommands(townyFacade, linkService, messages, mainThreadExecutor);
+            } catch (Throwable t) {
+                safeLog(Level.WARNING, "Failed to register Discord slash commands: " + t.getMessage());
+            }
         }
 
-        // 7. Safely return to the server thread for registration
+        // 9. Safely return to the server thread for registration
         dispatchPostStart();
     }
 
@@ -283,6 +333,16 @@ public final class DiscordTownyWiring {
 
         // Tolerates incomplete startup: shutdown in reverse order, null-safe
 
+        // 0. Update service
+        if (updateService != null) {
+            try {
+                updateService.stop();
+            } catch (Throwable t) {
+                safeLog(Level.WARNING, "Error stopping update service: " + t.getMessage());
+            }
+            updateService = null;
+        }
+
         // 1. Periodic sync job
         if (periodicSyncJob != null) {
             try {
@@ -323,6 +383,7 @@ public final class DiscordTownyWiring {
         spaceService = null;
         syncService = null;
         linkService = null;
+        updateService = null;
         townyFacade = null;
         config = null;
         messages = null;
@@ -448,6 +509,40 @@ public final class DiscordTownyWiring {
                         safeLog(Level.WARNING, "Failed to reschedule periodic sync job during reload: " + t.getMessage());
                     }
                 }
+
+                if (updateService != null) {
+                    try {
+                        updateService.stop();
+                    } catch (Throwable t) {
+                        safeLog(Level.WARNING, "Error stopping update service during reload: " + t.getMessage());
+                    }
+                    updateService = null;
+                }
+                if (newConfig != null && newConfig.updates() != null) {
+                    try {
+                        DefaultUpdateService updater = new DefaultUpdateService(
+                                version,
+                                newConfig.updates(),
+                                updateFolder,
+                                dataFolder,
+                                logger,
+                                effectiveGateway::log,
+                                () -> this.messages != null ? this.messages : EnglishMessages.bundled()
+                        );
+                        this.updateService = updater;
+                        if (newConfig.updates().checkEnabled()) {
+                            updater.start();
+                        }
+                    } catch (Throwable t) {
+                        safeLog(Level.WARNING, "Failed to restart update service during reload: " + t.getMessage());
+                    }
+                }
+
+                try {
+                    effectiveGateway.registerSlashCommands(townyFacade, linkService, this.messages, mainThreadExecutor);
+                } catch (Throwable t) {
+                    safeLog(Level.WARNING, "Failed to re-register Discord slash commands during reload: " + t.getMessage());
+                }
             }
 
             safeLog(Level.INFO, "Configuration and messages reloaded.");
@@ -516,7 +611,22 @@ public final class DiscordTownyWiring {
         return discordConnectFuture;
     }
 
+    public UpdateService getUpdateService() {
+        return updateService;
+    }
+
+    public LinkSlashCommands getLinkSlashCommands() {
+        return discordGateway != null ? discordGateway.getLinkSlashCommands() : null;
+    }
+
+    public TownySlashCommands getTownySlashCommands() {
+        return discordGateway != null ? discordGateway.getTownySlashCommands() : null;
+    }
+
     // Package-private test setters for testing shutdown after failed startup
+    void setUpdateServiceForTest(UpdateService updateService) {
+        this.updateService = updateService;
+    }
     void setPeriodicSyncJobForTest(PeriodicSyncJob job) {
         this.periodicSyncJob = job;
     }
@@ -539,6 +649,10 @@ public final class DiscordTownyWiring {
 
     void setConfigForTest(PluginConfig config) {
         this.config = config;
+    }
+
+    CompletableFuture<Void> getStartupFutureForTest() {
+        return startupFuture;
     }
 
     /**

@@ -53,6 +53,15 @@ public interface UpdateService {
      */
     boolean isAwaitingConfirmation();
 
+    /**
+     * Stops the periodic check and abandons any transfer in flight.
+     *
+     * <p>Part of the contract because the service owns a scheduler and a worker:
+     * a caller holding only this interface must still be able to end it, or
+     * disabling the plugin leaves both running.
+     */
+    void stop();
+
     record Release(String version, String downloadUrl, String sha256, String notes) {}
 
     enum DownloadResult {

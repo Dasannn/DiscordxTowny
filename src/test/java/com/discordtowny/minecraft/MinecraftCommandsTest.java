@@ -13,6 +13,7 @@ import com.discordtowny.space.SpaceService;
 import com.discordtowny.space.SpaceService.CreateResult;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
+import com.discordtowny.update.UpdateService;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -138,6 +139,13 @@ class MinecraftCommandsTest {
         return MinecraftCommands.createCommandNode(
                 linkService, spaceService, syncService, townyFacade, discordGateway,
                 config, messages, consoleMessages, reloadAction, scheduler
+        );
+    }
+
+    private LiteralCommandNode<CommandSourceStack> createRoot(UpdateService updateService) {
+        return MinecraftCommands.createCommandNode(
+                linkService, spaceService, syncService, townyFacade, discordGateway,
+                updateService, config, messages, consoleMessages, reloadAction, Runnable::run
         );
     }
 
@@ -521,6 +529,7 @@ class MinecraftCommandsTest {
         LiteralCommandNode<CommandSourceStack> root = createRoot();
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
 
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("reload").getCommand().run(ctx);
@@ -550,6 +559,7 @@ class MinecraftCommandsTest {
         LiteralCommandNode<CommandSourceStack> root = createRoot();
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
 
         when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of()));
 
@@ -565,6 +575,7 @@ class MinecraftCommandsTest {
         LiteralCommandNode<CommandSourceStack> root = createRoot();
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
 
         TownSpace space = new TownSpace(UUID.randomUUID(), "Rome", Optional.of("cat"),
                 Optional.of("txt"), Optional.of("vc"), Optional.of("role1"),
@@ -619,6 +630,7 @@ class MinecraftCommandsTest {
         LiteralCommandNode<CommandSourceStack> root = createRoot();
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
 
         when(townyFacade.townByName("Atlantis")).thenReturn(Optional.empty());
         when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of()));
@@ -636,6 +648,7 @@ class MinecraftCommandsTest {
         LiteralCommandNode<CommandSourceStack> root = createRoot();
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
 
         UUID townUuid = UUID.randomUUID();
         TownSnapshot town = mock(TownSnapshot.class);
@@ -720,6 +733,7 @@ class MinecraftCommandsTest {
         );
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
 
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("reload").getCommand().run(ctx);
@@ -933,6 +947,255 @@ class MinecraftCommandsTest {
 
         verify(mayor).sendMessage(messages.get("sync.started"));
         verify(mayor).sendMessage(messages.get("sync.finished"));
+    }
+
+    // --- /dt admin update tests ---
+
+    @Test
+    void adminUpdateWhenDisabledReportsDisabled() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot((UpdateService) null);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.disabled"));
+    }
+
+    @Test
+    void adminUpdateWhenUpdatePendingReportsAlreadyDownloaded() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(true);
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.of(new UpdateService.Release("2.0.0", "url", "hash", "notes")));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "2.0.0")));
+        verify(updateService, never()).checkForUpdate();
+    }
+
+    @Test
+    void adminUpdateWhenUpToDateReportsUpToDate() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin).sendMessage(messages.get("updates.up-to-date"));
+        verify(updateService, never()).download(any());
+    }
+
+    @Test
+    void adminUpdateNonBreakingDownloadsSuccessfully() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("1.1.0", "url", "hash", "notes");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.isBreaking(release)).thenReturn(false);
+        when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.SUCCESS));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("general.working"));
+        verify(updateService).download(release);
+        verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "1.1.0")));
+    }
+
+    @Test
+    void adminUpdateBreakingRequiresConfirmationAndSecondExecutionDownloads() throws Exception {
+        MinecraftCommands.clearPendingConfirmationsForTest();
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("2.0.0", "url", "hash", "notes [breaking]");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.isBreaking(release)).thenReturn(true);
+        when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.SUCCESS));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        UUID adminUuid = UUID.randomUUID();
+        when(admin.getUniqueId()).thenReturn(adminUuid);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+
+        // 1st run: prompts for confirmation, never stages automatically
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+        verify(admin).sendMessage(messages.get("general.working"));
+        verify(admin).sendMessage(messages.get("updates.confirm-breaking", Map.of("latest", "2.0.0")));
+        verify(updateService, never()).download(any());
+
+        // 2nd run: confirmed, downloads
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+        verify(updateService, times(1)).download(release);
+        verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "2.0.0")));
+    }
+
+    @Test
+    void adminUpdateConfirmDownloadsWhenAwaitingConfirmation() throws Exception {
+        MinecraftCommands.clearPendingConfirmationsForTest();
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("2.0.0", "url", "hash", "notes [breaking]");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.of(release));
+        when(updateService.isBreaking(release)).thenReturn(true);
+        when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.SUCCESS));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        UUID adminUuid = UUID.randomUUID();
+        when(admin.getUniqueId()).thenReturn(adminUuid);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("confirm").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("general.working"));
+        verify(updateService).download(release);
+        verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "2.0.0")));
+    }
+
+    @Test
+    void adminUpdateConfirmReportsNoConfirmationNeededWhenNoneAwaiting() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.empty());
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("confirm").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.no-confirmation-needed"));
+        verify(updateService, never()).download(any());
+    }
+
+    @Test
+    void adminUpdateStatusReportsCurrentAndAvailableReleaseWithBreakingWarning() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("2.0.0", "url", "hash", "Major overhaul [breaking]\nNew features");
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.of(release));
+        when(updateService.isBreaking(release)).thenReturn(true);
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.available", Map.of("latest", "2.0.0", "current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.breaking", Map.of("latest", "2.0.0")));
+        verify(admin).sendMessage(messages.get("updates.summary", Map.of("summary", "Major overhaul New features")));
+    }
+
+    @Test
+    void adminUpdateStatusReportsUpToDateWhenNoUpdateAvailable() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.empty());
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateStatusReportsPendingDownload() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("1.5.0", "url", "hash", "notes");
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(true);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.of(release));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "1.5.0")));
+    }
+
+    @Test
+    void adminUpdateChecksumMismatchReportsError() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("1.1.0", "url", "hash", "notes");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.isBreaking(release)).thenReturn(false);
+        when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.CHECKSUM_MISMATCH));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.checksum-mismatch"));
+    }
+
+    @Test
+    void adminUpdateDownloadFailureReportsError() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("1.1.0", "url", "hash", "notes");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.isBreaking(release)).thenReturn(false);
+        when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.NETWORK_ERROR));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.download-failed", Map.of("reason", "NETWORK_ERROR")));
     }
 
     @Test

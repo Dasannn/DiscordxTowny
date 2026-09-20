@@ -70,6 +70,10 @@ updates:
   up-to-date: "&aYou are on the latest version."
   breaking: "&c&lWARNING: &cRelease &f{latest}&c contains breaking changes. Automatic download is suppressed; confirmation is required."
   summary: "&7Changes summary: &f{summary}"
+  disabled: "&7Update checks are disabled."
+  status-current: "&7Current version: &f{current}"
+  confirm-breaking: "&cRelease &f{latest}&c contains breaking changes. Repeat the command or use &f/dt admin update confirm&c to download."
+  no-confirmation-needed: "&7No update is awaiting confirmation."
 
 admin:
   list-header: "&b{count} &7registered spaces:"

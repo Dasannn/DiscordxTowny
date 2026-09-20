@@ -13,6 +13,8 @@ import com.discordtowny.space.SpaceService;
 import com.discordtowny.space.SpaceService.CreateResult;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
+import com.discordtowny.update.DefaultUpdateService;
+import com.discordtowny.update.UpdateService;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.tree.LiteralCommandNode;
@@ -58,6 +60,7 @@ public final class MinecraftCommands {
 
     private static final ConcurrentHashMap<UUID, Instant> pendingDeletes = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Instant> pendingPurges = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, Instant> pendingUpdateConfirmations = new ConcurrentHashMap<>();
 
     private MinecraftCommands() {}
 
@@ -76,11 +79,42 @@ public final class MinecraftCommands {
             Runnable reloadAction,
             Consumer<Runnable> syncScheduler) {
         return createCommandNode(
+                linkService,
+                spaceService,
+                syncService,
+                townyFacade,
+                discordGateway,
+                null,
+                config,
+                messages,
+                consoleMessages,
+                reloadAction,
+                syncScheduler
+        );
+    }
+
+    /**
+     * Builds the Brigadier command node using static instances including UpdateService and default scheduler.
+     */
+    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
+            LinkService linkService,
+            SpaceService spaceService,
+            SyncService syncService,
+            TownyFacade townyFacade,
+            DiscordGateway discordGateway,
+            UpdateService updateService,
+            PluginConfig config,
+            Messages messages,
+            Messages consoleMessages,
+            Runnable reloadAction,
+            Consumer<Runnable> syncScheduler) {
+        return createCommandNode(
                 linkService != null ? () -> linkService : () -> null,
                 spaceService != null ? () -> spaceService : () -> null,
                 syncService != null ? () -> syncService : () -> null,
                 townyFacade != null ? () -> townyFacade : () -> null,
                 discordGateway != null ? () -> discordGateway : () -> null,
+                updateService != null ? () -> updateService : () -> null,
                 config != null ? () -> config : () -> null,
                 messages != null ? () -> messages : () -> null,
                 consoleMessages != null ? () -> consoleMessages : EnglishMessages::bundled,
@@ -98,6 +132,36 @@ public final class MinecraftCommands {
             Supplier<SyncService> syncServiceSupplier,
             Supplier<TownyFacade> townyFacadeSupplier,
             Supplier<DiscordGateway> discordGatewaySupplier,
+            Supplier<PluginConfig> configSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Runnable reloadAction,
+            Consumer<Runnable> syncScheduler) {
+        return createCommandNode(
+                linkServiceSupplier,
+                spaceServiceSupplier,
+                syncServiceSupplier,
+                townyFacadeSupplier,
+                discordGatewaySupplier,
+                () -> null,
+                configSupplier,
+                messagesSupplier,
+                consoleMessagesSupplier,
+                reloadAction,
+                syncScheduler
+        );
+    }
+
+    /**
+     * Builds the complete Brigadier command tree for /dt including UpdateService using suppliers.
+     */
+    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
+            Supplier<LinkService> linkServiceSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<SyncService> syncServiceSupplier,
+            Supplier<TownyFacade> townyFacadeSupplier,
+            Supplier<DiscordGateway> discordGatewaySupplier,
+            Supplier<UpdateService> updateServiceSupplier,
             Supplier<PluginConfig> configSupplier,
             Supplier<Messages> messagesSupplier,
             Supplier<Messages> consoleMessagesSupplier,
@@ -135,7 +199,7 @@ public final class MinecraftCommands {
 
         // 8. /dt admin ...
         dt.then(createAdminNode(linkServiceSupplier, spaceServiceSupplier, syncServiceSupplier, townyFacadeSupplier,
-                discordGatewaySupplier, configSupplier, messagesSupplier, consoleMessagesSupplier, reloadAction, scheduler));
+                discordGatewaySupplier, updateServiceSupplier, configSupplier, messagesSupplier, consoleMessagesSupplier, reloadAction, scheduler));
 
         return dt.build();
     }
@@ -638,6 +702,36 @@ public final class MinecraftCommands {
             Supplier<Messages> consoleMessagesSupplier,
             Runnable reloadAction,
             Consumer<Runnable> scheduler) {
+        return createAdminNode(
+                linkServiceSupplier,
+                spaceServiceSupplier,
+                syncServiceSupplier,
+                townyFacadeSupplier,
+                discordGatewaySupplier,
+                () -> null,
+                configSupplier,
+                messagesSupplier,
+                consoleMessagesSupplier,
+                reloadAction,
+                scheduler
+        );
+    }
+
+    /**
+     * Builds /dt admin tree including update subcommands: reload, list, info <town>, purge, unlink <jugador>, sync [town], update.
+     */
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
+            Supplier<LinkService> linkServiceSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<SyncService> syncServiceSupplier,
+            Supplier<TownyFacade> townyFacadeSupplier,
+            Supplier<DiscordGateway> discordGatewaySupplier,
+            Supplier<UpdateService> updateServiceSupplier,
+            Supplier<PluginConfig> configSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Runnable reloadAction,
+            Consumer<Runnable> scheduler) {
         LiteralArgumentBuilder<CommandSourceStack> admin = Commands.literal("admin")
                 .requires(source -> source.getSender().hasPermission("discordtowny.admin"));
 
@@ -923,7 +1017,183 @@ public final class MinecraftCommands {
                 scheduler
         ));
 
+        // /dt admin update
+        admin.then(createAdminUpdateNode(
+                updateServiceSupplier,
+                messagesSupplier,
+                consoleMessagesSupplier,
+                scheduler
+        ));
+
         return admin;
+    }
+
+    /**
+     * Builds /dt admin update subcommand tree: /dt admin update, /dt admin update status, /dt admin update confirm.
+     */
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminUpdateNode(
+            Supplier<UpdateService> updateServiceSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Consumer<Runnable> scheduler) {
+        LiteralArgumentBuilder<CommandSourceStack> update = Commands.literal("update");
+
+        // /dt admin update
+        update.executes(ctx -> {
+            CommandSender sender = ctx.getSource().getSender();
+            Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+
+            UpdateService updateService = updateServiceSupplier != null ? updateServiceSupplier.get() : null;
+            if (updateService == null) {
+                sender.sendMessage(msg.get("updates.disabled"));
+                return 1;
+            }
+
+            if (updateService.isUpdatePending()) {
+                String ver = updateService.getAvailableUpdate()
+                        .map(UpdateService.Release::version)
+                        .orElse(updateService.currentVersion());
+                sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", ver)));
+                return 1;
+            }
+
+            String senderKey = (sender instanceof Player p) ? p.getUniqueId().toString() : "console";
+            Instant pending = pendingUpdateConfirmations.get(senderKey);
+            boolean isConfirmed = pending != null && Instant.now().isBefore(pending);
+
+            sender.sendMessage(msg.get("general.working"));
+
+            updateService.checkForUpdate().thenAccept(optRelease -> {
+                scheduler.accept(() -> {
+                    if (optRelease.isEmpty()) {
+                        sender.sendMessage(msg.get("updates.up-to-date"));
+                        return;
+                    }
+
+                    UpdateService.Release release = optRelease.get();
+                    if (updateService.isBreaking(release) && !isConfirmed) {
+                        pendingUpdateConfirmations.put(senderKey, Instant.now().plusSeconds(CONFIRMATION_EXPIRY_SECONDS));
+                        sender.sendMessage(msg.get("updates.confirm-breaking", Map.of("latest", release.version())));
+                        return;
+                    }
+
+                    // Confirmed or non-breaking: proceed with download
+                    pendingUpdateConfirmations.remove(senderKey);
+                    updateService.download(release).thenAccept(result -> {
+                        scheduler.accept(() -> {
+                            switch (result) {
+                                case SUCCESS -> sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", release.version())));
+                                case CHECKSUM_MISMATCH -> sender.sendMessage(msg.get("updates.checksum-mismatch"));
+                                default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", result.name())));
+                            }
+                        });
+                    }).exceptionally(ex -> {
+                        scheduler.accept(() -> sender.sendMessage(msg.get("updates.download-failed", Map.of(
+                                "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                        ))));
+                        return null;
+                    });
+                });
+            }).exceptionally(ex -> {
+                scheduler.accept(() -> sender.sendMessage(msg.get("updates.download-failed", Map.of(
+                        "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                ))));
+                return null;
+            });
+
+            return 1;
+        });
+
+        // /dt admin update status
+        update.then(Commands.literal("status")
+                .executes(ctx -> {
+                    CommandSender sender = ctx.getSource().getSender();
+                    Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+
+                    UpdateService updateService = updateServiceSupplier != null ? updateServiceSupplier.get() : null;
+                    if (updateService == null) {
+                        sender.sendMessage(msg.get("updates.disabled"));
+                        return 1;
+                    }
+
+                    String current = updateService.currentVersion();
+                    sender.sendMessage(msg.get("updates.status-current", Map.of("current", current)));
+
+                    if (updateService.isUpdatePending()) {
+                        String ver = updateService.getAvailableUpdate()
+                                .map(UpdateService.Release::version)
+                                .orElse(current);
+                        sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", ver)));
+                    } else if (updateService.getAvailableUpdate().isPresent()) {
+                        UpdateService.Release release = updateService.getAvailableUpdate().get();
+                        sender.sendMessage(msg.get("updates.available", Map.of("latest", release.version(), "current", current)));
+                        if (updateService.isBreaking(release)) {
+                            sender.sendMessage(msg.get("updates.breaking", Map.of("latest", release.version())));
+                        }
+                        String summary = DefaultUpdateService.extractSummary(release.notes());
+                        if (!summary.isBlank()) {
+                            sender.sendMessage(msg.get("updates.summary", Map.of("summary", summary)));
+                        }
+                    } else {
+                        sender.sendMessage(msg.get("updates.up-to-date"));
+                    }
+
+                    return 1;
+                })
+        );
+
+        // /dt admin update confirm
+        update.then(Commands.literal("confirm")
+                .executes(ctx -> {
+                    CommandSender sender = ctx.getSource().getSender();
+                    Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+
+                    UpdateService updateService = updateServiceSupplier != null ? updateServiceSupplier.get() : null;
+                    if (updateService == null) {
+                        sender.sendMessage(msg.get("updates.disabled"));
+                        return 1;
+                    }
+
+                    if (updateService.isUpdatePending()) {
+                        String ver = updateService.getAvailableUpdate()
+                                .map(UpdateService.Release::version)
+                                .orElse(updateService.currentVersion());
+                        sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", ver)));
+                        return 1;
+                    }
+
+                    Optional<UpdateService.Release> opt = updateService.getAvailableUpdate();
+                    if (opt.isEmpty() || !updateService.isBreaking(opt.get())) {
+                        sender.sendMessage(msg.get("updates.no-confirmation-needed"));
+                        return 1;
+                    }
+
+                    UpdateService.Release release = opt.get();
+                    String senderKey = (sender instanceof Player p) ? p.getUniqueId().toString() : "console";
+                    pendingUpdateConfirmations.remove(senderKey);
+
+                    sender.sendMessage(msg.get("general.working"));
+
+                    updateService.download(release).thenAccept(result -> {
+                        scheduler.accept(() -> {
+                            switch (result) {
+                                case SUCCESS -> sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", release.version())));
+                                case CHECKSUM_MISMATCH -> sender.sendMessage(msg.get("updates.checksum-mismatch"));
+                                default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", result.name())));
+                            }
+                        });
+                    }).exceptionally(ex -> {
+                        scheduler.accept(() -> sender.sendMessage(msg.get("updates.download-failed", Map.of(
+                                "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                        ))));
+                        return null;
+                    });
+
+                    return 1;
+                })
+        );
+
+        return update;
     }
 
     /**
@@ -940,6 +1210,36 @@ public final class MinecraftCommands {
             Supplier<TownyFacade> townyFacadeSupplier,
             Supplier<DiscordGateway> discordGatewaySupplier,
             Runnable reloadAction) {
+        register(
+                plugin,
+                configSupplier,
+                messagesSupplier,
+                consoleMessagesSupplier,
+                linkServiceSupplier,
+                spaceServiceSupplier,
+                syncServiceSupplier,
+                townyFacadeSupplier,
+                discordGatewaySupplier,
+                () -> null,
+                reloadAction
+        );
+    }
+
+    /**
+     * Registers commands in Paper's lifecycle manager including UpdateService.
+     */
+    public static void register(
+            Plugin plugin,
+            Supplier<PluginConfig> configSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Supplier<LinkService> linkServiceSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<SyncService> syncServiceSupplier,
+            Supplier<TownyFacade> townyFacadeSupplier,
+            Supplier<DiscordGateway> discordGatewaySupplier,
+            Supplier<UpdateService> updateServiceSupplier,
+            Runnable reloadAction) {
         Consumer<Runnable> scheduler = task -> Bukkit.getScheduler().runTask(plugin, task);
         plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             Commands registrar = event.registrar();
@@ -949,6 +1249,7 @@ public final class MinecraftCommands {
                     syncServiceSupplier,
                     townyFacadeSupplier,
                     discordGatewaySupplier,
+                    updateServiceSupplier,
                     configSupplier,
                     messagesSupplier,
                     consoleMessagesSupplier,
@@ -1049,5 +1350,11 @@ public final class MinecraftCommands {
                 }
             } catch (Throwable ignored) {}
         };
+    }
+
+    static void clearPendingConfirmationsForTest() {
+        pendingDeletes.clear();
+        pendingPurges.clear();
+        pendingUpdateConfirmations.clear();
     }
 }
