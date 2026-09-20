@@ -51,13 +51,14 @@ public final class JdaDiscordGateway implements DiscordGateway {
     private static final DateTimeFormatter TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault());
 
-    private final PluginConfig config;
+    private volatile PluginConfig config;
     private final SpaceRepository spaces;
     private final SettingsRepository settings;
     private final Logger logger;
 
     private final AtomicReference<JDA> jdaRef = new AtomicReference<>();
     private volatile Guild guild;
+    private volatile JdaGuildOperationExecutor operationExecutor;
     private volatile GuildOperationQueue operationQueue;
     private volatile LogQueue logQueue;
     private volatile boolean available = false;
@@ -92,12 +93,18 @@ public final class JdaDiscordGateway implements DiscordGateway {
         this.jdaRef.set(jda);
         this.guild = guild;
         this.available = true;
+        if (guild != null) {
+            this.operationExecutor = new JdaGuildOperationExecutor(guild, config, spaces, settings, logger);
+        }
     }
 
     void initJdaForTest(JDA jda, Guild guild) {
         this.jdaRef.set(jda);
         this.guild = guild;
         this.available = true;
+        if (guild != null && this.operationExecutor == null) {
+            this.operationExecutor = new JdaGuildOperationExecutor(guild, config, spaces, settings, logger);
+        }
         PendingSlashCommandRegistration pending = pendingCommands.getAndSet(null);
         if (pending != null) {
             performSlashCommandRegistration(pending);
@@ -151,6 +158,7 @@ public final class JdaDiscordGateway implements DiscordGateway {
 
             // Operation queue with sanitizer
             var executor = new JdaGuildOperationExecutor(g, config, spaces, settings, logger);
+            this.operationExecutor = executor;
             this.operationQueue = new GuildOperationQueue(executor, logger, this::sanitizeMessage);
             operationQueue.start();
 
@@ -501,11 +509,55 @@ public final class JdaDiscordGateway implements DiscordGateway {
         return Optional.ofNullable(townyCommands);
     }
 
+    @Override
+    public synchronized void updateConfig(PluginConfig newConfig) {
+        java.util.Objects.requireNonNull(newConfig, "newConfig cannot be null");
+        PluginConfig oldConfig = this.config;
+        this.config = newConfig;
+        if (this.operationExecutor != null) {
+            this.operationExecutor.updateConfig(newConfig);
+        }
+        if (this.linkCommands != null) {
+            this.linkCommands.updateConfig(newConfig);
+        }
+        if (this.townyCommands != null) {
+            this.townyCommands.updateConfig(newConfig);
+        }
+        PluginConfig.Logging oldLogging = oldConfig != null ? oldConfig.logging() : null;
+        PluginConfig.Logging newLogging = newConfig.logging();
+        if (this.logQueue != null && newLogging != null && !java.util.Objects.equals(oldLogging, newLogging)) {
+            this.logQueue.shutdown();
+            int queueSize = newLogging.queueSize();
+            this.logQueue = new LogQueue(
+                    queueSize > 0 ? queueSize : 100,
+                    this::sendLogBatch,
+                    logger,
+                    this::sanitizeMessage);
+            this.logQueue.start(newLogging.flushInterval());
+        }
+    }
+
+    public PluginConfig getConfig() {
+        return config;
+    }
+
     public LinkSlashCommands getLinkSlashCommands() {
         return linkCommands;
     }
 
     public TownySlashCommands getTownySlashCommands() {
         return townyCommands;
+    }
+
+    JdaGuildOperationExecutor operationExecutor() {
+        return operationExecutor;
+    }
+
+    LogQueue logQueue() {
+        return logQueue;
+    }
+
+    void setLogQueueForTest(LogQueue logQueue) {
+        this.logQueue = logQueue;
     }
 }

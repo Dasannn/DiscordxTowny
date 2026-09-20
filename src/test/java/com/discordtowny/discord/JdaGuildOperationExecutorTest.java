@@ -1201,4 +1201,16 @@ class JdaGuildOperationExecutorTest {
                 && s.textChannelId().equals(Optional.of("txt-reclaimed-49"))
                 && s.voiceChannelId().equals(Optional.of("vc-50"))));
     }
+
+    @Test
+    @DisplayName("updateConfig updates internal configuration dynamically")
+    void updateConfigUpdatesInternalConfigDynamically() {
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        assertSame(config, executor.config());
+
+        PluginConfig newConfig = mock(PluginConfig.class);
+        executor.updateConfig(newConfig);
+
+        assertSame(newConfig, executor.config());
+    }
 }

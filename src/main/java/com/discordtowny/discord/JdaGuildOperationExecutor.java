@@ -44,7 +44,7 @@ import java.util.stream.Collectors;
 final class JdaGuildOperationExecutor implements GuildOperationExecutor {
 
     private final Guild guild;
-    private final PluginConfig config;
+    private volatile PluginConfig config;
     private final SpaceRepository spaces;
     private final SettingsRepository settings;
     private final Logger logger;
@@ -56,6 +56,14 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         this.spaces = spaces;
         this.settings = java.util.Objects.requireNonNull(settings, "settings cannot be null");
         this.logger = logger;
+    }
+
+    void updateConfig(PluginConfig config) {
+        this.config = java.util.Objects.requireNonNull(config, "config cannot be null");
+    }
+
+    PluginConfig config() {
+        return config;
     }
 
     @Override

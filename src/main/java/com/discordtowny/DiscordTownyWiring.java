@@ -29,6 +29,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -452,19 +453,40 @@ public final class DiscordTownyWiring {
                 throw e;
             }
 
-            this.config = newConfig;
-            this.messages = configLoader.messages();
-            this.consoleMessages = EnglishMessages.bundled();
+            Messages currentMessages = configLoader.messages();
 
             if (oldConfig != null) {
-                if (!oldConfig.discord().token().equals(newConfig.discord().token())
-                        || !oldConfig.discord().guildId().equals(newConfig.discord().guildId())) {
+                boolean discordConnected = (discordGateway != null || testDiscordGateway != null);
+                boolean discordRestartNeeded = (!oldConfig.discord().token().equals(newConfig.discord().token())
+                        || !oldConfig.discord().guildId().equals(newConfig.discord().guildId()));
+                if (discordRestartNeeded && (discordConnected || !degraded)) {
                     safeLog(Level.WARNING, "Changes to Discord bot token or guild ID require a server restart to take effect.");
+                    Messages messagesForReason = currentMessages != null ? currentMessages : this.messages;
+                    String text = messagesForReason != null
+                            ? messagesForReason.label("admin.reload-restart-discord", Map.of())
+                            : null;
+                    String reason = (text != null && !text.isBlank() && !text.startsWith("[missing message:"))
+                            ? text
+                            : "Changes to Discord bot token or guild ID require a server restart.";
+                    throw new IllegalStateException(reason);
                 }
-                if (!oldConfig.database().equals(newConfig.database())) {
+                boolean databaseRestartNeeded = !oldConfig.database().equals(newConfig.database());
+                if (databaseRestartNeeded && (storage != null || !degraded)) {
                     safeLog(Level.WARNING, "Changes to database configuration require a server restart to take effect.");
+                    Messages messagesForReason = currentMessages != null ? currentMessages : this.messages;
+                    String text = messagesForReason != null
+                            ? messagesForReason.label("admin.reload-restart-database", Map.of())
+                            : null;
+                    String reason = (text != null && !text.isBlank() && !text.startsWith("[missing message:"))
+                            ? text
+                            : "Changes to database configuration require a server restart.";
+                    throw new IllegalStateException(reason);
                 }
             }
+
+            this.config = newConfig;
+            this.messages = currentMessages;
+            this.consoleMessages = EnglishMessages.bundled();
 
             // Attempt recovery from degraded mode if storage was uninitialized
             if (degraded && storage == null) {
@@ -507,6 +529,7 @@ public final class DiscordTownyWiring {
                 }
 
                 DiscordGateway effectiveGateway = resolveEffectiveGateway();
+                effectiveGateway.updateConfig(newConfig);
 
                 if (auditSink != null) {
                     try {

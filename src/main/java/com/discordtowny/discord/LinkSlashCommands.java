@@ -41,7 +41,7 @@ import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
 public final class LinkSlashCommands extends ListenerAdapter {
 
     private final LinkService linkService;
-    private final PluginConfig config;
+    private volatile PluginConfig config;
     private final Messages messages;
     private final Clock clock;
     private final Consumer<String> warning;
@@ -67,6 +67,15 @@ public final class LinkSlashCommands extends ListenerAdapter {
 
     public LinkSlashCommands(LinkService linkService, PluginConfig config, Messages messages, Consumer<String> warning) {
         this(linkService, config, messages, Clock.systemUTC(), warning);
+    }
+
+    void updateConfig(PluginConfig config) {
+        this.config = Objects.requireNonNull(config, "config cannot be null");
+        this.channelWarningLogged.set(false);
+    }
+
+    public PluginConfig getConfig() {
+        return config;
     }
 
     /**

@@ -1502,4 +1502,50 @@ class TownySlashCommandsTest {
             verify(infoEvent, never()).deferReply(anyBoolean());
         }
     }
+
+    @Test
+    void updateConfigChangesCommandStateImmediately() {
+        when(event.getName()).thenReturn("town");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("Rome");
+        when(event.getOption("name")).thenReturn(opt);
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 10, 100.0, 1000L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+
+        // Reload disables /town in config
+        PluginConfig disabledConfig = new PluginConfig(
+                config.discord(), config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(),
+                new PluginConfig.Commands(Duration.ofSeconds(5), List.of(
+                        new PluginConfig.DiscordCommand("town", false, true)
+                ))
+        );
+        commands.updateConfig(disabledConfig);
+        assertEquals(disabledConfig, commands.getConfig());
+
+        // Forget the reads the first, still-enabled interaction legitimately made, so the
+        // check below is about what happens AFTER the reload and nothing else.
+        clearInvocations(townyFacade);
+
+        // Second interaction: /town is now disabled and replied with disabled message
+        SlashCommandInteractionEvent disabledEvent = mock(SlashCommandInteractionEvent.class);
+        when(disabledEvent.getName()).thenReturn("town");
+        ReplyCallbackAction replyDisabledAction = mock(ReplyCallbackAction.class);
+        when(disabledEvent.reply(anyString())).thenReturn(replyDisabledAction);
+        when(replyDisabledAction.setEphemeral(true)).thenReturn(replyDisabledAction);
+
+        commands.onSlashCommandInteraction(disabledEvent);
+
+        verify(disabledEvent).reply("general.command-disabled");
+        verify(replyDisabledAction).setEphemeral(true);
+        verify(replyDisabledAction).queue();
+        verify(disabledEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(townyFacade);
+    }
 }

@@ -79,7 +79,7 @@ public final class TownySlashCommands extends ListenerAdapter {
 
     private final TownyFacade townyFacade;
     private final LinkService linkService;
-    private final PluginConfig config;
+    private volatile PluginConfig config;
     private final Messages messages;
     private final Executor mainThreadExecutor;
     private final Executor asyncExecutor;
@@ -130,6 +130,14 @@ public final class TownySlashCommands extends ListenerAdapter {
             Messages messages,
             Executor mainThreadExecutor) {
         this(townyFacade, linkService, config, messages, mainThreadExecutor, ForkJoinPool.commonPool(), Clock.systemUTC());
+    }
+
+    void updateConfig(PluginConfig config) {
+        this.config = Objects.requireNonNull(config, "config cannot be null");
+    }
+
+    public PluginConfig getConfig() {
+        return config;
     }
 
     /**

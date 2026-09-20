@@ -166,6 +166,8 @@ admin:
   problem-missing-role: "Rol {id} no encontrado en Discord"
   problem-town-deleted: "Town eliminada en Towny pero el espacio sigue activo"
   problem-town-ruined: "Town en ruinas en Towny pero el espacio sigue activo"
+  reload-restart-discord: "Los cambios en el token o guild de Discord requieren reiniciar el servidor."
+  reload-restart-database: "Los cambios en la configuración de la base de datos requieren reiniciar el servidor."
 
 # Etiquetas de los embeds que el bot publica en Discord. Spec 9.1: el ajuste de
 # idioma también las cubre, por eso no van escritas en el código.
