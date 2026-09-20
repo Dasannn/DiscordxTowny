@@ -108,7 +108,7 @@ public final class LinkMinecraftCommands {
                 .then(createLinkSubcommand(linkService, config, messages, consoleMessages, scheduler))
                 .then(createUnlinkSubcommand(linkService, messages, consoleMessages, scheduler))
                 .then(Commands.literal("admin")
-                        .requires(source -> source.getSender().hasPermission("discordtowny.admin"))
+                        .requires(source -> source.getSender().hasPermission(MinecraftCommands.PERMISSION_ADMIN))
                         .then(createAdminUnlinkSubcommand(linkService, messages, consoleMessages, townyFacade, scheduler, lookup))
                 )
                 .build();
@@ -129,6 +129,10 @@ public final class LinkMinecraftCommands {
                     Messages msg = resolveMessages(sender, messages, consoleMessages);
                     if (!(sender instanceof Player player)) {
                         sender.sendMessage(msg.get("general.players-only"));
+                        return 1;
+                    }
+                    if (!player.hasPermission(MinecraftCommands.PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
                         return 1;
                     }
 
@@ -171,6 +175,10 @@ public final class LinkMinecraftCommands {
                     Messages msg = resolveMessages(sender, messages, consoleMessages);
                     if (!(sender instanceof Player player)) {
                         sender.sendMessage(msg.get("general.players-only"));
+                        return 1;
+                    }
+                    if (!player.hasPermission(MinecraftCommands.PERMISSION_USE)) {
+                        player.sendMessage(msg.get("general.no-permission"));
                         return 1;
                     }
 

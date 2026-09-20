@@ -96,6 +96,7 @@ class LinkMinecraftCommandsTest {
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(UUID.randomUUID());
         when(player.getName()).thenReturn("Steve");
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         CompletableFuture<Optional<String>> asyncFuture = new CompletableFuture<>();
         when(linkService.generateCode(any(), any())).thenReturn(asyncFuture);
@@ -129,6 +130,7 @@ class LinkMinecraftCommandsTest {
         org.bukkit.entity.Player player = mock(org.bukkit.entity.Player.class);
         when(source.getSender()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         CompletableFuture<Boolean> asyncFuture = new CompletableFuture<>();
         when(linkService.unlink(any())).thenReturn(asyncFuture);
@@ -246,5 +248,63 @@ class LinkMinecraftCommandsTest {
         verify(adminPlayer, times(1)).sendMessage(spanishWorking);
         verify(adminPlayer, times(1)).sendMessage(spanishUnlinked);
         verify(consoleMessages, never()).get(eq("admin.unlinked"), any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void linkAndUnlinkRefuseWhenMissingUsePermission() throws Exception {
+        net.kyori.adventure.text.Component noPerm = net.kyori.adventure.text.Component.text("No permission");
+        when(messages.get("general.no-permission")).thenReturn(noPerm);
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, townyFacade);
+
+        org.bukkit.entity.Player player = mock(org.bukkit.entity.Player.class);
+        when(player.hasPermission("discordtowny.use")).thenReturn(false);
+        when(player.hasPermission("discordtowny.admin")).thenReturn(false);
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        when(source.getSender()).thenReturn(player);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        // /dt link refused
+        root.getChild("link").getCommand().run(ctx);
+        verify(player, times(1)).sendMessage(noPerm);
+        verify(linkService, never()).generateCode(any(), any());
+
+        // /dt unlink refused
+        root.getChild("unlink").getCommand().run(ctx);
+        verify(player, times(2)).sendMessage(noPerm);
+        verify(linkService, never()).unlink(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void adminPermissionDoesNotGrantLinkOrUnlink() throws Exception {
+        net.kyori.adventure.text.Component noPerm = net.kyori.adventure.text.Component.text("No permission");
+        when(messages.get("general.no-permission")).thenReturn(noPerm);
+
+        LiteralCommandNode<CommandSourceStack> root = LinkMinecraftCommands.createCommandNode(
+                linkService, config, messages, townyFacade);
+
+        org.bukkit.entity.Player adminOnly = mock(org.bukkit.entity.Player.class);
+        when(adminOnly.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(adminOnly.hasPermission("discordtowny.use")).thenReturn(false);
+        CommandSourceStack source = mock(CommandSourceStack.class);
+        when(source.getSender()).thenReturn(adminOnly);
+
+        com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx = mock(com.mojang.brigadier.context.CommandContext.class);
+        when(ctx.getSource()).thenReturn(source);
+
+        // /dt link refused despite admin permission
+        root.getChild("link").getCommand().run(ctx);
+        verify(adminOnly, times(1)).sendMessage(noPerm);
+        verify(linkService, never()).generateCode(any(), any());
+
+        // /dt unlink refused despite admin permission
+        root.getChild("unlink").getCommand().run(ctx);
+        verify(adminOnly, times(2)).sendMessage(noPerm);
+        verify(linkService, never()).unlink(any());
     }
 }
