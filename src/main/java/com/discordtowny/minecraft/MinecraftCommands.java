@@ -781,11 +781,14 @@ public final class MinecraftCommands {
                         }
                         // Re-resolve messages in case reload updated texts or language
                         Messages updatedMsg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+                        updateHelpDescription(messagesSupplier);
                         sender.sendMessage(updatedMsg.get("admin.reloaded"));
                     } catch (Exception ex) {
                         LOGGER.log(Level.WARNING, "[AdminReload] Reload failed", ex);
                         sender.sendMessage(msg.get("admin.reload-failed", Map.of(
-                                "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                                "reason", ex.getMessage() != null && !ex.getMessage().isBlank()
+                                        ? ex.getMessage()
+                                        : msg.label("general.unknown")
                         )));
                     }
                     return 1;
@@ -818,10 +821,11 @@ public final class MinecraftCommands {
                             )));
 
                             DiscordGateway gw = discordGatewaySupplier.get();
+                            String naLabel = msg.label("admin.not-applicable");
                             for (TownSpace space : spaces) {
                                 String residents = (gw != null && gw.isAvailable() && space.roleId().isPresent())
                                         ? String.valueOf(gw.roleHolders(space.roleId().get()).size())
-                                        : "N/A";
+                                        : naLabel;
 
                                 String textLabel = msg.label("admin.channel-text");
                                 String voiceLabel = msg.label("admin.channel-voice");
@@ -842,7 +846,7 @@ public final class MinecraftCommands {
 
                                 sender.sendMessage(msg.get("admin.list-entry", Map.of(
                                         "town", space.townName(),
-                                        "status", space.state().name(),
+                                        "status", formatSpaceState(space.state(), msg),
                                         "channels", channels.trim(),
                                         "residents", residents,
                                         "activity", activity
@@ -917,10 +921,10 @@ public final class MinecraftCommands {
                                     DiscordGateway gw = discordGatewaySupplier.get();
                                     String residents = (gw != null && gw.isAvailable() && space.roleId().isPresent())
                                             ? String.valueOf(gw.roleHolders(space.roleId().get()).size())
-                                            : "N/A";
+                                            : msg.label("admin.not-applicable");
 
                                     sender.sendMessage(msg.get("admin.info-header", Map.of("town", space.townName())));
-                                    sender.sendMessage(msg.get("admin.info-status", Map.of("status", space.state().name())));
+                                    sender.sendMessage(msg.get("admin.info-status", Map.of("status", formatSpaceState(space.state(), msg))));
                                     sender.sendMessage(msg.get("admin.info-uuid", Map.of("uuid", space.townUuid().toString())));
                                     sender.sendMessage(msg.get("admin.info-channels", Map.of(
                                             "category", space.categoryId().orElse("-"),
@@ -1119,19 +1123,23 @@ public final class MinecraftCommands {
                             switch (result) {
                                 case SUCCESS -> sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", release.version())));
                                 case CHECKSUM_MISMATCH -> sender.sendMessage(msg.get("updates.checksum-mismatch"));
-                                default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", result.name())));
+                                default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", formatDownloadResult(result, msg))));
                             }
                         });
                     }).exceptionally(ex -> {
                         scheduler.accept(() -> sender.sendMessage(msg.get("updates.download-failed", Map.of(
-                                "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                                "reason", ex.getMessage() != null && !ex.getMessage().isBlank()
+                                        ? ex.getMessage()
+                                        : msg.label("general.unknown")
                         ))));
                         return null;
                     });
                 });
             }).exceptionally(ex -> {
                 scheduler.accept(() -> sender.sendMessage(msg.get("updates.download-failed", Map.of(
-                        "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                        "reason", ex.getMessage() != null && !ex.getMessage().isBlank()
+                                ? ex.getMessage()
+                                : msg.label("general.unknown")
                 ))));
                 return null;
             });
@@ -1214,12 +1222,14 @@ public final class MinecraftCommands {
                             switch (result) {
                                 case SUCCESS -> sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", release.version())));
                                 case CHECKSUM_MISMATCH -> sender.sendMessage(msg.get("updates.checksum-mismatch"));
-                                default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", result.name())));
+                                default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", formatDownloadResult(result, msg))));
                             }
                         });
                     }).exceptionally(ex -> {
                         scheduler.accept(() -> sender.sendMessage(msg.get("updates.download-failed", Map.of(
-                                "reason", ex.getMessage() != null ? ex.getMessage() : "unknown"
+                                "reason", ex.getMessage() != null && !ex.getMessage().isBlank()
+                                        ? ex.getMessage()
+                                        : msg.label("general.unknown")
                         ))));
                         return null;
                     });
@@ -1291,7 +1301,9 @@ public final class MinecraftCommands {
                     reloadAction,
                     scheduler
             );
-            registrar.register(node, "DiscordTowny in-game commands", List.of("discordtowny"));
+            Messages m = messagesSupplier != null ? messagesSupplier.get() : null;
+            String description = (m != null) ? m.label("help.description") : "DiscordTowny in-game commands";
+            registrar.register(node, description, List.of("discordtowny"));
         });
     }
 
@@ -1391,5 +1403,49 @@ public final class MinecraftCommands {
         pendingDeletes.clear();
         pendingPurges.clear();
         pendingUpdateConfirmations.clear();
+    }
+
+    private static String formatSpaceState(SpaceState state, Messages msg) {
+        if (state == null) {
+            return msg.label("general.unknown");
+        }
+        return switch (state) {
+            case ACTIVE -> msg.label("admin.state-active");
+            case ARCHIVED -> msg.label("admin.state-archived");
+            case INCONSISTENT -> msg.label("admin.state-inconsistent");
+        };
+    }
+
+    private static String formatDownloadResult(UpdateService.DownloadResult result, Messages msg) {
+        if (result == null) {
+            return msg.label("general.unknown");
+        }
+        return switch (result) {
+            case CHECKSUM_MISMATCH -> msg.label("updates.result-checksum-mismatch");
+            case NETWORK_ERROR -> msg.label("updates.result-network-error");
+            case TOO_LARGE -> msg.label("updates.result-too-large");
+            case IO_ERROR -> msg.label("updates.result-io-error");
+            case SUCCESS -> msg.label("updates.downloaded");
+        };
+    }
+
+    static void updateHelpDescription(Supplier<Messages> messagesSupplier) {
+        if (messagesSupplier == null) return;
+        Messages m = messagesSupplier.get();
+        if (m == null) return;
+        String desc = m.label("help.description");
+        if (desc == null || desc.isBlank()) return;
+        try {
+            if (Bukkit.getServer() != null && Bukkit.getCommandMap() != null) {
+                org.bukkit.command.Command cmd = Bukkit.getCommandMap().getCommand("dt");
+                if (cmd != null) {
+                    cmd.setDescription(desc);
+                }
+                org.bukkit.command.Command alias = Bukkit.getCommandMap().getCommand("discordtowny");
+                if (alias != null) {
+                    alias.setDescription(desc);
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 }

@@ -21,6 +21,7 @@ general:
   not-in-town: "&cYou do not belong to any town."
   not-mayor: "&cOnly the town mayor can do this."
   town-not-found: "&cThere is no town named &f{town}&c."
+  unknown: "unknown"
 
 linking:
   code-generated: "&aYour code is &f{code}&a. Type &f/link {code}&a on Discord. Expires in {minutes} minutes."
@@ -75,6 +76,10 @@ updates:
   status-current: "&7Current version: &f{current}"
   confirm-breaking: "&cRelease &f{latest}&c contains breaking changes. Repeat the command or use &f/dt admin update confirm&c to download."
   no-confirmation-needed: "&7No update is awaiting confirmation."
+  result-checksum-mismatch: "checksum mismatch"
+  result-network-error: "network error"
+  result-too-large: "file too large"
+  result-io-error: "I/O error"
 
 admin:
   list-header: "&b{count} &7registered spaces:"
@@ -101,6 +106,10 @@ admin:
   channel-text: "text"
   channel-voice: "voice"
   none: "none"
+  not-applicable: "N/A"
+  state-active: "active"
+  state-archived: "archived"
+  state-inconsistent: "inconsistent"
   problem-db-inconsistent: "Database state marked INCONSISTENT"
   problem-missing-text-channel: "Text channel {id} missing in Discord"
   problem-missing-voice-channel: "Voice channel {id} missing in Discord"
@@ -137,9 +146,20 @@ embed:
   help-intro: "Available Discord commands:"
   town-list-title: "Towns List"
   no-residents: "No residents found."
+  help-town: "• **/town [name]** — View town card (mayor, residents, bank...)"
+  help-mytown: "• **/mytown** — Shortcut to view your own town card"
+  help-res: "• **/res [resident]** — View resident card (town, rank, status...)"
+  help-residents: "• **/residents [town] [page]** — List residents and their status"
+  help-townlist: "• **/townlist [page]** — Ordered list of all towns, paginated"
+  help-link: "• **/link <code>** — Link your Minecraft account with Discord"
+  help-unlink: "• **/unlink** — Unlink your Minecraft account from Discord"
+  help-help: "• **/help** — List available Discord commands"
 
 # /dt help, listed per command so a server owner can reword any single line.
 help:
+  description: "DiscordTowny in-game commands"
+  link-description: "DiscordTowny linking commands"
+  sync-description: "DiscordTowny synchronization commands"
   header: "&bDiscordTowny &7— available commands:"
   cmd-help: "&f/dt help &7— show this list."
   cmd-link: "&f/dt link &7— get a code to link your Discord account."

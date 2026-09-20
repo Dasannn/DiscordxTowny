@@ -13,10 +13,12 @@ import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.DiscordLocale;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
@@ -138,26 +140,55 @@ public final class TownySlashCommands extends ListenerAdapter {
         List<SlashCommandData> data = new ArrayList<>();
         if (isEnabled(config, "town")) {
             data.add(Commands.slash("town", "Show town information")
-                    .addOption(OptionType.STRING, "name", "Town name (leave empty for your own town)", false));
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Muestra información de la town")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Muestra información de la town")
+                    .addOptions(new OptionData(OptionType.STRING, "name", "Town name (leave empty for your own town)", false)
+                            .setNameLocalization(DiscordLocale.SPANISH, "nombre")
+                            .setNameLocalization(DiscordLocale.SPANISH_LATAM, "nombre")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH, "Nombre de la town (dejar vacío para tu propia town)")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Nombre de la town (dejar vacío para tu propia town)")));
         }
         if (isEnabled(config, "mytown")) {
-            data.add(Commands.slash("mytown", "View your own town card"));
+            data.add(Commands.slash("mytown", "View your own town card")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Ver la ficha de tu propia town")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Ver la ficha de tu propia town"));
         }
         if (isEnabled(config, "res")) {
             data.add(Commands.slash("res", "Show resident information")
-                    .addOption(OptionType.STRING, "resident", "Resident name (leave empty for yourself)", false));
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Muestra información del resident")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Muestra información del resident")
+                    .addOptions(new OptionData(OptionType.STRING, "resident", "Resident name (leave empty for yourself)", false)
+                            .setDescriptionLocalization(DiscordLocale.SPANISH, "Nombre del resident (dejar vacío para ti mismo)")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Nombre del resident (dejar vacío para ti mismo)")));
         }
         if (isEnabled(config, "residents")) {
             data.add(Commands.slash("residents", "List residents of a town")
-                    .addOption(OptionType.STRING, "town", "Town name (leave empty for your own town)", false)
-                    .addOption(OptionType.INTEGER, "page", "Page number (default 1)", false));
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Lista los residents de una town")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Lista los residents de una town")
+                    .addOptions(
+                            new OptionData(OptionType.STRING, "town", "Town name (leave empty for your own town)", false)
+                                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Nombre de la town (dejar vacío para tu propia town)")
+                                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Nombre de la town (dejar vacío para tu propia town)"),
+                            new OptionData(OptionType.INTEGER, "page", "Page number (default 1)", false)
+                                    .setNameLocalization(DiscordLocale.SPANISH, "pagina")
+                                    .setNameLocalization(DiscordLocale.SPANISH_LATAM, "pagina")
+                                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Número de página (por defecto 1)")
+                                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Número de página (por defecto 1)")));
         }
         if (isEnabled(config, "townlist")) {
             data.add(Commands.slash("townlist", "List all towns on the server")
-                    .addOption(OptionType.INTEGER, "page", "Page number (default 1)", false));
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Lista todas las towns del servidor")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Lista todas las towns del servidor")
+                    .addOptions(new OptionData(OptionType.INTEGER, "page", "Page number (default 1)", false)
+                            .setNameLocalization(DiscordLocale.SPANISH, "pagina")
+                            .setNameLocalization(DiscordLocale.SPANISH_LATAM, "pagina")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH, "Número de página (por defecto 1)")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Número de página (por defecto 1)")));
         }
         if (isEnabled(config, "help")) {
-            data.add(Commands.slash("help", "List available Discord commands"));
+            data.add(Commands.slash("help", "List available Discord commands")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Muestra los comandos de Discord disponibles")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Muestra los comandos de Discord disponibles"));
         }
         return data;
     }
@@ -814,28 +845,28 @@ public final class TownySlashCommands extends ListenerAdapter {
         StringBuilder sb = new StringBuilder();
         sb.append(messages != null ? messages.label("embed.help-intro", Map.of()) : "Available Discord commands:").append("\n\n");
         if (isEnabled(config, "town")) {
-            sb.append("• **/town [name]** — View town card (mayor, residents, bank...)\n");
+            sb.append(messages != null ? messages.label("embed.help-town", Map.of()) : "• **/town [name]** — View town card (mayor, residents, bank...)").append("\n");
         }
         if (isEnabled(config, "mytown")) {
-            sb.append("• **/mytown** — Shortcut to view your own town card\n");
+            sb.append(messages != null ? messages.label("embed.help-mytown", Map.of()) : "• **/mytown** — Shortcut to view your own town card").append("\n");
         }
         if (isEnabled(config, "res")) {
-            sb.append("• **/res [resident]** — View resident card (town, rank, status...)\n");
+            sb.append(messages != null ? messages.label("embed.help-res", Map.of()) : "• **/res [resident]** — View resident card (town, rank, status...)").append("\n");
         }
         if (isEnabled(config, "residents")) {
-            sb.append("• **/residents [town] [page]** — List residents and their status\n");
+            sb.append(messages != null ? messages.label("embed.help-residents", Map.of()) : "• **/residents [town] [page]** — List residents and their status").append("\n");
         }
         if (isEnabled(config, "townlist")) {
-            sb.append("• **/townlist [page]** — Ordered list of all towns, paginated\n");
+            sb.append(messages != null ? messages.label("embed.help-townlist", Map.of()) : "• **/townlist [page]** — Ordered list of all towns, paginated").append("\n");
         }
         if (isEnabled(config, "link")) {
-            sb.append("• **/link <code>** — Link your Minecraft account with Discord\n");
+            sb.append(messages != null ? messages.label("embed.help-link", Map.of()) : "• **/link <code>** — Link your Minecraft account with Discord").append("\n");
         }
         if (isEnabled(config, "unlink")) {
-            sb.append("• **/unlink** — Unlink your Minecraft account from Discord\n");
+            sb.append(messages != null ? messages.label("embed.help-unlink", Map.of()) : "• **/unlink** — Unlink your Minecraft account from Discord").append("\n");
         }
         if (isEnabled(config, "help")) {
-            sb.append("• **/help** — List available Discord commands\n");
+            sb.append(messages != null ? messages.label("embed.help-help", Map.of()) : "• **/help** — List available Discord commands").append("\n");
         }
         embed.setDescription(sb.toString().trim());
         return embed.build();

@@ -22,6 +22,7 @@ import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import net.kyori.adventure.text.Component;
+import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -97,7 +98,17 @@ class MinecraftCommandsTest {
         when(messages.label(any(), any())).thenAnswer(inv -> "ES:" + inv.getArgument(0));
         when(messages.label(eq("admin.channel-text"))).thenReturn("texto");
         when(messages.label(eq("admin.channel-voice"))).thenReturn("voz");
-        when(messages.label(eq("admin.none"))).thenReturn("ninguno");
+        when(messages.label(eq("admin.none"))).thenReturn("sin registrar");
+        when(messages.label(eq("admin.not-applicable"))).thenReturn("N/A");
+        when(messages.label(eq("admin.state-active"))).thenReturn("activo");
+        when(messages.label(eq("admin.state-archived"))).thenReturn("archivado");
+        when(messages.label(eq("admin.state-inconsistent"))).thenReturn("inconsistente");
+        when(messages.label(eq("general.unknown"))).thenReturn("desconocido");
+        when(messages.label(eq("updates.result-network-error"))).thenReturn("error de red");
+        when(messages.label(eq("updates.result-checksum-mismatch"))).thenReturn("error de checksum");
+        when(messages.label(eq("updates.result-too-large"))).thenReturn("archivo demasiado grande");
+        when(messages.label(eq("updates.result-io-error"))).thenReturn("error de entrada/salida");
+        when(messages.label(eq("help.description"))).thenReturn("Comandos de DiscordTowny dentro del juego");
         when(messages.label(eq("space.internal-error"))).thenReturn("Error interno");
 
         when(consoleMessages.get(any())).thenAnswer(inv -> Component.text("EN:" + inv.getArgument(0)));
@@ -107,6 +118,16 @@ class MinecraftCommandsTest {
         when(consoleMessages.label(eq("admin.channel-text"))).thenReturn("text");
         when(consoleMessages.label(eq("admin.channel-voice"))).thenReturn("voice");
         when(consoleMessages.label(eq("admin.none"))).thenReturn("none");
+        when(consoleMessages.label(eq("admin.not-applicable"))).thenReturn("N/A");
+        when(consoleMessages.label(eq("admin.state-active"))).thenReturn("active");
+        when(consoleMessages.label(eq("admin.state-archived"))).thenReturn("archived");
+        when(consoleMessages.label(eq("admin.state-inconsistent"))).thenReturn("inconsistent");
+        when(consoleMessages.label(eq("general.unknown"))).thenReturn("unknown");
+        when(consoleMessages.label(eq("updates.result-network-error"))).thenReturn("network error");
+        when(consoleMessages.label(eq("updates.result-checksum-mismatch"))).thenReturn("checksum mismatch");
+        when(consoleMessages.label(eq("updates.result-too-large"))).thenReturn("file too large");
+        when(consoleMessages.label(eq("updates.result-io-error"))).thenReturn("I/O error");
+        when(consoleMessages.label(eq("help.description"))).thenReturn("DiscordTowny in-game commands");
         when(consoleMessages.label(eq("space.internal-error"))).thenReturn("Internal error");
 
         PluginConfig.Linking linking = new PluginConfig.Linking(
@@ -653,10 +674,10 @@ class MinecraftCommandsTest {
         verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
         verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
                 "town", "Rome",
-                "status", "ACTIVE",
+                "status", "activo",
                 "channels", "texto voz",
                 "residents", "2",
-                "activity", "ninguno"
+                "activity", "sin registrar"
         )));
     }
 
@@ -679,7 +700,7 @@ class MinecraftCommandsTest {
         verify(console).sendMessage(consoleMessages.get("admin.list-header", Map.of("count", "1")));
         verify(console).sendMessage(consoleMessages.get("admin.list-entry", Map.of(
                 "town", "Rome",
-                "status", "ACTIVE",
+                "status", "active",
                 "channels", "text voice",
                 "residents", "2",
                 "activity", "none"
@@ -732,7 +753,7 @@ class MinecraftCommandsTest {
         root.getChild("admin").getChild("info").getChild("town").getCommand().run(ctx);
 
         verify(admin).sendMessage(messages.get("admin.info-header", Map.of("town", "Rome")));
-        verify(admin).sendMessage(messages.get("admin.info-status", Map.of("status", "INCONSISTENT")));
+        verify(admin).sendMessage(messages.get("admin.info-status", Map.of("status", "inconsistente")));
         verify(admin).sendMessage(messages.get("admin.info-inconsistencies-header", Map.of("count", "3")));
     }
 
@@ -1263,7 +1284,96 @@ class MinecraftCommandsTest {
         CommandContext<CommandSourceStack> ctx = createContext(admin);
         root.getChild("admin").getChild("update").getCommand().run(ctx);
 
-        verify(admin).sendMessage(messages.get("updates.download-failed", Map.of("reason", "NETWORK_ERROR")));
+        verify(admin).sendMessage(messages.get("updates.download-failed", Map.of("reason", "error de red")));
+    }
+
+    @Test
+    void adminListWithMissingRoleCountUsesLocalizedNotApplicable() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        TownSpace space = new TownSpace(UUID.randomUUID(), "Rome", Optional.of("cat"),
+                Optional.of("txt"), Optional.of("vc"), Optional.empty(),
+                SpaceState.ACTIVE, Instant.now(), Optional.empty(), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(space)));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Rome",
+                "status", "activo",
+                "channels", "texto voz",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+    }
+
+    @Test
+    void adminReloadWithNullMessageUsesLocalizedUnknownReason() throws Exception {
+        Runnable failingReload = () -> {
+            throw new RuntimeException((String) null);
+        };
+        LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
+                linkService, spaceService, syncService, townyFacade, discordGateway,
+                config, messages, consoleMessages, failingReload, Runnable::run
+        );
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("reload").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("admin.reload-failed", Map.of("reason", "desconocido")));
+    }
+
+    @Test
+    void adminReloadForConsoleWithNullMessageUsesEnglishUnknownReason() throws Exception {
+        Runnable failingReload = () -> {
+            throw new RuntimeException((String) null);
+        };
+        LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
+                linkService, spaceService, syncService, townyFacade, discordGateway,
+                config, messages, consoleMessages, failingReload, Runnable::run
+        );
+        ConsoleCommandSender console = mock(ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        CommandContext<CommandSourceStack> ctx = createContext(console);
+        root.getChild("admin").getChild("reload").getCommand().run(ctx);
+
+        verify(console).sendMessage(consoleMessages.get("admin.reload-failed", Map.of("reason", "unknown")));
+    }
+
+    @Test
+    void adminReloadUpdatesBukkitCommandHelpDescription() throws Exception {
+        org.bukkit.Server server = mock(org.bukkit.Server.class);
+        org.bukkit.command.CommandMap commandMap = mock(org.bukkit.command.CommandMap.class);
+        org.bukkit.command.Command dtCommand = mock(org.bukkit.command.Command.class);
+        org.bukkit.command.Command aliasCommand = mock(org.bukkit.command.Command.class);
+
+        when(server.getCommandMap()).thenReturn(commandMap);
+        when(commandMap.getCommand("dt")).thenReturn(dtCommand);
+        when(commandMap.getCommand("discordtowny")).thenReturn(aliasCommand);
+
+        try (var bukkitMock = mockStatic(Bukkit.class)) {
+            bukkitMock.when(Bukkit::getServer).thenReturn(server);
+            bukkitMock.when(Bukkit::getCommandMap).thenReturn(commandMap);
+
+            LiteralCommandNode<CommandSourceStack> root = createRoot();
+            Player admin = mock(Player.class);
+            when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+            when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+            CommandContext<CommandSourceStack> ctx = createContext(admin);
+            root.getChild("admin").getChild("reload").getCommand().run(ctx);
+
+            verify(dtCommand).setDescription("Comandos de DiscordTowny dentro del juego");
+            verify(aliasCommand).setDescription("Comandos de DiscordTowny dentro del juego");
+        }
     }
 
     @Test
