@@ -111,8 +111,8 @@ class DiscordTownyWiringAuditTest {
     }
 
     @Test
-    @DisplayName("Wiring records no audit row on DISCORD_UNAVAILABLE space creation, but composite audit sink persists direct events with observable completion")
-    void wiringWritesAuditRowToDatabaseWithUnconfiguredLogChannel() {
+    @DisplayName("Wiring records refusal audit row on DISCORD_UNAVAILABLE space creation, and composite audit sink persists direct events with observable completion")
+    void wiringWritesAuditRowToDatabaseWithUnconfiguredLogChannel() throws Exception {
         YamlConfigLoader loader = mock(YamlConfigLoader.class);
         when(loader.load()).thenReturn(config);
         when(loader.messages()).thenReturn(mock(Messages.class));
@@ -133,15 +133,28 @@ class DiscordTownyWiringAuditTest {
         SpaceRequest req = new SpaceRequest(
                 townUuid, "Solitude", UUID.randomUUID(), List.of("res1", "res2"), "mayor-user-id", 2);
 
-        // Path 1: When Discord is unavailable, DefaultSpaceService refuses creation at the
-        // pre-admission check (!isDiscordReady()) before an operation is submitted to Discord.
-        // Because creation fails admission, no audit event is emitted on this path.
+        // Path 1: When Discord is unavailable, DefaultSpaceService records an audit row for the admission refusal
+        // before returning DISCORD_UNAVAILABLE.
         SpaceService.CreateResult result = wiring.getSpaceService().create(req).join();
         assertEquals(SpaceService.CreateResult.DISCORD_UNAVAILABLE, result);
 
+        // create(...).join() only guarantees the event was DISPATCHED; the sink writes it
+        // asynchronously. The audit executor is a single thread, so awaiting an event queued
+        // after the refusal guarantees the refusal was written first - no sleeping, no polling.
+        wiring.getAuditSink().record(new AuditEvent(
+                Instant.now(), AuditEvent.Severity.INFO, "test", "barrier",
+                "barrier-target", true, Optional.empty())).get(5, TimeUnit.SECONDS);
+
         List<AuditEvent> events = storage.audit().recent("Solitude", 10);
-        assertTrue(events.isEmpty(),
-                "dt_audit_log must contain no row: admission refusal when Discord is down occurs before audit event emission");
+        assertEquals(1, events.size(),
+                "dt_audit_log must contain refusal row: admission refusal when Discord is down must be audited");
+        AuditEvent refusal = events.get(0);
+        assertEquals("space_create", refusal.action());
+        assertEquals("Solitude", refusal.target());
+        assertEquals("mayor-user-id", refusal.actor());
+        assertFalse(refusal.success(), "Refusal event must indicate failure");
+        assertEquals(Optional.of("Discord gateway is unavailable"), refusal.detail(),
+                "Refusal event must carry failure reason");
 
         // Path 2: Verify that the wiring's composite audit sink itself remains functional while Discord is down.
         // Direct audit events delivered to the sink return an observable completion future that guarantees persistence.
@@ -154,10 +167,11 @@ class DiscordTownyWiringAuditTest {
                 "Audit write completion future must complete without error");
 
         List<AuditEvent> recordedEvents = storage.audit().recent("Solitude", 10);
-        assertEquals(1, recordedEvents.size(),
+        assertEquals(2, recordedEvents.size(),
                 "Direct audit events sent to the sink must be persisted to dt_audit_log even when Discord is unavailable");
         assertEquals("space_create_rejected", recordedEvents.get(0).action());
         assertEquals("Solitude", recordedEvents.get(0).target());
+        assertEquals("space_create", recordedEvents.get(1).action());
     }
 
     @Test

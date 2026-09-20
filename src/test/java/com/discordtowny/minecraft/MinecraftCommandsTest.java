@@ -441,15 +441,28 @@ class MinecraftCommandsTest {
         when(player.hasPermission("discordtowny.use")).thenReturn(true);
 
         TownSnapshot town = mock(TownSnapshot.class);
+        when(town.uuid()).thenReturn(UUID.randomUUID());
+        when(town.name()).thenReturn("Rome");
+        when(town.mayorUuid()).thenReturn(uuid);
         when(town.isMayor(uuid)).thenReturn(true);
+        when(town.residentCount()).thenReturn(5);
+        when(town.residentUuids()).thenReturn(List.of(uuid));
         when(townyFacade.townOf(uuid)).thenReturn(Optional.of(town));
         when(discordGateway.isAvailable()).thenReturn(false);
+
+        AccountLink link = new AccountLink(uuid, "discord_123", Instant.now(), "Steve");
+        when(linkService.findByUuid(uuid)).thenReturn(CompletableFuture.completedFuture(Optional.of(link)));
+        when(spaceService.create(any()))
+                .thenReturn(CompletableFuture.completedFuture(SpaceService.CreateResult.DISCORD_UNAVAILABLE));
 
         CommandContext<CommandSourceStack> ctx = createContext(player);
         root.getChild("create").getCommand().run(ctx);
 
         verify(player).sendMessage(messages.get("general.discord-unavailable"));
-        verify(spaceService, never()).create(any());
+        // The command must NOT refuse on its own: the service makes the admission decision and
+        // records the refusal in the audit log. A second check here would refuse before the
+        // service was reached, and nothing would be written to dt_audit_log.
+        verify(spaceService).create(any());
     }
 
     @Test
@@ -922,7 +935,7 @@ class MinecraftCommandsTest {
         when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
 
         SyncService.SyncReport report = new SyncService.SyncReport(
-                1, 1, 0, 2, 1, List.of("Discord role missing"),
+                1, 1, 0, 2, 1, List.of(new SyncService.SyncReport.Problem("sync.problem-missing-role", Map.of("town", "test-town"))),
                 PluginConfig.Sync.Mode.REPAIR, 0, 0
         );
         when(syncService.syncTown(townUuid)).thenReturn(CompletableFuture.completedFuture(report));
@@ -933,7 +946,7 @@ class MinecraftCommandsTest {
         verify(mayor).sendMessage(messages.get("sync.started"));
         verify(mayor).sendMessage(messages.get("sync.repaired", Map.of("count", "1", "granted", "1", "revoked", "0")));
         verify(mayor).sendMessage(messages.get("sync.problems-header", Map.of("count", "1")));
-        verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "Discord role missing")));
+        verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "ES:sync.problem-missing-role")));
         verify(mayor, never()).sendMessage(messages.get("sync.finished"));
     }
 
@@ -964,7 +977,7 @@ class MinecraftCommandsTest {
         when(townyFacade.townOf(mayorUuid)).thenReturn(Optional.of(town));
 
         SyncService.SyncReport report = new SyncService.SyncReport(
-                1, 0, 0, 1, 0, List.of("Role discord_role missing"),
+                1, 0, 0, 1, 0, List.of(new SyncService.SyncReport.Problem("sync.problem-missing-role", Map.of("town", "test-town"))),
                 PluginConfig.Sync.Mode.REPORT, 1, 0
         );
         when(syncService.syncTown(townUuid)).thenReturn(CompletableFuture.completedFuture(report));
@@ -976,7 +989,7 @@ class MinecraftCommandsTest {
         verify(mayor).sendMessage(messages.get("sync.report-found", Map.of("count", "1")));
         verify(mayor).sendMessage(messages.get("sync.report-pending", Map.of("granted", "1", "revoked", "0")));
         verify(mayor).sendMessage(messages.get("sync.problems-header", Map.of("count", "1")));
-        verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "Role discord_role missing")));
+        verify(mayor).sendMessage(messages.get("sync.problem-entry", Map.of("problem", "ES:sync.problem-missing-role")));
         // No matcher here: mixing any() with a literal in the same call corrupts
         // Mockito's matcher stack. The rendered message is predictable, so demand it.
         verify(mayor, never()).sendMessage(messages.get("sync.report-clean", Map.of("spaces", "1")));

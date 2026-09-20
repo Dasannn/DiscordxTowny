@@ -516,11 +516,12 @@ public final class MinecraftCommands {
                         return 1;
                     }
 
-                    DiscordGateway gateway = discordGatewaySupplier.get();
-                    if (gateway == null || !gateway.isAvailable()) {
-                        player.sendMessage(msg.get("general.discord-unavailable"));
-                        return 1;
-                    }
+                    // The gateway is deliberately NOT checked here. SpaceService.create makes
+                    // the same admission decision, returns DISCORD_UNAVAILABLE, and records the
+                    // refusal in the audit log. Checking here as well refused before the service
+                    // was ever reached, so the one run an operator most needs in dt_audit_log -
+                    // someone trying to create a space while the bot is down - left no trace.
+                    // One admission point, one audit.
 
                     SpaceService spaceService = spaceServiceSupplier.get();
                     LinkService linkService = linkServiceSupplier.get();
@@ -1343,9 +1344,9 @@ public final class MinecraftCommands {
                 sender.sendMessage(messages.get("sync.report-clean", Map.of("spaces", String.valueOf(report.spacesChecked()))));
             }
 
-            if (!report.problems().isEmpty()) {
-                sender.sendMessage(messages.get("sync.problems-header", Map.of("count", String.valueOf(report.problems().size()))));
-                for (String problem : report.problems()) {
+            if (!report.problemKeys().isEmpty()) {
+                sender.sendMessage(messages.get("sync.problems-header", Map.of("count", String.valueOf(report.problemKeys().size()))));
+                for (String problem : report.problems(messages)) {
                     sender.sendMessage(messages.get("sync.problem-entry", Map.of("problem", problem)));
                 }
             }
@@ -1361,9 +1362,9 @@ public final class MinecraftCommands {
             )));
         }
 
-        if (!report.problems().isEmpty()) {
-            sender.sendMessage(messages.get("sync.problems-header", Map.of("count", String.valueOf(report.problems().size()))));
-            for (String problem : report.problems()) {
+        if (!report.problemKeys().isEmpty()) {
+            sender.sendMessage(messages.get("sync.problems-header", Map.of("count", String.valueOf(report.problemKeys().size()))));
+            for (String problem : report.problems(messages)) {
                 sender.sendMessage(messages.get("sync.problem-entry", Map.of("problem", problem)));
             }
         } else if (report.inconsistenciesFound() > report.inconsistenciesRepaired()) {

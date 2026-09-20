@@ -1,6 +1,9 @@
 package com.discordtowny.sync;
 
+import com.discordtowny.config.Messages;
 import com.discordtowny.config.PluginConfig;
+import com.discordtowny.config.YamlMessages;
+import org.bukkit.configuration.file.YamlConfiguration;
 import com.discordtowny.discord.DiscordGateway;
 import com.discordtowny.discord.GuildOperation;
 import com.discordtowny.discord.OperationOutcome;
@@ -24,6 +27,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -31,6 +37,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -74,9 +81,13 @@ class DefaultSyncServiceTest {
     private DiscordGateway discordGateway;
     private TownyFacade townyFacade;
     private DefaultSyncService service;
+    private Messages enMessages;
+    private Messages esMessages;
 
     @BeforeEach
     void setUp() throws IOException {
+        enMessages = loadMessages("/messages_en.yml");
+        esMessages = loadMessages("/messages_es.yml");
         dbFile = Files.createTempFile("discordtowny-synctest-", ".db");
 
         PluginConfig.Database dbConfig = new PluginConfig.Database(
@@ -149,6 +160,26 @@ class DefaultSyncServiceTest {
             Files.deleteIfExists(dbFile);
         } catch (IOException ignored) {
         }
+    }
+
+    private static Messages loadMessages(String resourceName) {
+        java.util.Map<String, String> map = new java.util.HashMap<>();
+        try (InputStream in = DefaultSyncServiceTest.class.getResourceAsStream(resourceName)) {
+            if (in != null) {
+                try (InputStreamReader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+                    YamlConfiguration yaml = new YamlConfiguration();
+                    yaml.load(reader);
+                    for (String key : yaml.getKeys(true)) {
+                        if (yaml.isString(key)) {
+                            map.put(key, yaml.getString(key));
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load test messages from " + resourceName, e);
+        }
+        return new YamlMessages(map, s -> {});
     }
 
     // --- Required Test 1: Member holding unjustified town role loses it and keeps unmanaged roles ---
@@ -405,7 +436,7 @@ class DefaultSyncServiceTest {
                 "Must not grant any roles in REPORT mode");
         assertEquals(0, report.rolesRevoked(),
                 "Must not revoke any roles in REPORT mode");
-        assertFalse(report.problems().isEmpty(),
+        assertFalse(report.problemDetails().isEmpty(),
                 "Must report problems in REPORT mode");
 
         // 2. Assert ZERO Discord operations were submitted
@@ -589,7 +620,7 @@ class DefaultSyncServiceTest {
                 "In repair mode, resident role adjustments increment inconsistenciesRepaired rather than inconsistenciesFound");
         assertEquals(2, report.inconsistenciesRepaired(),
                 "Real count of repairs performed");
-        assertTrue(report.problems().isEmpty());
+        assertTrue(report.problemDetails().isEmpty());
 
         // Assert actual operations submitted to Discord
         ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
@@ -721,8 +752,14 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(0, report.inconsistenciesRepaired());
 
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains(resDiscordId) && p.contains("missing roles")),
-                "Problems list must explicitly mention missing role for Bob");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-resident-missing-roles".equals(p.key())
+                && resDiscordId.equals(p.placeholders().get("discord"))),
+                "Problems list must explicitly mention missing role for Bob as a structured problem");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains(resDiscordId) && p.contains("missing roles")),
+                "English rendered problem must explicitly mention missing role for Bob");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains(resDiscordId) && p.contains("roles faltantes")),
+                "Spanish rendered problem must explicitly mention missing role for Bob");
 
         verify(discordGateway, never()).submit(any());
     }
@@ -1119,7 +1156,7 @@ class DefaultSyncServiceTest {
         // Alice was not revoked from unjustified holders check
         assertEquals(0, report.inconsistenciesFound(),
                 "Legitimate resident holding the role is not an inconsistency");
-        assertTrue(report.problems().isEmpty(),
+        assertTrue(report.problemDetails().isEmpty(),
                 "No problems should be reported for legitimate resident");
     }
 
@@ -1183,10 +1220,17 @@ class DefaultSyncServiceTest {
                 "Report mode must not repair anything");
 
         // 3. Assert problems list mentions the intruder and town
-        assertFalse(report.problems().isEmpty(),
+        assertFalse(report.problemDetails().isEmpty(),
                 "Report mode must list the problem");
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains(intruderDiscordId) && p.contains("TownReport")),
-                "Problems list must name the intruder and town");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-member-unjustified-town-role".equals(p.key())
+                && intruderDiscordId.equals(p.placeholders().get("discord"))
+                && "TownReport".equals(p.placeholders().get("town"))),
+                "Problem details must carry structured key and placeholders for unjustified town role");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains(intruderDiscordId) && p.contains("TownReport")),
+                "English rendered problem must name the intruder and town");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains(intruderDiscordId) && p.contains("TownReport")),
+                "Spanish rendered problem must name the intruder and town");
     }
 
     @Test
@@ -1218,9 +1262,17 @@ class DefaultSyncServiceTest {
         // Must be reported as a problem
         assertTrue(reportEmpty.inconsistenciesFound() >= 1,
                 "Empty holder lookup must be recorded as an inconsistency");
-        assertTrue(reportEmpty.problems().stream().anyMatch(p ->
+        assertTrue(reportEmpty.problemDetails().stream().anyMatch(p ->
+                "sync.problem-role-holders-empty-town".equals(p.key())
+                && "TownCheck".equals(p.placeholders().get("town"))
+                && townRole.equals(p.placeholders().get("role"))),
+                "Problem description must carry structured key for empty town role holders");
+        assertTrue(reportEmpty.problems(enMessages).stream().anyMatch(p ->
                 p.toLowerCase().contains("empty") || p.toLowerCase().contains("cache")),
-                "Problem description must report the empty lookup / cold cache");
+                "English rendered problem must report the empty lookup / cold cache");
+        assertTrue(reportEmpty.problems(esMessages).stream().anyMatch(p ->
+                p.toLowerCase().contains("caché") || p.toLowerCase().contains("omiten")),
+                "Spanish rendered problem must report the cold cache / skipped revocations");
         // Zero mutations submitted for revoking
         verify(discordGateway, never()).submit(any());
 
@@ -1248,9 +1300,18 @@ class DefaultSyncServiceTest {
         // Must be reported as a problem
         assertTrue(reportFailed.inconsistenciesFound() >= 1,
                 "Failed holder lookup must be recorded as an inconsistency");
-        assertTrue(reportFailed.problems().stream().anyMatch(p ->
+        assertTrue(reportFailed.problemDetails().stream().anyMatch(p ->
+                "sync.problem-lookup-role-holders-failed".equals(p.key())
+                && "TownCheck".equals(p.placeholders().get("town"))
+                && townRole.equals(p.placeholders().get("role"))
+                && p.placeholders().get("error").contains("disconnected")),
+                "Problem description must carry structured key and error detail for failed role lookup");
+        assertTrue(reportFailed.problems(enMessages).stream().anyMatch(p ->
                 p.toLowerCase().contains("failed") || p.toLowerCase().contains("disconnected")),
-                "Problem description must report the failed lookup");
+                "English rendered problem must report the failed lookup");
+        assertTrue(reportFailed.problems(esMessages).stream().anyMatch(p ->
+                p.toLowerCase().contains("error") && p.toLowerCase().contains("desconectado")),
+                "Spanish rendered problem must report the failed lookup in Spanish");
         // Zero mutations submitted for revoking
         verify(discordGateway, never()).submit(any());
     }
@@ -1281,8 +1342,14 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.spacesChecked());
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(1, report.inconsistenciesRepaired());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("missing required channels")),
-                "Problem must report missing required channels");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-missing-channels".equals(p.key())
+                && "TownOne".equals(p.placeholders().get("town"))),
+                "Problem must carry structured key for missing channels");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("missing required channels")),
+                "English problem must report missing required channels");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("canales requeridos")),
+                "Spanish problem must report missing required channels in Spanish");
 
         ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
         verify(discordGateway).submit(captor.capture());
@@ -1324,7 +1391,12 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.spacesChecked());
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(0, report.inconsistenciesRepaired());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("missing required channels")));
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-missing-channels".equals(p.key())
+                && "TownOne".equals(p.placeholders().get("town"))),
+                "Problem must carry structured key for missing channels");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("missing required channels")));
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("canales requeridos")));
 
         verify(discordGateway, never()).submit(any());
         verify(spySpaceRepository, never()).save(any());
@@ -1354,8 +1426,14 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.spacesChecked());
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(1, report.inconsistenciesRepaired());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("deleted/missing role")),
-                "Problem must report deleted/missing role");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-missing-role".equals(p.key())
+                && "TownOne".equals(p.placeholders().get("town"))),
+                "Problem must carry structured key for deleted/missing role");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("deleted/missing role")),
+                "English problem must report deleted/missing role");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("eliminado/faltante")),
+                "Spanish problem must report deleted/missing role in Spanish");
 
         verify(discordGateway).submit(any(GuildOperation.CreateSpace.class));
     }
@@ -1384,8 +1462,20 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.spacesChecked());
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(0, report.inconsistenciesRepaired());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("Failed to verify Discord resources")),
-                "Problem must report failure to verify resources rather than claiming resource deletion");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-verify-resources-failed".equals(p.key())
+                && "TownOne".equals(p.placeholders().get("town"))
+                && p.placeholders().get("error").contains("discord-unavailable")),
+                "Problem must carry structured key and error detail for failed resource verification");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p ->
+                p.contains("Failed to verify Discord resources") && p.contains("Discord is unavailable")),
+                "English problem must report failure to verify resources with localized cause");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p ->
+                p.contains("Error al verificar recursos de Discord") && p.contains("Discord no está disponible")),
+                "Spanish problem must report failure to verify resources in Spanish without English leak");
+        assertFalse(report.problems(esMessages).stream().anyMatch(p ->
+                p.contains("Discord is unavailable") || p.contains("Discord gateway unavailable")),
+                "Spanish problem must not leak English exception text");
 
         verify(discordGateway, never()).submit(any(GuildOperation.CreateSpace.class));
     }
@@ -1512,8 +1602,15 @@ class DefaultSyncServiceTest {
 
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(0, report.inconsistenciesRepaired());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("Towny read timed out")),
-                "Problem must report the Towny read failure");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-towny-read-failed-town".equals(p.key())
+                && townUuid.toString().equals(p.placeholders().get("town"))
+                && p.placeholders().get("error").contains("timeout")),
+                "Problem must carry structured key and error detail for Towny read failure");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("timed out")),
+                "English problem must report the Towny read failure");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("Error al leer la town") && p.contains("tiempo de espera agotado")),
+                "Spanish problem must report the Towny read failure in Spanish");
 
         verify(discordGateway, never()).submit(any());
         verify(spySpaceRepository, never()).updateState(any(), any());
@@ -1549,8 +1646,15 @@ class DefaultSyncServiceTest {
         SyncReport report = service.reconcileAll().join();
 
         assertEquals(2, report.spacesChecked());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("Towny read failed for space")),
-                "Problem must report the failed read for space 1");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-towny-read-failed-space".equals(p.key())
+                && "TownFailingRead".equals(p.placeholders().get("town"))
+                && town1Uuid.toString().equals(p.placeholders().get("uuid"))),
+                "Problem must carry structured key for failed Towny read for space");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("Towny read failed for space")),
+                "English problem must report the failed read for space 1");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("Error de lectura de Towny para el espacio")),
+                "Spanish problem must report the failed read for space 1 in Spanish");
 
         verify(discordGateway, never()).submit(any(GuildOperation.ArchiveSpace.class));
         assertEquals(SpaceState.ACTIVE, spaceRepository.findByTownUuid(town1Uuid).orElseThrow().state(),
@@ -1602,8 +1706,14 @@ class DefaultSyncServiceTest {
         assertEquals(1, report.spacesChecked());
         assertEquals(1, report.inconsistenciesFound());
         assertEquals(1, report.inconsistenciesRepaired());
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("is alive but space is ARCHIVED")),
-                "Problem must report that alive town had an ARCHIVED space");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-town-alive-space-archived".equals(p.key())
+                && "RevivedTown".equals(p.placeholders().get("town"))),
+                "Problem must carry structured key for alive town with ARCHIVED space");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("is alive but space is ARCHIVED")),
+                "English problem must report that alive town had an ARCHIVED space");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("está viva pero su espacio está archivado")),
+                "Spanish problem must report restoration in Spanish");
 
         ArgumentCaptor<GuildOperation> captor = ArgumentCaptor.forClass(GuildOperation.class);
         verify(discordGateway).submit(captor.capture());
@@ -1763,8 +1873,15 @@ class DefaultSyncServiceTest {
 
         // Assert: Problems list retains the failure for Town 1
         assertTrue(report.inconsistenciesFound() >= 1, "Must record inconsistency for the failed space");
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains("FailingTown1") || p.contains("Town 1")),
-                "Problems list must retain the failure details for Town 1");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-towny-read-failed-space".equals(p.key())
+                && "FailingTown1".equals(p.placeholders().get("town"))
+                && town1Uuid.toString().equals(p.placeholders().get("uuid"))),
+                "Problems list must retain the failure details for Town 1 as structured problem");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains("FailingTown1")),
+                "English problems list must retain the failure details for Town 1");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains("FailingTown1")),
+                "Spanish problems list must retain the failure details for Town 1");
     }
 
     // --- Tests for Finding 11: Global Mayor Role Auditing ---
@@ -1873,8 +1990,15 @@ class DefaultSyncServiceTest {
         // Confirmed revocations must be 0, proposed revocations must be >= 1
         assertEquals(0, report.rolesRevoked(), "Report mode must not perform confirmed revocations");
         assertTrue(report.proposedRevocations() >= 1, "Report mode must count proposed revocations for mayor role");
-        assertTrue(report.problems().stream().anyMatch(p -> p.contains(eveDiscordId) && p.contains(mayorRoleId)),
-                "Problems list must identify Eve holding the mayor role");
+        assertTrue(report.problemDetails().stream().anyMatch(p ->
+                "sync.problem-member-unjustified-mayor-role".equals(p.key())
+                && eveDiscordId.equals(p.placeholders().get("discord"))
+                && mayorRoleId.equals(p.placeholders().get("role"))),
+                "Problems list must identify Eve holding the mayor role as structured problem");
+        assertTrue(report.problems(enMessages).stream().anyMatch(p -> p.contains(eveDiscordId) && p.contains(mayorRoleId)),
+                "English problems list must identify Eve holding the mayor role");
+        assertTrue(report.problems(esMessages).stream().anyMatch(p -> p.contains(eveDiscordId) && p.contains(mayorRoleId)),
+                "Spanish problems list must identify Eve holding the mayor role");
     }
 
     @Test
@@ -1969,7 +2093,14 @@ class DefaultSyncServiceTest {
         SyncReport reportThrown = service.reconcileAll().join();
         assertEquals(0, reportThrown.rolesRevoked(), "Exception in roleHolders must revoke nothing");
         assertTrue(reportThrown.inconsistenciesFound() >= 1);
-        assertTrue(reportThrown.problems().stream().anyMatch(p -> p.contains("mayor") && p.contains("Gateway timeout")));
+        assertTrue(reportThrown.problemDetails().stream().anyMatch(p ->
+                "sync.problem-lookup-mayor-holders-failed".equals(p.key())
+                && mayorRoleId.equals(p.placeholders().get("role"))
+                && p.placeholders().get("error").contains("timeout")),
+                "Problem details must carry structured key and error detail for failed mayor role lookup");
+        assertTrue(reportThrown.problems(enMessages).stream().anyMatch(p -> p.contains("mayor") && p.contains("timed out")));
+        assertTrue(reportThrown.problems(esMessages).stream().anyMatch(p -> p.contains("alcalde") && p.contains("tiempo de espera agotado")));
+        assertFalse(reportThrown.problems(esMessages).stream().anyMatch(p -> p.contains("Gateway timeout")));
 
         // Subcase B: roleHolders returns empty set when verified mayors exist (cache cold)
         reset(discordGateway);
@@ -1980,8 +2111,14 @@ class DefaultSyncServiceTest {
         SyncReport reportEmpty = service.reconcileAll().join();
         assertEquals(0, reportEmpty.rolesRevoked(), "Empty roleHolders lookup must revoke nothing");
         assertTrue(reportEmpty.inconsistenciesFound() >= 1);
-        assertTrue(reportEmpty.problems().stream().anyMatch(p ->
+        assertTrue(reportEmpty.problemDetails().stream().anyMatch(p ->
+                "sync.problem-mayor-holders-empty".equals(p.key())
+                && mayorRoleId.equals(p.placeholders().get("role"))),
+                "Problem details must carry structured key for empty mayor holders");
+        assertTrue(reportEmpty.problems(enMessages).stream().anyMatch(p ->
                 p.toLowerCase().contains("cold") || p.toLowerCase().contains("cache") || p.toLowerCase().contains("empty")));
+        assertTrue(reportEmpty.problems(esMessages).stream().anyMatch(p ->
+                p.toLowerCase().contains("fría") || p.toLowerCase().contains("caché")));
         verify(discordGateway, never()).submit(any());
 
         // Subcase C: TownyFacade.allTowns() throws TownyReadException
@@ -1991,8 +2128,351 @@ class DefaultSyncServiceTest {
         SyncReport reportTownyFailed = service.reconcileAll().join();
         assertEquals(0, reportTownyFailed.rolesRevoked(), "Towny read failure must revoke nothing");
         assertTrue(reportTownyFailed.inconsistenciesFound() >= 1);
-        assertTrue(reportTownyFailed.problems().stream().anyMatch(p -> p.contains("Towny read failed")));
+        assertTrue(reportTownyFailed.problemDetails().stream().anyMatch(p ->
+                "sync.problem-mayor-audit-towny-failed".equals(p.key())
+                && p.placeholders().get("error").contains("unavailable")),
+                "Problem details must carry structured key for failed mayor audit Towny read");
+        assertTrue(reportTownyFailed.problems(enMessages).stream().anyMatch(p ->
+                p.contains("Towny read failed") && p.contains("Towny is unavailable")));
+        assertTrue(reportTownyFailed.problems(esMessages).stream().anyMatch(p ->
+                p.contains("Error de lectura de Towny") && p.contains("Towny no está disponible")));
+        assertFalse(reportTownyFailed.problems(esMessages).stream().anyMatch(p ->
+                p.contains("Towny data unavailable") || p.contains("Towny is unavailable")));
         verify(discordGateway, never()).submit(any());
+    }
+
+    // --- T19 Dedicated Tests ---
+
+    @Test
+    @DisplayName("T19: No problem emitted by DefaultSyncService contains a finished English sentence")
+    void noProblemEmittedBySyncServiceContainsFinishedEnglishSentence() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "CheckTown",
+                Optional.of("cat-1"), Optional.of("txt-c"), Optional.of("vc-c"),
+                Optional.of("role-town"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "CheckTown", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+        when(discordGateway.roleHolders("role-town")).thenReturn(Set.of("unjustified-holder"));
+
+        SyncReport report = service.syncTown(townUuid).join();
+        assertFalse(report.problemDetails().isEmpty(), "Report must contain at least one problem");
+
+        for (SyncReport.Problem problem : report.problemDetails()) {
+            assertNotNull(problem.key(),
+                    "Problem key must not be null: " + problem);
+            assertTrue(problem.key().startsWith("sync.problem-"),
+                    "Problem key must start with 'sync.problem-': " + problem.key());
+            assertFalse(problem.key().contains(" "),
+                    "Problem key must not contain spaces (finished sentences): " + problem.key());
+        }
+
+        // report.problemKeys() returns catalog keys, not full English sentences
+        for (String problemKey : report.problemKeys()) {
+            assertTrue(problemKey.startsWith("sync.problem-"),
+                    "problemKeys() must return key, got: " + problemKey);
+            assertFalse(problemKey.contains(" "),
+                    "problemKeys() must not return English sentence with spaces: " + problemKey);
+        }
+    }
+
+    @Test
+    @DisplayName("T19: Structured problems render cleanly in both English and Spanish without unresolved placeholders or missing keys")
+    void syncReportRendersInBothEnglishAndSpanishWithoutMissingKeysOrUnresolvedPlaceholders() {
+        UUID townUuid = UUID.randomUUID();
+        String townRole = "role-town-x";
+        TownSpace space = new TownSpace(
+                townUuid, "AlphaTown",
+                Optional.of("cat-1"), Optional.of("txt-missing"), Optional.of("vc-missing"),
+                Optional.of(townRole), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot town = new TownSnapshot(
+                townUuid, "AlphaTown", UUID.randomUUID(), List.of(), false,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(town));
+        when(discordGateway.roleHolders(townRole)).thenReturn(Set.of("unjustified-alpha"));
+
+        SyncReport report = service.syncTown(townUuid).join();
+        assertFalse(report.problemDetails().isEmpty(), "Report must contain problems");
+
+        List<String> enRendered = report.problems(enMessages);
+        List<String> esRendered = report.problems(esMessages);
+
+        assertEquals(report.problemDetails().size(), enRendered.size());
+        assertEquals(report.problemDetails().size(), esRendered.size());
+
+        for (String en : enRendered) {
+            assertFalse(en.startsWith("sync.problem-"), "English message must not be unrendered key: " + en);
+            assertFalse(en.contains("[missing message:"), "English message must not be missing: " + en);
+            assertFalse(en.matches(".*\\{[a-zA-Z0-9_]+}.*"), "English message must not have unreplaced placeholders: " + en);
+        }
+
+        for (String es : esRendered) {
+            assertFalse(es.startsWith("sync.problem-"), "Spanish message must not be unrendered key: " + es);
+            assertFalse(es.contains("[missing message:"), "Spanish message must not be missing: " + es);
+            assertFalse(es.matches(".*\\{[a-zA-Z0-9_]+}.*"), "Spanish message must not have unreplaced placeholders: " + es);
+        }
+    }
+
+    @Test
+    @DisplayName("T19: SyncReport enforces structured Problem contract, exposes problemKeys(), and renders via problems(Messages)")
+    void syncReportEnforcesStructuredProblemContract() {
+        SyncReport.Problem p1 = new SyncReport.Problem(
+                "sync.problem-missing-role", Map.of("town", "Roma", "role", "role-1"));
+        SyncReport.Problem p2 = new SyncReport.Problem(
+                "sync.problem-towny-unavailable");
+
+        SyncReport report = new SyncReport(
+                3, 1, 2, 2, 1,
+                List.of(p1, p2),
+                PluginConfig.Sync.Mode.REPORT,
+                1, 0
+        );
+
+        assertTrue(report.isReportMode());
+        assertEquals(1, report.proposedGrants());
+        assertEquals(0, report.proposedRevocations());
+        assertEquals(2, report.problemDetails().size());
+
+        // problemKeys() returns catalog keys without display formatting
+        List<String> keys = report.problemKeys();
+        assertEquals(List.of("sync.problem-missing-role", "sync.problem-towny-unavailable"), keys);
+
+        // Rendering requires Messages and returns localized text
+        List<String> en = report.problems(enMessages);
+        assertEquals(2, en.size());
+        assertEquals("Space for town Roma has deleted/missing role", en.get(0));
+        assertEquals("Towny is unavailable", en.get(1));
+
+        List<String> es = report.problems(esMessages);
+        assertEquals(2, es.size());
+        assertEquals("El espacio para town Roma tiene un rol eliminado/faltante", es.get(0));
+        assertEquals("Towny no está disponible", es.get(1));
+
+        // Passing null Messages throws NullPointerException
+        assertThrows(NullPointerException.class, () -> report.problems(null));
+
+        // Creating Problem with null key throws NullPointerException
+        assertThrows(NullPointerException.class, () -> new SyncReport.Problem(null));
+
+        // Null problems list defaults to empty
+        SyncReport nullProblemsReport = new SyncReport(1, 0, 0, 0, 0, null);
+        assertTrue(nullProblemsReport.problemDetails().isEmpty());
+        assertTrue(nullProblemsReport.problemKeys().isEmpty());
+    }
+
+    @Test
+    @DisplayName("T19: All 44 sync problem keys in catalog have matching placeholders and valid Spanish invariant domain terms")
+    void allSyncProblemKeysInCatalogHaveMatchingPlaceholdersAndInvariantDomainTerms() throws Exception {
+        YamlConfiguration en = new YamlConfiguration();
+        YamlConfiguration es = new YamlConfiguration();
+        try (var inEn = getClass().getResourceAsStream("/messages_en.yml");
+             var inEs = getClass().getResourceAsStream("/messages_es.yml")) {
+            assertNotNull(inEn, "messages_en.yml must exist");
+            assertNotNull(inEs, "messages_es.yml must exist");
+            en.load(new InputStreamReader(inEn, StandardCharsets.UTF_8));
+            es.load(new InputStreamReader(inEs, StandardCharsets.UTF_8));
+        }
+
+        List<String> enSyncProblemKeys = new ArrayList<>();
+        for (String key : en.getKeys(true)) {
+            if (key.startsWith("sync.problem-") && !key.equals("sync.problem-entry") && en.isString(key)) {
+                enSyncProblemKeys.add(key);
+            }
+        }
+
+        List<String> esSyncProblemKeys = new ArrayList<>();
+        for (String key : es.getKeys(true)) {
+            if (key.startsWith("sync.problem-") && !key.equals("sync.problem-entry") && es.isString(key)) {
+                esSyncProblemKeys.add(key);
+            }
+        }
+
+        assertEquals(44, enSyncProblemKeys.size(), "There must be exactly 44 sync.problem-* keys in messages_en.yml");
+        assertEquals(enSyncProblemKeys, esSyncProblemKeys, "Keys must exist in identical order in both catalogs");
+
+        java.util.regex.Pattern placeholderPattern = java.util.regex.Pattern.compile("\\{([^{}]+)}");
+        for (String key : enSyncProblemKeys) {
+            String enVal = en.getString(key);
+            String esVal = es.getString(key);
+            assertNotNull(enVal, "EN value must not be null for " + key);
+            assertNotNull(esVal, "ES value must not be null for " + key);
+
+            Set<String> enPlaceholders = new java.util.HashSet<>();
+            var mEn = placeholderPattern.matcher(enVal);
+            while (mEn.find()) {
+                enPlaceholders.add(mEn.group(1));
+            }
+
+            Set<String> esPlaceholders = new java.util.HashSet<>();
+            var mEs = placeholderPattern.matcher(esVal);
+            while (mEs.find()) {
+                esPlaceholders.add(mEs.group(1));
+            }
+
+            assertEquals(enPlaceholders, esPlaceholders, "Placeholders must match for key: " + key);
+
+            // Invariant domain terms check (spec section 9.1):
+            // "Domain terms are the exception, and they are invariant. town, nation and resident stay as they are in both languages."
+            // Verify ES translation doesn't substitute 'ciudad', 'residente', 'nación'
+            assertFalse(esVal.toLowerCase().contains("ciudad"),
+                    "Key " + key + " in Spanish must preserve domain term 'town' instead of 'ciudad': " + esVal);
+            assertFalse(esVal.toLowerCase().contains("residente"),
+                    "Key " + key + " in Spanish must preserve domain term 'resident' instead of 'residente': " + esVal);
+            assertFalse(esVal.toLowerCase().contains("nación") || esVal.toLowerCase().contains("nacion"),
+                    "Key " + key + " in Spanish must preserve domain term 'nation' instead of 'nación': " + esVal);
+
+            // 'space' is NOT an invariant domain term and must be translated to 'espacio' in Spanish
+            assertFalse(esVal.matches(".*\\b[Ss]pace\\b.*"),
+                    "Key " + key + " in Spanish must translate 'space' to 'espacio': " + esVal);
+            assertFalse(esVal.contains("ARCHIVED"),
+                    "Key " + key + " in Spanish must not contain raw state 'ARCHIVED': " + esVal);
+            assertFalse(esVal.contains("INCONSISTENT"),
+                    "Key " + key + " in Spanish must not contain raw state 'INCONSISTENT': " + esVal);
+        }
+    }
+
+    @Test
+    @DisplayName("T19: Ruined town with active space produces localized state in both English and Spanish")
+    void ruinedTownWithActiveSpaceProducesLocalizedStateInBothEnglishAndSpanish() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "RuinedRome",
+                Optional.of("cat-1"), Optional.of("txt-c"), Optional.of("vc-c"),
+                Optional.of("role-town"), SpaceState.ACTIVE,
+                clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot ruinedTown = new TownSnapshot(
+                townUuid, "RuinedRome", UUID.randomUUID(), List.of(), true,
+                Optional.empty(), 1, 100.0, 1000L);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(ruinedTown));
+
+        SyncReport report = service.syncTown(townUuid).join();
+        assertFalse(report.problemDetails().isEmpty(), "Must report problem for ruined town with active space");
+
+        SyncReport.Problem problem = report.problemDetails().stream()
+                .filter(p -> "sync.problem-town-ruined-space-state".equals(p.key()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected problem sync.problem-town-ruined-space-state"));
+
+        assertEquals("RuinedRome", problem.placeholders().get("town"));
+        assertEquals("admin.state-active", problem.placeholders().get("state"));
+
+        List<String> en = report.problems(enMessages);
+        assertTrue(en.stream().anyMatch(p -> p.contains("Town RuinedRome is ruined but space is active")),
+                "English must render state as 'active', got: " + en);
+        assertFalse(en.stream().anyMatch(p -> p.contains("ACTIVE")),
+                "English must not leak uppercase enum 'ACTIVE'");
+
+        List<String> es = report.problems(esMessages);
+        assertTrue(es.stream().anyMatch(p -> p.contains("Town RuinedRome está en ruinas pero el espacio está activo")),
+                "Spanish must translate 'space' to 'espacio' and 'state' to 'activo', got: " + es);
+        assertFalse(es.stream().anyMatch(p -> p.contains("space") || p.contains("ACTIVE")),
+                "Spanish must not leak 'space' or 'ACTIVE'");
+    }
+
+    @Test
+    @DisplayName("T19: Mayor audit Towny unavailable produces localized cause in both catalogs")
+    void mayorAuditTownyUnavailableProducesLocalizedCauseInBothCatalogs() {
+        String mayorRoleId = "role-mayor-id";
+        when(discordGateway.mayorRoleId()).thenReturn(Optional.of(mayorRoleId));
+        when(discordGateway.roleHolders(mayorRoleId)).thenReturn(Set.of("discord-mayor"));
+        // Towny available for initial reconcileAll check, then unavailable by the time mayor role audit runs
+        when(townyFacade.isAvailable()).thenReturn(true, false);
+
+        SyncReport report = service.reconcileAll().join();
+        assertFalse(report.problemDetails().isEmpty(), "Report must contain problem when Towny is unavailable");
+
+        SyncReport.Problem problem = report.problemDetails().stream()
+                .filter(p -> "sync.problem-mayor-audit-towny-failed".equals(p.key()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected problem sync.problem-mayor-audit-towny-failed"));
+
+        // Verify the structured placeholder key
+        String errorPlaceholder = problem.placeholders().get("error");
+        assertNotNull(errorPlaceholder, "Problem must carry an 'error' placeholder");
+        assertEquals("sync.cause-towny-unavailable", errorPlaceholder,
+                "Placeholder 'error' must be the catalog key 'sync.cause-towny-unavailable', not raw text");
+        assertFalse(errorPlaceholder.contains("Towny is unavailable"),
+                "Placeholder value must not contain raw English exception text");
+        assertFalse(errorPlaceholder.contains(" "),
+                "Placeholder value must be a catalog key without spaces");
+
+        // Verify that resolving the placeholder directly in Spanish contains no English fragment
+        String renderedCauseEs = esMessages.label(errorPlaceholder);
+        assertEquals("Towny no está disponible", renderedCauseEs,
+                "Spanish catalog must render cause key as 'Towny no está disponible'");
+        assertFalse(renderedCauseEs.contains("Towny is unavailable"),
+                "Rendered Spanish cause must not contain English sentence 'Towny is unavailable'");
+        assertFalse(renderedCauseEs.toLowerCase().contains("unavailable"),
+                "Rendered Spanish cause must contain no English fragment 'unavailable', got: " + renderedCauseEs);
+
+        // Verify that resolving the placeholder in English produces the expected English text
+        String renderedCauseEn = enMessages.label(errorPlaceholder);
+        assertEquals("Towny is unavailable", renderedCauseEn,
+                "English catalog must render cause key as 'Towny is unavailable'");
+
+        // Verify English problem message rendering
+        List<String> en = report.problems(enMessages);
+        assertTrue(en.stream().anyMatch(p -> p.contains("Towny read failed during mayor role audit: Towny is unavailable")),
+                "English must render cause as 'Towny is unavailable', got: " + en);
+
+        // Verify Spanish problem message rendering and isolate the rendered placeholder value
+        List<String> es = report.problems(esMessages);
+        String esProblem = es.stream()
+                .filter(p -> p.contains("Error de lectura de Towny durante la auditoría del rol de alcalde"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected Spanish mayor audit towny failed message in: " + es));
+
+        String prefix = "Error de lectura de Towny durante la auditoría del rol de alcalde: ";
+        assertTrue(esProblem.startsWith(prefix),
+                "Spanish problem must start with prefix '" + prefix + "', got: " + esProblem);
+
+        String placeholderInSentence = esProblem.substring(prefix.length());
+        assertEquals("Towny no está disponible", placeholderInSentence,
+                "Rendered placeholder inside Spanish sentence must be 'Towny no está disponible'");
+        assertFalse(placeholderInSentence.contains("Towny is unavailable"),
+                "Rendered placeholder inside Spanish sentence must not contain 'Towny is unavailable'");
+        assertFalse(placeholderInSentence.toLowerCase().contains("unavailable"),
+                "Rendered placeholder inside Spanish sentence must not contain English fragment 'unavailable'");
+
+        assertFalse(esProblem.contains("Towny is unavailable"),
+                "Spanish problem must not leak English cause text 'Towny is unavailable'");
+        assertFalse(esProblem.toLowerCase().contains("unavailable"),
+                "Spanish problem must not contain English fragment 'unavailable'");
+        assertFalse(esProblem.contains("unknown"),
+                "Spanish problem must not leak 'unknown'");
+    }
+
+    @Test
+    @DisplayName("T19: Internal fallback unknown error produces localized unknown in both catalogs")
+    void internalFallbackUnknownErrorProducesLocalizedUnknownInBothCatalogs() {
+        SyncReport.Problem nullErrorProblem = new SyncReport.Problem(
+                "sync.problem-batch-failed",
+                Map.of("batch", "1", "error", "general.unknown")
+        );
+        SyncReport nullReport = new SyncReport(1, 0, 0, 1, 0, List.of(nullErrorProblem));
+
+        assertEquals("Batch 1 failed: unknown", nullReport.problems(enMessages).get(0));
+        assertEquals("Lote 1 fallido: desconocido", nullReport.problems(esMessages).get(0));
+
+        // Even if raw 'unknown' string is supplied in placeholder, Problem.render maps it to localized unknown
+        SyncReport.Problem rawUnknownProblem = new SyncReport.Problem(
+                "sync.problem-batch-failed",
+                Map.of("batch", "2", "error", "unknown")
+        );
+        SyncReport rawReport = new SyncReport(1, 0, 0, 1, 0, List.of(rawUnknownProblem));
+
+        assertEquals("Batch 2 failed: unknown", rawReport.problems(enMessages).get(0));
+        assertEquals("Lote 2 fallido: desconocido", rawReport.problems(esMessages).get(0));
     }
 }
 

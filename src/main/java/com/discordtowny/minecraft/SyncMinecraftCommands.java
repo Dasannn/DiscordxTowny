@@ -413,7 +413,7 @@ public final class SyncMinecraftCommands {
             return;
         }
 
-        if (!report.problems().isEmpty() || report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
+        if (!report.problemKeys().isEmpty() || report.inconsistenciesFound() > report.inconsistenciesRepaired()) {
             replyFailures(sender, report, messages);
             return;
         }
@@ -438,11 +438,11 @@ public final class SyncMinecraftCommands {
             )));
         }
 
-        if (!report.problems().isEmpty()) {
+        if (!report.problemKeys().isEmpty()) {
             sender.sendMessage(messages.get("sync.problems-header", Map.of(
-                    "count", String.valueOf(report.problems().size())
+                    "count", String.valueOf(report.problemKeys().size())
             )));
-            for (String problem : report.problems()) {
+            for (String problem : report.problems(messages)) {
                 sender.sendMessage(messages.get("sync.problem-entry", Map.of(
                         "problem", problem
                 )));
@@ -459,11 +459,11 @@ public final class SyncMinecraftCommands {
             )));
         }
 
-        if (!report.problems().isEmpty()) {
+        if (!report.problemKeys().isEmpty()) {
             sender.sendMessage(messages.get("sync.problems-header", Map.of(
-                    "count", String.valueOf(report.problems().size())
+                    "count", String.valueOf(report.problemKeys().size())
             )));
-            for (String problem : report.problems()) {
+            for (String problem : report.problems(messages)) {
                 sender.sendMessage(messages.get("sync.problem-entry", Map.of(
                         "problem", problem
                 )));

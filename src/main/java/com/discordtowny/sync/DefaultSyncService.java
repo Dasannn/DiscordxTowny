@@ -3,6 +3,7 @@ package com.discordtowny.sync;
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.discord.DiscordGateway;
 import com.discordtowny.discord.GuildOperation;
+import com.discordtowny.discord.OperationOutcome;
 import com.discordtowny.model.AccountLink;
 import com.discordtowny.model.ResidentSnapshot;
 import com.discordtowny.model.SpaceRequest;
@@ -214,7 +215,7 @@ public final class DefaultSyncService implements SyncService {
     public CompletableFuture<SyncReport> syncTown(UUID townUuid, PluginConfig.Sync.Mode mode) {
         if (townUuid == null) {
             return CompletableFuture.completedFuture(
-                    new SyncReport(0, 0, 0, 0, 0, List.of("Town UUID must not be null"), mode, 0, 0));
+                    new SyncReport(0, 0, 0, 0, 0, List.of(new SyncReport.Problem("sync.problem-town-uuid-null")), mode, 0, 0));
         }
 
         return CompletableFuture.supplyAsync(() -> {
@@ -230,11 +231,13 @@ public final class DefaultSyncService implements SyncService {
             }).thenComposeAsync(lookup -> {
                 if (lookup.isUnavailable()) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable"), mode, 0, 0));
+                            new SyncReport(0, 0, 0, 1, 0, List.of(new SyncReport.Problem("sync.problem-towny-unavailable")), mode, 0, 0));
                 }
                 if (lookup.isFailedRead()) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny read failed for town " + townUuid + ": " + lookup.errorMessage()), mode, 0, 0));
+                            new SyncReport(0, 0, 0, 1, 0, List.of(new SyncReport.Problem(
+                                    "sync.problem-towny-read-failed-town",
+                                    Map.of("town", safeStr(townUuid), "error", safeError(lookup.errorMessage())))), mode, 0, 0));
                 }
 
                 Optional<TownSnapshot> townOpt = lookup.town();
@@ -246,7 +249,9 @@ public final class DefaultSyncService implements SyncService {
                         TownSpace space = spaceOpt.get();
                         SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                         acc.inconsistenciesFound.incrementAndGet();
-                        acc.problems.add("Town " + space.townName() + " (" + townUuid + ") no longer exists in Towny");
+                        acc.problems.add(new SyncReport.Problem(
+                                "sync.problem-town-no-longer-exists",
+                                Map.of("town", space.townName(), "uuid", safeStr(townUuid))));
 
                         if (!isReportMode && space.state() != SpaceState.ARCHIVED) {
                             return executeArchive(space, "Town " + space.townName() + " deleted in Towny")
@@ -254,7 +259,9 @@ public final class DefaultSyncService implements SyncService {
                                         if (success) {
                                             acc.inconsistenciesRepaired.incrementAndGet();
                                         } else {
-                                            acc.problems.add("Failed to archive deleted town space " + space.townName());
+                                            acc.problems.add(new SyncReport.Problem(
+                                                    "sync.problem-archive-deleted-failed",
+                                                    Map.of("town", space.townName())));
                                         }
                                         return acc.toReport();
                                     });
@@ -262,13 +269,17 @@ public final class DefaultSyncService implements SyncService {
                         return CompletableFuture.completedFuture(acc.toReport());
                     }
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Town " + townUuid + " not found"), mode, 0, 0));
+                            new SyncReport(0, 0, 0, 1, 0, List.of(new SyncReport.Problem(
+                                    "sync.problem-town-not-found",
+                                    Map.of("town", safeStr(townUuid)))), mode, 0, 0));
                 }
 
                 TownSnapshot town = townOpt.get();
                 if (spaceOpt.isEmpty()) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 0, 0, List.of("Town " + town.name() + " has no registered space"), mode, 0, 0));
+                            new SyncReport(0, 0, 0, 0, 0, List.of(new SyncReport.Problem(
+                                    "sync.problem-town-no-space",
+                                    Map.of("town", town.name()))), mode, 0, 0));
                 }
 
                 TownSpace space = spaceOpt.get();
@@ -297,7 +308,7 @@ public final class DefaultSyncService implements SyncService {
             }).thenComposeAsync(available -> {
                 if (!available) {
                     return CompletableFuture.completedFuture(
-                            new SyncReport(0, 0, 0, 1, 0, List.of("Towny is unavailable"), mode, 0, 0));
+                            new SyncReport(0, 0, 0, 1, 0, List.of(new SyncReport.Problem("sync.problem-towny-unavailable")), mode, 0, 0));
                 }
 
                 List<TownSpace> allSpaces = spaceRepository.findAll();
@@ -325,14 +336,18 @@ public final class DefaultSyncService implements SyncService {
                             try {
                                 pauseAction.accept(batchPause);
                             } catch (Exception e) {
-                                totalAcc.problems.add("Batch pause interrupted or failed: " + e.getMessage());
+                                totalAcc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-batch-pause-failed",
+                                        Map.of("error", safeError(e))));
                             }
                         }
                         return processBatch(batch, mode).handle((batchAcc, ex) -> {
                             if (ex != null) {
                                 Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
                                 totalAcc.inconsistenciesFound.incrementAndGet();
-                                totalAcc.problems.add("Batch " + batchIndex + " failed: " + cause.getMessage());
+                                totalAcc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-batch-failed",
+                                        Map.of("batch", String.valueOf(batchIndex), "error", safeError(cause))));
                             } else if (batchAcc != null) {
                                 totalAcc.merge(batchAcc);
                             }
@@ -346,7 +361,9 @@ public final class DefaultSyncService implements SyncService {
                             if (ex != null) {
                                 Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
                                 totalAcc.inconsistenciesFound.incrementAndGet();
-                                totalAcc.problems.add("Mayor role audit failed: " + cause.getMessage());
+                                totalAcc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-mayor-audit-failed",
+                                        Map.of("error", safeError(cause))));
                             } else if (mayorAcc != null) {
                                 totalAcc.merge(mayorAcc);
                             }
@@ -371,8 +388,9 @@ public final class DefaultSyncService implements SyncService {
                     SyncReportAccumulator errAcc = new SyncReportAccumulator(1, mode);
                     errAcc.inconsistenciesFound.incrementAndGet();
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                    errAcc.problems.add("Failed to reconcile space " + space.townName()
-                            + " (" + space.townUuid() + "): " + cause.getMessage());
+                    errAcc.problems.add(new SyncReport.Problem(
+                            "sync.problem-reconcile-space-failed",
+                            Map.of("town", space.townName(), "uuid", safeStr(space.townUuid()), "error", safeError(cause))));
                     return errAcc;
                 }
                 return acc;
@@ -411,13 +429,17 @@ public final class DefaultSyncService implements SyncService {
             if (lookup.isUnavailable()) {
                 SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                 acc.inconsistenciesFound.incrementAndGet();
-                acc.problems.add("Towny is unavailable while checking space " + space.townName());
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-towny-unavailable-space",
+                        Map.of("town", space.townName())));
                 return CompletableFuture.completedFuture(acc);
             }
             if (lookup.isFailedRead()) {
                 SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                 acc.inconsistenciesFound.incrementAndGet();
-                acc.problems.add("Towny read failed for space " + space.townName() + " (" + space.townUuid() + "): " + lookup.errorMessage());
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-towny-read-failed-space",
+                        Map.of("town", space.townName(), "uuid", safeStr(space.townUuid()), "error", safeError(lookup.errorMessage()))));
                 return CompletableFuture.completedFuture(acc);
             }
 
@@ -427,7 +449,9 @@ public final class DefaultSyncService implements SyncService {
             if (townOpt.isEmpty()) {
                 SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
                 acc.inconsistenciesFound.incrementAndGet();
-                acc.problems.add("Town " + space.townName() + " (" + space.townUuid() + ") no longer exists in Towny");
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-town-no-longer-exists",
+                        Map.of("town", space.townName(), "uuid", safeStr(space.townUuid()))));
 
                 if (!isReportMode && space.state() != SpaceState.ARCHIVED) {
                     return executeArchive(space, "Town " + space.townName() + " deleted in Towny")
@@ -435,7 +459,9 @@ public final class DefaultSyncService implements SyncService {
                                 if (success) {
                                     acc.inconsistenciesRepaired.incrementAndGet();
                                 } else {
-                                    acc.problems.add("Failed to archive deleted town space " + space.townName());
+                                    acc.problems.add(new SyncReport.Problem(
+                                            "sync.problem-archive-deleted-failed",
+                                            Map.of("town", space.townName())));
                                 }
                                 return acc;
                             });
@@ -448,7 +474,9 @@ public final class DefaultSyncService implements SyncService {
             SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
             acc.inconsistenciesFound.incrementAndGet();
             Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-            acc.problems.add("Failed to reconcile space " + space.townName() + " (" + space.townUuid() + "): " + cause.getMessage());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-reconcile-space-failed",
+                    Map.of("town", space.townName(), "uuid", safeStr(space.townUuid()), "error", safeError(cause))));
             return acc;
         });
     }
@@ -467,7 +495,9 @@ public final class DefaultSyncService implements SyncService {
                 return CompletableFuture.completedFuture(acc);
             }
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Town " + town.name() + " is ruined but space is " + space.state());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-town-ruined-space-state",
+                    Map.of("town", town.name(), "state", safeState(space.state()))));
             if (isReportMode) {
                 return CompletableFuture.completedFuture(acc);
             }
@@ -476,7 +506,9 @@ public final class DefaultSyncService implements SyncService {
                         if (success) {
                             acc.inconsistenciesRepaired.incrementAndGet();
                         } else {
-                            acc.problems.add("Failed to archive ruined town space " + town.name());
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-archive-ruined-failed",
+                                    Map.of("town", town.name())));
                         }
                         return acc;
                     });
@@ -487,7 +519,9 @@ public final class DefaultSyncService implements SyncService {
         // Must restore space with history intact (spec section 7).
         if (space.state() == SpaceState.ARCHIVED) {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Town " + town.name() + " is alive but space is ARCHIVED");
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-town-alive-space-archived",
+                    Map.of("town", town.name())));
             if (isReportMode) {
                 return CompletableFuture.completedFuture(acc);
             }
@@ -496,7 +530,9 @@ public final class DefaultSyncService implements SyncService {
                         if (success) {
                             acc.inconsistenciesRepaired.incrementAndGet();
                         } else {
-                            acc.problems.add("Failed to restore space " + town.name());
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-restore-space-failed",
+                                    Map.of("town", town.name())));
                         }
                         return acc;
                     });
@@ -505,7 +541,9 @@ public final class DefaultSyncService implements SyncService {
         // 3. Inconsistent state check
         if (space.state() == SpaceState.INCONSISTENT) {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Space for town " + town.name() + " is in INCONSISTENT state");
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-space-inconsistent",
+                    Map.of("town", town.name())));
             if (isReportMode) {
                 return CompletableFuture.completedFuture(acc);
             }
@@ -516,7 +554,9 @@ public final class DefaultSyncService implements SyncService {
                             if (success) {
                                 acc.inconsistenciesRepaired.incrementAndGet();
                             } else {
-                                acc.problems.add("Failed to resume restoration of space " + town.name());
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-resume-restoration-failed",
+                                        Map.of("town", town.name())));
                             }
                             return acc;
                         });
@@ -528,8 +568,9 @@ public final class DefaultSyncService implements SyncService {
                             if (outcome != null && outcome.succeeded()) {
                                 acc.inconsistenciesRepaired.incrementAndGet();
                             } else {
-                                acc.problems.add("Failed to repair inconsistent space " + town.name()
-                                        + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-repair-inconsistent-failed",
+                                        Map.of("town", town.name(), "reason", safeReason(outcome))));
                             }
                             return acc;
                         });
@@ -542,19 +583,24 @@ public final class DefaultSyncService implements SyncService {
         // 4a. Rename check
         if (!town.name().equalsIgnoreCase(space.townName())) {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Town renamed: " + space.townName() + " -> " + town.name());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-town-renamed",
+                    Map.of("old", space.townName(), "new", town.name())));
             if (!isReportMode) {
                 futures.add(discordGateway.submit(new GuildOperation.RenameSpace(space.townUuid(), space.townName(), town.name()))
                         .thenAccept(outcome -> {
                             if (outcome != null && outcome.succeeded()) {
                                 acc.inconsistenciesRepaired.incrementAndGet();
                             } else {
-                                acc.problems.add("Failed to rename space from " + space.townName() + " to " + town.name()
-                                        + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-rename-failed",
+                                        Map.of("old", space.townName(), "new", town.name(), "reason", safeReason(outcome))));
                             }
                         })
                         .exceptionally(ex -> {
-                            acc.problems.add("Failed to rename space from " + space.townName() + " to " + town.name() + ": " + ex.getMessage());
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-rename-failed",
+                                    Map.of("old", space.townName(), "new", town.name(), "reason", safeError(ex))));
                             return null;
                         }));
             }
@@ -576,7 +622,9 @@ public final class DefaultSyncService implements SyncService {
         } catch (Exception e) {
             discordCheckFailed = true;
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Failed to verify Discord resources for town " + town.name() + ": " + e.getMessage());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-verify-resources-failed",
+                    Map.of("town", town.name(), "error", safeError(e))));
         }
 
         boolean textMissing;
@@ -603,11 +651,17 @@ public final class DefaultSyncService implements SyncService {
         if (textMissing || voiceMissing || roleMissing || noChannels) {
             acc.inconsistenciesFound.incrementAndGet();
             if (noChannels) {
-                acc.problems.add("Space for town " + town.name() + " has no channels registered");
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-no-channels-registered",
+                        Map.of("town", town.name())));
             } else if (textMissing || voiceMissing) {
-                acc.problems.add("Space for town " + town.name() + " is missing required channels");
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-missing-channels",
+                        Map.of("town", town.name())));
             } else {
-                acc.problems.add("Space for town " + town.name() + " has deleted/missing role");
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-missing-role",
+                        Map.of("town", town.name())));
             }
             if (!isReportMode) {
                 SpaceRequest request = buildSpaceRequest(town);
@@ -616,12 +670,15 @@ public final class DefaultSyncService implements SyncService {
                             if (outcome != null && outcome.succeeded()) {
                                 acc.inconsistenciesRepaired.incrementAndGet();
                             } else {
-                                acc.problems.add("Failed to repair missing channels/role for " + town.name()
-                                        + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-repair-channels-role-failed",
+                                        Map.of("town", town.name(), "reason", safeReason(outcome))));
                             }
                         })
                         .exceptionally(ex -> {
-                            acc.problems.add("Failed to repair missing channels/role for " + town.name() + ": " + ex.getMessage());
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-repair-channels-role-failed",
+                                    Map.of("town", town.name(), "reason", safeError(ex))));
                             return null;
                         }));
             }
@@ -645,14 +702,16 @@ public final class DefaultSyncService implements SyncService {
                     if (!diff.grantRoles().isEmpty()) {
                         acc.inconsistenciesFound.addAndGet(diff.grantRoles().size());
                         acc.proposedGrants.addAndGet(diff.grantRoles().size());
-                        acc.problems.add("Resident " + discordId + " is missing roles for town "
-                                + town.name() + ": " + diff.grantRoles());
+                        acc.problems.add(new SyncReport.Problem(
+                                "sync.problem-resident-missing-roles",
+                                Map.of("discord", discordId, "town", town.name(), "roles", diff.grantRoles().toString())));
                     }
                     if (!diff.revokeRoles().isEmpty()) {
                         acc.inconsistenciesFound.addAndGet(diff.revokeRoles().size());
                         acc.proposedRevocations.addAndGet(diff.revokeRoles().size());
-                        acc.problems.add("Resident " + discordId + " holds unjustified roles: "
-                                + diff.revokeRoles());
+                        acc.problems.add(new SyncReport.Problem(
+                                "sync.problem-resident-unjustified-roles",
+                                Map.of("discord", discordId, "roles", diff.revokeRoles().toString())));
                     }
                 } else {
                     if (!diff.grantRoles().isEmpty() || !diff.revokeRoles().isEmpty()) {
@@ -664,11 +723,14 @@ public final class DefaultSyncService implements SyncService {
                                 acc.rolesRevoked.addAndGet(diff.revokeRoles().size());
                                 acc.inconsistenciesRepaired.addAndGet(diff.grantRoles().size() + diff.revokeRoles().size());
                             } else {
-                                acc.problems.add("Failed to adjust roles for member " + discordId
-                                        + ": " + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-adjust-roles-failed",
+                                        Map.of("discord", discordId, "reason", safeReason(outcome))));
                             }
                         }).exceptionally(ex -> {
-                            acc.problems.add("Failed to adjust roles for member " + discordId + ": " + ex.getMessage());
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-adjust-roles-failed",
+                                    Map.of("discord", discordId, "reason", safeError(ex))));
                             return null;
                         }));
                     }
@@ -691,8 +753,9 @@ public final class DefaultSyncService implements SyncService {
                 if (holders == null || holders.isEmpty()) {
                     if (!town.residentUuids().isEmpty()) {
                         acc.inconsistenciesFound.incrementAndGet();
-                        acc.problems.add("Role holders lookup returned empty for town " + town.name()
-                                + " (role " + townRoleId + "): member cache may be cold or GUILD_MEMBERS intent disabled");
+                        acc.problems.add(new SyncReport.Problem(
+                                "sync.problem-role-holders-empty-town",
+                                Map.of("town", town.name(), "role", townRoleId)));
                     }
                 } else {
                     Set<String> justifiedDiscordIds = new LinkedHashSet<>();
@@ -704,8 +767,9 @@ public final class DefaultSyncService implements SyncService {
                     for (String holderDiscordId : holders) {
                         if (!justifiedDiscordIds.contains(holderDiscordId)) {
                             acc.inconsistenciesFound.incrementAndGet();
-                            acc.problems.add("Member " + holderDiscordId + " holds role for town "
-                                    + town.name() + " (" + townRoleId + ") without being a resident");
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-member-unjustified-town-role",
+                                    Map.of("discord", holderDiscordId, "town", town.name(), "role", townRoleId)));
 
                             if (isReportMode) {
                                 acc.proposedRevocations.incrementAndGet();
@@ -717,13 +781,14 @@ public final class DefaultSyncService implements SyncService {
                                         acc.rolesRevoked.incrementAndGet();
                                         acc.inconsistenciesRepaired.incrementAndGet();
                                     } else {
-                                        acc.problems.add("Failed to revoke unjustified role " + townRoleId
-                                                + " from member " + holderDiscordId + ": "
-                                                + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                        acc.problems.add(new SyncReport.Problem(
+                                                "sync.problem-revoke-role-failed",
+                                                Map.of("role", townRoleId, "discord", holderDiscordId, "reason", safeReason(outcome))));
                                     }
                                 }).exceptionally(ex -> {
-                                    acc.problems.add("Failed to revoke unjustified role " + townRoleId
-                                            + " from member " + holderDiscordId + ": " + ex.getMessage());
+                                    acc.problems.add(new SyncReport.Problem(
+                                            "sync.problem-revoke-role-failed",
+                                            Map.of("role", townRoleId, "discord", holderDiscordId, "reason", safeError(ex))));
                                     return null;
                                 }));
                             }
@@ -732,8 +797,9 @@ public final class DefaultSyncService implements SyncService {
                 }
             } catch (Exception e) {
                 acc.inconsistenciesFound.incrementAndGet();
-                acc.problems.add("Failed to lookup role holders for town " + town.name()
-                        + " (role " + townRoleId + "): " + e.getMessage());
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-lookup-role-holders-failed",
+                        Map.of("town", town.name(), "role", townRoleId, "error", safeError(e))));
             }
         }
 
@@ -857,7 +923,9 @@ public final class DefaultSyncService implements SyncService {
             mayorRoleIdOpt = discordGateway.mayorRoleId();
         } catch (Exception e) {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Failed to retrieve mayor role ID: " + e.getMessage());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-mayor-role-id-failed",
+                    Map.of("error", safeError(e))));
             return CompletableFuture.completedFuture(acc);
         }
 
@@ -871,13 +939,17 @@ public final class DefaultSyncService implements SyncService {
             holders = discordGateway.roleHolders(mayorRoleId);
         } catch (Exception e) {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Failed to lookup mayor role holders (" + mayorRoleId + "): " + e.getMessage());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-lookup-mayor-holders-failed",
+                    Map.of("role", mayorRoleId, "error", safeError(e))));
             return CompletableFuture.completedFuture(acc);
         }
 
         if (holders == null) {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Role holders lookup returned null for mayor role (" + mayorRoleId + ")");
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-mayor-holders-null",
+                    Map.of("role", mayorRoleId)));
             return CompletableFuture.completedFuture(acc);
         }
 
@@ -899,7 +971,9 @@ public final class DefaultSyncService implements SyncService {
         }).thenComposeAsync(lookup -> {
             if (lookup.isUnavailable() || lookup.isFailedRead()) {
                 acc.inconsistenciesFound.incrementAndGet();
-                acc.problems.add("Towny read failed during mayor role audit: " + lookup.errorMessage());
+                acc.problems.add(new SyncReport.Problem(
+                        "sync.problem-mayor-audit-towny-failed",
+                        Map.of("error", safeError(lookup.errorMessage()))));
                 return CompletableFuture.completedFuture(acc);
             }
 
@@ -915,8 +989,9 @@ public final class DefaultSyncService implements SyncService {
             if (holders.isEmpty()) {
                 if (!justifiedMayorDiscordIds.isEmpty()) {
                     acc.inconsistenciesFound.incrementAndGet();
-                    acc.problems.add("Role holders lookup returned empty for mayor role (" + mayorRoleId
-                            + "): member cache may be cold or GUILD_MEMBERS intent disabled");
+                    acc.problems.add(new SyncReport.Problem(
+                            "sync.problem-mayor-holders-empty",
+                            Map.of("role", mayorRoleId)));
                 }
                 return CompletableFuture.completedFuture(acc);
             }
@@ -926,8 +1001,9 @@ public final class DefaultSyncService implements SyncService {
             for (String holderDiscordId : holders) {
                 if (!justifiedMayorDiscordIds.contains(holderDiscordId)) {
                     acc.inconsistenciesFound.incrementAndGet();
-                    acc.problems.add("Member " + holderDiscordId + " holds mayor role ("
-                            + mayorRoleId + ") without being a verified mayor");
+                    acc.problems.add(new SyncReport.Problem(
+                            "sync.problem-member-unjustified-mayor-role",
+                            Map.of("discord", holderDiscordId, "role", mayorRoleId)));
 
                     if (isReportMode) {
                         acc.proposedRevocations.incrementAndGet();
@@ -939,13 +1015,14 @@ public final class DefaultSyncService implements SyncService {
                                 acc.rolesRevoked.incrementAndGet();
                                 acc.inconsistenciesRepaired.incrementAndGet();
                             } else {
-                                acc.problems.add("Failed to revoke unjustified mayor role " + mayorRoleId
-                                        + " from member " + holderDiscordId + ": "
-                                        + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-revoke-mayor-role-failed",
+                                        Map.of("role", mayorRoleId, "discord", holderDiscordId, "reason", safeReason(outcome))));
                             }
                         }).exceptionally(ex -> {
-                            acc.problems.add("Failed to revoke unjustified mayor role " + mayorRoleId
-                                    + " from member " + holderDiscordId + ": " + ex.getMessage());
+                            acc.problems.add(new SyncReport.Problem(
+                                    "sync.problem-revoke-mayor-role-failed",
+                                    Map.of("role", mayorRoleId, "discord", holderDiscordId, "reason", safeError(ex))));
                             return null;
                         }));
                     }
@@ -961,8 +1038,9 @@ public final class DefaultSyncService implements SyncService {
                             String mayorDiscordId = linkOpt.get().discordId();
                             if (!holders.contains(mayorDiscordId)) {
                                 acc.inconsistenciesFound.incrementAndGet();
-                                acc.problems.add("Verified mayor " + mayorDiscordId + " of town without space "
-                                        + town.name() + " is missing mayor role (" + mayorRoleId + ")");
+                                acc.problems.add(new SyncReport.Problem(
+                                        "sync.problem-mayor-missing-role-town-without-space",
+                                        Map.of("discord", mayorDiscordId, "town", town.name(), "role", mayorRoleId)));
 
                                 if (isReportMode) {
                                     acc.proposedGrants.incrementAndGet();
@@ -974,13 +1052,14 @@ public final class DefaultSyncService implements SyncService {
                                             acc.rolesGranted.incrementAndGet();
                                             acc.inconsistenciesRepaired.incrementAndGet();
                                         } else {
-                                            acc.problems.add("Failed to grant mayor role " + mayorRoleId
-                                                    + " to verified mayor " + mayorDiscordId + ": "
-                                                    + (outcome != null ? outcome.reason().orElse("unknown") : "unknown"));
+                                            acc.problems.add(new SyncReport.Problem(
+                                                    "sync.problem-grant-mayor-role-failed",
+                                                    Map.of("role", mayorRoleId, "discord", mayorDiscordId, "reason", safeReason(outcome))));
                                         }
                                     }).exceptionally(ex -> {
-                                        acc.problems.add("Failed to grant mayor role " + mayorRoleId
-                                                + " to verified mayor " + mayorDiscordId + ": " + ex.getMessage());
+                                        acc.problems.add(new SyncReport.Problem(
+                                                "sync.problem-grant-mayor-role-failed",
+                                                Map.of("role", mayorRoleId, "discord", mayorDiscordId, "reason", safeError(ex))));
                                         return null;
                                     }));
                                 }
@@ -998,7 +1077,9 @@ public final class DefaultSyncService implements SyncService {
                     .thenApply(v -> acc);
         }, executor).exceptionally(ex -> {
             acc.inconsistenciesFound.incrementAndGet();
-            acc.problems.add("Failed to audit mayor role: " + ex.getMessage());
+            acc.problems.add(new SyncReport.Problem(
+                    "sync.problem-audit-mayor-role-exception",
+                    Map.of("error", safeError(ex))));
             return acc;
         });
     }
@@ -1124,7 +1205,7 @@ public final class DefaultSyncService implements SyncService {
         }
 
         static TownyLookupResult unavailable() {
-            return new TownyLookupResult(TownyStatus.UNAVAILABLE, Optional.empty(), "Towny is unavailable");
+            return new TownyLookupResult(TownyStatus.UNAVAILABLE, Optional.empty(), "sync.cause-towny-unavailable");
         }
 
         boolean isOk() {
@@ -1159,7 +1240,7 @@ public final class DefaultSyncService implements SyncService {
         }
 
         static TownyTownsResult unavailable() {
-            return new TownyTownsResult(TownyStatus.UNAVAILABLE, List.of(), "Towny is unavailable");
+            return new TownyTownsResult(TownyStatus.UNAVAILABLE, List.of(), "sync.cause-towny-unavailable");
         }
 
         boolean isUnavailable() {
@@ -1171,6 +1252,86 @@ public final class DefaultSyncService implements SyncService {
         }
     }
 
+    private static String safeStr(Object val) {
+        if (val == null) return "";
+        String s = val.toString();
+        return s != null ? s : "";
+    }
+
+    private static String safeState(SpaceState state) {
+        if (state == null) {
+            return "general.unknown";
+        }
+        return switch (state) {
+            case ACTIVE -> "admin.state-active";
+            case ARCHIVED -> "admin.state-archived";
+            case INCONSISTENT -> "admin.state-inconsistent";
+        };
+    }
+
+    private static String safeError(Throwable t) {
+        if (t == null) return "general.unknown";
+        String msg = t.getMessage();
+        if (msg == null || msg.isBlank()) return "general.unknown";
+        return mapCause(msg);
+    }
+
+    private static String safeError(String msg) {
+        if (msg == null || msg.isBlank()) return "general.unknown";
+        return mapCause(msg);
+    }
+
+    private static String safeReason(OperationOutcome outcome) {
+        if (outcome != null && outcome.reason().isPresent()) {
+            return mapCause(outcome.reason().get());
+        }
+        return "general.unknown";
+    }
+
+    private static String safeReason(OperationOutcome outcome, Throwable ex) {
+        if (outcome != null && outcome.reason().isPresent()) {
+            return mapCause(outcome.reason().get());
+        }
+        if (ex != null) {
+            return safeError(ex);
+        }
+        return "general.unknown";
+    }
+
+    private static String mapCause(String msg) {
+        if (msg == null || msg.isBlank() || msg.equalsIgnoreCase("unknown")) {
+            return "general.unknown";
+        }
+        if (msg.startsWith("sync.cause-") || msg.startsWith("general.") || msg.startsWith("admin.")) {
+            return msg;
+        }
+        if (msg.contains("Towny is unavailable") || msg.contains("Towny data unavailable")) {
+            return "sync.cause-towny-unavailable";
+        }
+        if (msg.contains("Discord is unavailable") || msg.contains("Discord gateway is unavailable") || msg.contains("Discord gateway unavailable")) {
+            return "sync.cause-discord-unavailable";
+        }
+        if (msg.contains("read could not be completed") || msg.contains("Read failed against Towny") || msg.contains("Towny call threw exception")) {
+            return "sync.cause-towny-read-failed";
+        }
+        if (msg.contains("timed out") || msg.contains("timeout") || msg.contains("Timeout")) {
+            return "sync.cause-timeout";
+        }
+        if (msg.contains("disconnected") || msg.contains("Disconnected")) {
+            return "sync.cause-disconnected";
+        }
+        if (msg.contains("Queue stopped")) {
+            return "sync.cause-queue-stopped";
+        }
+        if (msg.contains("Interrupted")) {
+            return "sync.cause-interrupted";
+        }
+        if (msg.contains("Unexpected error")) {
+            return "sync.cause-unexpected";
+        }
+        return msg;
+    }
+
     private static final class SyncReportAccumulator {
         final int spacesChecked;
         final PluginConfig.Sync.Mode mode;
@@ -1180,7 +1341,7 @@ public final class DefaultSyncService implements SyncService {
         final AtomicInteger inconsistenciesRepaired = new AtomicInteger(0);
         final AtomicInteger proposedGrants = new AtomicInteger(0);
         final AtomicInteger proposedRevocations = new AtomicInteger(0);
-        final List<String> problems = Collections.synchronizedList(new ArrayList<>());
+        final List<SyncReport.Problem> problems = Collections.synchronizedList(new ArrayList<>());
 
         SyncReportAccumulator(int spacesChecked, PluginConfig.Sync.Mode mode) {
             this.spacesChecked = spacesChecked;

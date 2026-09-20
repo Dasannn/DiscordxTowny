@@ -393,7 +393,7 @@ class DefaultSpaceServiceTest {
     }
 
     @Test
-    @DisplayName("Create fails with DISCORD_UNAVAILABLE when gateway is not connected")
+    @DisplayName("Create fails with DISCORD_UNAVAILABLE when gateway is not connected and audits refusal")
     void createFailsWithDiscordUnavailableWhenGatewayOffline() {
         when(discordGateway.isAvailable()).thenReturn(false);
 
@@ -404,10 +404,21 @@ class DefaultSpaceServiceTest {
 
         assertEquals(CreateResult.DISCORD_UNAVAILABLE, result);
         verify(discordGateway, never()).submit(any());
+
+        List<AuditEvent> events = storage.audit().recent(req.townName(), 10);
+        assertEquals(1, events.size());
+        AuditEvent event = events.get(0);
+        assertFalse(event.success());
+        assertEquals(AuditEvent.Severity.ERROR, event.severity());
+        assertEquals("space_create", event.action());
+        assertEquals(req.townName(), event.target());
+        assertEquals("mayor-discord", event.actor());
+        assertTrue(event.detail().isPresent());
+        assertTrue(event.detail().get().toLowerCase().contains("unavailable"));
     }
 
     @Test
-    @DisplayName("Create fails with DISCORD_UNAVAILABLE when bot lacks permissions")
+    @DisplayName("Create fails with DISCORD_UNAVAILABLE when bot lacks permissions and audits refusal with cause")
     void createFailsWithDiscordUnavailableWhenMissingPermissions() {
         when(discordGateway.isAvailable()).thenReturn(true);
         when(discordGateway.verifyPermissions()).thenReturn(Optional.of("Missing MANAGE_CHANNELS permission"));
@@ -419,6 +430,17 @@ class DefaultSpaceServiceTest {
 
         assertEquals(CreateResult.DISCORD_UNAVAILABLE, result);
         verify(discordGateway, never()).submit(any());
+
+        List<AuditEvent> events = storage.audit().recent(req.townName(), 10);
+        assertEquals(1, events.size());
+        AuditEvent event = events.get(0);
+        assertFalse(event.success());
+        assertEquals(AuditEvent.Severity.ERROR, event.severity());
+        assertEquals("space_create", event.action());
+        assertEquals(req.townName(), event.target());
+        assertEquals("mayor-discord", event.actor());
+        assertTrue(event.detail().isPresent());
+        assertTrue(event.detail().get().contains("Missing MANAGE_CHANNELS permission"));
     }
 
     @Test
@@ -472,6 +494,11 @@ class DefaultSpaceServiceTest {
         verify(discordGateway).submit(any(GuildOperation.CreateSpace.class));
         verify(discordGateway).log(argThat(event ->
                 event.action().equals("space_create") && event.success()));
+
+        List<AuditEvent> events = storage.audit().recent(req.townName(), 10);
+        assertEquals(1, events.size(), "Healthy creation must write exactly one audit event upon completion (no duplicate at admission)");
+        assertTrue(events.get(0).success());
+        assertEquals(AuditEvent.Severity.INFO, events.get(0).severity());
     }
 
     // --- Idempotency & Resumption ---
