@@ -465,6 +465,69 @@ unconfigured the rows are still written.
 
 ---
 
+## T17 — One language at a time
+
+- **Branch**: `feat/idioma-completo` · **Phase** 6 · **Depends on**: T14
+- **Status**: pending · **Zone**: `discord/` slash commands, `minecraft/`,
+  the two message catalogs
+
+**Why**
+
+On a live server the Spanish setting still produces English: embed field names
+sit next to Spanish values, and every slash command's description is English
+regardless. A half-translated reply reads as a bug.
+
+**Builds**
+
+- Every player-visible string follows the configured language: replies, embed
+  field names, button captions, list headings, empty-state text.
+- `town`, `nation` and `resident` stay **invariant** in both catalogs, per spec
+  9.1. They are what Towny shows and what the commands are called.
+- Slash command names and descriptions registered with **localizations for both
+  languages**, so each viewer sees their own client's language. This is not
+  governed by `language`.
+- A sweep for any remaining literal that reaches a person from Java.
+
+**Acceptance**: with `language: es` nothing a player reads is in English except
+the invariant domain terms; with `language: en` the same in reverse; the console
+stays English either way. A Discord client set to Spanish shows Spanish command
+descriptions while one set to English shows English, in the same guild.
+
+**Do not touch**: console and log output, which stays English by spec 9.1.
+
+---
+
+## T18 — Permission nodes
+
+- **Branch**: `feat/permisos` · **Phase** 6 · **Depends on**: T8
+- **Status**: pending · **Zone**: `minecraft/`, `src/main/resources/paper-plugin.yml`
+
+**Why**
+
+The plugin uses exactly one permission node, `discordtowny.admin`, and **declares
+none**. An undeclared node is invisible to a permissions manager and falls back
+to operator status. The player commands check nothing at all: anyone can run
+them.
+
+**Builds**
+
+- `discordtowny.use` for the player commands, default everyone.
+- `discordtowny.admin` for the `/dt admin` block, default operators.
+- Both **declared in `paper-plugin.yml`** with their defaults and a description,
+  so LuckPerms can list and complete them.
+- Every command checks its node, and a refusal explains itself through the
+  message catalog rather than failing silently.
+- `/dt help` keeps listing only what the runner may use.
+
+**Acceptance**: with LuckPerms, denying `discordtowny.use` to a player blocks the
+player commands and leaves the administration block governed by its own node;
+granting `discordtowny.admin` alone does not grant the player commands; both
+nodes appear in `/lp` completion.
+
+**Do not touch**: the domain. This is a guard in front of the commands.
+
+---
+
 ## Quick Map
 
 | Task | Phase | Depends on | Parallel to | Zone |
