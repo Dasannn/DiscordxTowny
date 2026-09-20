@@ -60,5 +60,4 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0-T12 and T14-T16. Remaining: T13 release,
-T17 one language at a time, T18 permission nodes.
+See `docs/tasks.md`. Integrated: T0-T12 and T14-T19. Remaining: T13 release.

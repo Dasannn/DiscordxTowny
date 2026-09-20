@@ -554,7 +554,7 @@ nodes appear in `/lp` completion.
 ## T19 — What the sync report says, and what it does not record
 
 - **Branch**: `fix/informe-sync` · **Phase** 6 · **Depends on**: T16, T17
-- **Status**: pending · **Zone**: `sync/`, `space/`
+- **Status**: integrated · **Zone**: `sync/`, `space/`
 
 **Why**
 
