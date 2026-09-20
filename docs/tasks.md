@@ -515,8 +515,11 @@ them.
 - `discordtowny.admin` for the `/dt admin` block, default operators.
 - Both **declared in `paper-plugin.yml`** with their defaults and a description,
   so LuckPerms can list and complete them.
-- Every command checks its node, and a refusal explains itself through the
-  message catalog rather than failing silently.
+- Every command checks its node. A player command refuses with an explanation
+  from the message catalog; the `/dt admin` block is **hidden** from anyone who
+  may not use it, which is what Brigadier's `requires` does. A refusal message
+  there would advertise the staff surface to every player, so the generic
+  "unknown command" is the wanted behaviour, not a gap.
 - `/dt help` keeps listing only what the runner may use.
 
 **Acceptance**: with LuckPerms, denying `discordtowny.use` to a player blocks the
