@@ -302,6 +302,44 @@ degraded mode the rest of the configuration already promises.
 `/dt admin reload` re-reads the language and the message files, so changing
 `language` takes effect without restarting the server.
 
+**One language at a time.** Whatever a player reads is in the configured
+language: command replies, error messages, embed field names, button captions
+and list headings alike. A reply that is half translated is worse than one that
+is not translated at all, because it reads as a bug.
+
+**Domain terms are the exception, and they are invariant.** `town`, `nation` and
+`resident` stay as they are in both languages. They are what Towny itself shows
+and what the commands are called, so translating them in prose while the player
+types `/town` would create the very mixture this rule exists to remove.
+
+**Discord command metadata carries both languages.** The name and description a
+slash command shows are registered with localizations, so each viewer sees their
+own client's language. This is not governed by `language`, which is a
+server-wide setting: two players in the same guild can read Discord in different
+languages, and the plugin should respect that rather than impose the server's
+choice on its own interface.
+
+### 9.2 Permissions
+
+Two nodes, declared by the plugin so that a permissions manager can discover
+them:
+
+| Node | Covers | Default |
+|---|---|---|
+| `discordtowny.use` | The player commands: `help`, `link`, `unlink`, `status`, `create`, `delete`, `sync` | everyone |
+| `discordtowny.admin` | The whole `/dt admin` block | operators |
+
+Both are declared in `paper-plugin.yml` with their defaults. Undeclared nodes are
+invisible to LuckPerms and fall back to operator status, which is why every
+command that checks a permission must have its node declared.
+
+`/dt help` lists only what the person running it may actually use, so a player
+without `discordtowny.admin` never sees the administration block.
+
+Holding `discordtowny.admin` does not imply `discordtowny.use`: an operator who
+was explicitly denied the player commands keeps that denial. Inheritance between
+the two is the server owner's decision to configure, not ours to assume.
+
 ## 10. Errors and failures
 
 - If the bot cannot connect, the Minecraft server operates
