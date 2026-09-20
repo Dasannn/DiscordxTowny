@@ -12,9 +12,11 @@ import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
+import net.dv8tion.jda.api.interactions.DiscordLocale;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
+import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
@@ -202,6 +204,55 @@ class TownySlashCommandsTest {
         assertFalse(data.stream().anyMatch(c -> c.getName().equals("town")));
         assertFalse(data.stream().anyMatch(c -> c.getName().equals("res")));
     }
+
+    @Test
+    void getCommandDataRegistersSpanishLocalizationsForCommandsAndOptions() {
+        List<SlashCommandData> data = TownySlashCommands.getCommandData(config);
+        assertEquals(6, data.size());
+
+        for (SlashCommandData cmd : data) {
+            assertTrue(cmd.getNameLocalizations().toMap().isEmpty(),
+                    "Command " + cmd.getName() + " must not declare redundant name localizations");
+            assertNotNull(cmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH),
+                    "Command " + cmd.getName() + " missing SPANISH description");
+            assertNotNull(cmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH_LATAM),
+                    "Command " + cmd.getName() + " missing SPANISH_LATAM description");
+            assertFalse(cmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH).isBlank(),
+                    "Command " + cmd.getName() + " SPANISH description must not be blank");
+        }
+
+        SlashCommandData townCmd = data.stream().filter(c -> c.getName().equals("town")).findFirst().orElseThrow();
+        assertEquals("Muestra información de la town", townCmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+        OptionData townNameOpt = townCmd.getOptions().getFirst();
+        assertEquals("nombre", townNameOpt.getNameLocalizations().get(DiscordLocale.SPANISH));
+        assertEquals("Nombre de la town (dejar vacío para tu propia town)", townNameOpt.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+
+        SlashCommandData resCmd = data.stream().filter(c -> c.getName().equals("res")).findFirst().orElseThrow();
+        assertEquals("Muestra información del resident", resCmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+        OptionData resNameOpt = resCmd.getOptions().getFirst();
+        assertTrue(resNameOpt.getNameLocalizations().toMap().isEmpty(),
+                "Option resident on /res must not declare redundant name localization");
+        assertEquals("Nombre del resident (dejar vacío para ti mismo)", resNameOpt.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+
+        SlashCommandData residentsCmd = data.stream().filter(c -> c.getName().equals("residents")).findFirst().orElseThrow();
+        assertEquals("Lista los residents de una town", residentsCmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+        OptionData resTownOpt = residentsCmd.getOptions().stream().filter(o -> o.getName().equals("town")).findFirst().orElseThrow();
+        assertTrue(resTownOpt.getNameLocalizations().toMap().isEmpty(),
+                "Option town on /residents must not declare redundant name localization");
+        OptionData resPageOpt = residentsCmd.getOptions().stream().filter(o -> o.getName().equals("page")).findFirst().orElseThrow();
+        assertEquals("pagina", resPageOpt.getNameLocalizations().get(DiscordLocale.SPANISH));
+        assertEquals("Número de página (por defecto 1)", resPageOpt.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+
+        SlashCommandData townlistCmd = data.stream().filter(c -> c.getName().equals("townlist")).findFirst().orElseThrow();
+        assertEquals("Lista todas las towns del servidor", townlistCmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+        OptionData listPageOpt = townlistCmd.getOptions().getFirst();
+        assertEquals("pagina", listPageOpt.getNameLocalizations().get(DiscordLocale.SPANISH));
+        assertEquals("Número de página (por defecto 1)", listPageOpt.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+
+        SlashCommandData helpCmd = data.stream().filter(c -> c.getName().equals("help")).findFirst().orElseThrow();
+        assertEquals("Muestra los comandos de Discord disponibles", helpCmd.getDescriptionLocalizations().get(DiscordLocale.SPANISH));
+    }
+
 
     // --- Disabled Command ---
 
@@ -1194,15 +1245,19 @@ class TownySlashCommandsTest {
         MessageEmbed embed = embedCaptor.getValue();
 
         assertEquals("embed.help-title", embed.getTitle());
-        assertTrue(embed.getDescription().contains("embed.help-intro"));
-        assertTrue(embed.getDescription().contains("/town"));
-        assertTrue(embed.getDescription().contains("/mytown"));
-        assertTrue(embed.getDescription().contains("/res"));
-        assertTrue(embed.getDescription().contains("/residents"));
-        assertTrue(embed.getDescription().contains("/townlist"));
-        assertTrue(embed.getDescription().contains("/link"));
-        assertTrue(embed.getDescription().contains("/unlink"));
-        assertTrue(embed.getDescription().contains("/help"));
+        List<String> lines = embed.getDescription().lines().map(String::strip).toList();
+        assertEquals(List.of(
+                "embed.help-intro",
+                "",
+                "embed.help-town",
+                "embed.help-mytown",
+                "embed.help-res",
+                "embed.help-residents",
+                "embed.help-townlist",
+                "embed.help-link",
+                "embed.help-unlink",
+                "embed.help-help"
+        ), lines, "Help description must contain all 8 command entries as complete distinct lines");
 
         // Towny is not touched for help
         verifyNoInteractions(townyFacade);

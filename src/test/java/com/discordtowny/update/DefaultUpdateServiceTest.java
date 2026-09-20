@@ -3,6 +3,7 @@ package com.discordtowny.update;
 import com.discordtowny.config.Messages;
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.config.YamlMessages;
+import com.discordtowny.minecraft.EnglishMessages;
 import com.discordtowny.model.AuditEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -1807,7 +1808,9 @@ class DefaultUpdateServiceTest {
         assertTrue(msg.contains("Hay una version nueva: 2.0.0"), "Message must use Spanish catalog text");
         assertTrue(msg.contains("cambios incompatibles"), "Message must use Spanish breaking text");
 
-        // 2. Check Discord audit event detail: should use messages.label without prefix
+        // 2. The Discord log channel belongs to the log boundary, which spec 9.1 keeps
+        // in English however the players are served. The same run therefore produces a
+        // Spanish notice above and an English audit detail here.
         AuditEvent availableEvent = auditEvents.stream()
                 .filter(e -> "update_available".equals(e.action()))
                 .findFirst()
@@ -1815,7 +1818,17 @@ class DefaultUpdateServiceTest {
         assertTrue(availableEvent.detail().isPresent());
         String auditDetail = availableEvent.detail().get();
         assertFalse(auditDetail.startsWith("[DT]"), "Audit detail must NOT contain chat prefix");
-        assertTrue(auditDetail.contains("Hay una version nueva: 2.0.0"));
+        // The detail is one line: the notice, then the breaking warning, then the summary.
+        assertTrue(
+                auditDetail.startsWith(EnglishMessages.bundled().label("updates.available",
+                        Map.of("latest", "2.0.0", "current", "1.0.0"))),
+                "Audit detail must come from the bundled English catalog");
+        assertTrue(
+                auditDetail.contains(EnglishMessages.bundled().label("updates.breaking",
+                        Map.of("latest", "2.0.0"))),
+                "The breaking-change warning must be English too");
+        assertFalse(auditDetail.contains("Hay una version nueva"),
+                "The configured player catalog must never reach the Discord log channel");
     }
 
     @Test

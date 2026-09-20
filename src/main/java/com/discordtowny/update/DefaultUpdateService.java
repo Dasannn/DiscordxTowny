@@ -579,7 +579,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 // Notice in Discord log channel (once per version, localized via catalog)
                 try {
                     if (logChannelNotifiedVersions.add(release.version()) && auditLogger != null) {
-                        Messages msgs = messagesSupplier.get();
+                        // The Discord log channel is part of the log boundary, which spec 9.1
+                        // keeps in English whatever the players read.
+                        Messages msgs = EnglishMessages.bundled();
                         StringBuilder detail = new StringBuilder(msgs.label("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
                         if (isBreaking(release)) {
                             detail.append(" ").append(msgs.label("updates.breaking", Map.of("latest", release.version())));
@@ -1290,7 +1292,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 // Log channel notification once on download completion (F7, F9: notification failure must not misreport committed download)
                 try {
                     if (downloadNotifiedVersions.add(release.version()) && auditLogger != null) {
-                        Messages msgs = messagesSupplier.get();
+                        // The Discord log channel is part of the log boundary, which spec 9.1
+                        // keeps in English whatever the players read.
+                        Messages msgs = EnglishMessages.bundled();
                         auditLogger.accept(new AuditEvent(
                                 Instant.now(),
                                 AuditEvent.Severity.INFO,

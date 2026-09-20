@@ -356,7 +356,8 @@ public final class LinkMinecraftCommands {
             Commands registrar = event.registrar();
             LiteralCommandNode<CommandSourceStack> node = createCommandNode(
                     linkService, config, messages, consoleMessages, townyFacade, scheduler);
-            registrar.register(node, "DiscordTowny linking commands", List.of("discordtowny"));
+            String description = (messages != null) ? messages.label("help.link-description") : "DiscordTowny linking commands";
+            registrar.register(node, description, List.of("discordtowny"));
         });
     }
 

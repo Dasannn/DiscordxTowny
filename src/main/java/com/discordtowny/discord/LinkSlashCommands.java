@@ -6,9 +6,11 @@ import com.discordtowny.link.LinkService;
 import com.discordtowny.model.AccountLink;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
+import net.dv8tion.jda.api.interactions.DiscordLocale;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 
 import java.time.Clock;
@@ -75,11 +77,19 @@ public final class LinkSlashCommands extends ListenerAdapter {
         List<SlashCommandData> data = new ArrayList<>();
         if (config == null || config.commands().byName("link").map(PluginConfig.DiscordCommand::enabled).orElse(true)) {
             data.add(Commands.slash("link", "Link your Minecraft account with Discord")
-                    .addOption(OptionType.STRING, "code",
-                            "6-character code generated in-game with /dt link", true));
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Vincula tu cuenta de Minecraft con Discord")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Vincula tu cuenta de Minecraft con Discord")
+                    .addOptions(new OptionData(OptionType.STRING, "code",
+                            "6-character code generated in-game with /dt link", true)
+                            .setNameLocalization(DiscordLocale.SPANISH, "codigo")
+                            .setNameLocalization(DiscordLocale.SPANISH_LATAM, "codigo")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH, "Código de 6 caracteres generado en el juego con /dt link")
+                            .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Código de 6 caracteres generado en el juego con /dt link")));
         }
         if (config == null || config.commands().byName("unlink").map(PluginConfig.DiscordCommand::enabled).orElse(true)) {
-            data.add(Commands.slash("unlink", "Unlink your Minecraft account from Discord"));
+            data.add(Commands.slash("unlink", "Unlink your Minecraft account from Discord")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH, "Desvincula tu cuenta de Minecraft de Discord")
+                    .setDescriptionLocalization(DiscordLocale.SPANISH_LATAM, "Desvincula tu cuenta de Minecraft de Discord"));
         }
         return data;
     }

@@ -85,6 +85,8 @@ class SyncMinecraftCommandsTest {
 
     @Test
     void dtSyncFailsForConsoleSender() throws Exception {
+        when(messages.get("general.players-only")).thenReturn(Component.text("Solo jugadores"));
+
         LiteralCommandNode<CommandSourceStack> root = SyncMinecraftCommands.createCommandNode(
                 syncService, messages, townyFacade);
 
@@ -98,7 +100,8 @@ class SyncMinecraftCommandsTest {
 
         root.getChild("sync").getCommand().run(ctx);
 
-        verify(console, times(1)).sendMessage(messages.get("general.players-only"));
+        verify(console, times(1)).sendMessage(EnglishMessages.bundled().get("general.players-only"));
+        verifyNoInteractions(messages);
         verify(syncService, never()).syncTown(any());
     }
 
@@ -384,15 +387,16 @@ class SyncMinecraftCommandsTest {
         CommandNode<CommandSourceStack> adminSync = root.getChild("admin").getChild("sync");
         adminSync.getCommand().run(ctx);
 
-        inOrder.verify(sender, times(1)).sendMessage(messages.get("sync.started"));
+        inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.started"));
         verify(syncService, times(1)).reconcileAll();
 
         SyncService.SyncReport report = new SyncService.SyncReport(5, 3, 1, 0, 0, List.of());
         CompletableFuture.runAsync(() -> asyncFuture.complete(report)).join();
 
         assertTrue(scheduled.get());
-        inOrder.verify(sender, times(1)).sendMessage(messages.get("sync.finished"));
+        inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.finished"));
         inOrder.verifyNoMoreInteractions();
+        verifyNoInteractions(messages);
     }
 
     @Test
@@ -428,14 +432,15 @@ class SyncMinecraftCommandsTest {
         CommandNode<CommandSourceStack> townArgNode = root.getChild("admin").getChild("sync").getChild("town");
         townArgNode.getCommand().run(ctx);
 
-        inOrder.verify(sender, times(1)).sendMessage(messages.get("sync.started"));
+        inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.started"));
         verify(syncService, times(1)).syncTown(spartaUuid);
 
         CompletableFuture.runAsync(() -> asyncFuture.complete(new SyncService.SyncReport(1, 0, 0, 0, 0, List.of()))).join();
 
         assertTrue(scheduled.get());
-        inOrder.verify(sender, times(1)).sendMessage(messages.get("sync.finished"));
+        inOrder.verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("sync.finished"));
         inOrder.verifyNoMoreInteractions();
+        verifyNoInteractions(messages);
     }
 
     @Test
@@ -457,9 +462,10 @@ class SyncMinecraftCommandsTest {
         CommandNode<CommandSourceStack> townArgNode = root.getChild("admin").getChild("sync").getChild("town");
         townArgNode.getCommand().run(ctx);
 
-        verify(sender, times(1)).sendMessage(messages.get("general.town-not-found", Map.of("town", "Atlantis")));
+        verify(sender, times(1)).sendMessage(EnglishMessages.bundled().get("general.town-not-found", Map.of("town", "Atlantis")));
         verify(syncService, never()).syncTown(any());
         verify(syncService, never()).reconcileAll();
+        verifyNoInteractions(messages);
     }
 
     private static PluginConfig createConfig(PluginConfig.Sync.Mode mode) {
@@ -574,11 +580,11 @@ class SyncMinecraftCommandsTest {
         assertTrue(scheduled.get());
 
         // CRITICAL: Must NEVER send sync.finished in report mode with discrepancies!
-        verify(sender, never()).sendMessage(messages.get("sync.finished"));
+        verify(sender, never()).sendMessage(EnglishMessages.bundled().get("sync.finished"));
 
-        // Must report what was found and deliberately not touched using message keys
-        verify(messages).get(eq("sync.report-found"), eq(Map.of("count", "3")));
-        verify(messages).get(eq("sync.report-pending"), eq(Map.of("granted", "2", "revoked", "1")));
+        // Must report what was found and deliberately not touched using bundled English messages
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.report-found", Map.of("count", "3")));
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.report-pending", Map.of("granted", "2", "revoked", "1")));
 
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(sender, atLeastOnce()).sendMessage(captor.capture());
@@ -587,10 +593,14 @@ class SyncMinecraftCommandsTest {
                 .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
                 .toList();
 
-        assertTrue(plainTexts.contains("sync.report-found"),
-                "Must report sync.report-found key in report mode");
-        assertTrue(plainTexts.contains("sync.report-pending"),
-                "Must report sync.report-pending key in report mode");
+        String reportFound = EnglishMessages.bundled().plain("sync.report-found", Map.of("count", "3"));
+        String reportPending = EnglishMessages.bundled().plain("sync.report-pending", Map.of("granted", "2", "revoked", "1"));
+
+        assertTrue(plainTexts.contains(reportFound),
+                "Must report sync.report-found text in report mode");
+        assertTrue(plainTexts.contains(reportPending),
+                "Must report sync.report-pending text in report mode");
+        verifyNoInteractions(messages);
     }
 
     @Test
@@ -624,8 +634,8 @@ class SyncMinecraftCommandsTest {
 
         assertTrue(scheduled.get());
 
-        verify(sender, never()).sendMessage(messages.get("sync.finished"));
-        verify(messages).get(eq("sync.report-clean"), eq(Map.of("spaces", "4")));
+        verify(sender, never()).sendMessage(EnglishMessages.bundled().get("sync.finished"));
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.report-clean", Map.of("spaces", "4")));
 
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(sender, atLeastOnce()).sendMessage(captor.capture());
@@ -634,8 +644,10 @@ class SyncMinecraftCommandsTest {
                 .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
                 .toList();
 
-        assertTrue(plainTexts.contains("sync.report-clean"),
-                "Must report sync.report-clean key in clean report mode");
+        String reportClean = EnglishMessages.bundled().plain("sync.report-clean", Map.of("spaces", "4"));
+        assertTrue(plainTexts.contains(reportClean),
+                "Must report sync.report-clean text in clean report mode");
+        verifyNoInteractions(messages);
     }
 
     @Test
@@ -783,10 +795,10 @@ class SyncMinecraftCommandsTest {
 
         assertTrue(scheduled.get());
 
-        verify(sender, never()).sendMessage(messages.get("sync.finished"));
-        verify(messages).get(eq("sync.report-clean"), eq(Map.of("spaces", "2")));
-        verify(messages).get(eq("sync.problems-header"), eq(Map.of("count", "1")));
-        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Discord rate limit")));
+        verify(sender, never()).sendMessage(EnglishMessages.bundled().get("sync.finished"));
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.report-clean", Map.of("spaces", "2")));
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.problems-header", Map.of("count", "1")));
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.problem-entry", Map.of("problem", "Discord rate limit")));
 
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(sender, atLeastOnce()).sendMessage(captor.capture());
@@ -795,9 +807,14 @@ class SyncMinecraftCommandsTest {
                 .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
                 .toList();
 
-        assertTrue(plainTexts.contains("sync.report-clean"));
-        assertTrue(plainTexts.contains("sync.problems-header"));
-        assertTrue(plainTexts.contains("sync.problem-entry"));
+        String reportClean = EnglishMessages.bundled().plain("sync.report-clean", Map.of("spaces", "2"));
+        String problemsHeader = EnglishMessages.bundled().plain("sync.problems-header", Map.of("count", "1"));
+        String problemEntry = EnglishMessages.bundled().plain("sync.problem-entry", Map.of("problem", "Discord rate limit"));
+
+        assertTrue(plainTexts.contains(reportClean));
+        assertTrue(plainTexts.contains(problemsHeader));
+        assertTrue(plainTexts.contains(problemEntry));
+        verifyNoInteractions(messages);
     }
 
     @Test

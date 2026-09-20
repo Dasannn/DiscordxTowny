@@ -134,7 +134,7 @@ public final class SyncMinecraftCommands {
         return Commands.literal("sync")
                 .executes(ctx -> {
                     CommandSender sender = ctx.getSource().getSender();
-                    Messages msg = (sender instanceof Player || consoleMessages == null) ? messages : consoleMessages;
+                    Messages msg = resolveMessages(sender, messages, consoleMessages);
                     if (!(sender instanceof Player player)) {
                         sender.sendMessage(msg.get("general.players-only"));
                         return 1;
@@ -264,7 +264,7 @@ public final class SyncMinecraftCommands {
                     CommandSender sender = ctx.getSource().getSender();
                     Messages messages = messagesSupplier != null ? messagesSupplier.get() : null;
                     Messages consoleMessages = consoleMessagesSupplier != null ? consoleMessagesSupplier.get() : null;
-                    Messages msg = (sender instanceof Player || consoleMessages == null) ? messages : consoleMessages;
+                    Messages msg = resolveMessages(sender, messages, consoleMessages);
 
                     SyncService syncService = syncServiceSupplier != null ? syncServiceSupplier.get() : null;
                     if (syncService == null) {
@@ -304,7 +304,7 @@ public final class SyncMinecraftCommands {
                             CommandSender sender = ctx.getSource().getSender();
                             Messages messages = messagesSupplier != null ? messagesSupplier.get() : null;
                             Messages consoleMessages = consoleMessagesSupplier != null ? consoleMessagesSupplier.get() : null;
-                            Messages msg = (sender instanceof Player || consoleMessages == null) ? messages : consoleMessages;
+                            Messages msg = resolveMessages(sender, messages, consoleMessages);
 
                             SyncService syncService = syncServiceSupplier != null ? syncServiceSupplier.get() : null;
                             if (syncService == null) {
@@ -355,7 +355,8 @@ public final class SyncMinecraftCommands {
             Commands registrar = event.registrar();
             LiteralCommandNode<CommandSourceStack> node = createCommandNode(
                     syncService, config, messages, townyFacade, scheduler);
-            registrar.register(node, "DiscordTowny synchronization commands", List.of("discordtowny"));
+            String description = (messages != null) ? messages.label("help.sync-description") : "DiscordTowny synchronization commands";
+            registrar.register(node, description, List.of("discordtowny"));
         });
     }
 
@@ -499,5 +500,12 @@ public final class SyncMinecraftCommands {
                 LOGGER.log(Level.SEVERE, "[SyncCommands] Error scheduling response on the main scheduler", t);
             }
         };
+    }
+
+    private static Messages resolveMessages(CommandSender sender, Messages messages, Messages consoleMessages) {
+        if (sender instanceof Player) {
+            return messages != null ? messages : EnglishMessages.bundled();
+        }
+        return consoleMessages != null ? consoleMessages : EnglishMessages.bundled();
     }
 }
