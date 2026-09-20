@@ -577,25 +577,29 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 }
 
                 // Notice in Discord log channel (once per version, localized via catalog)
-                if (logChannelNotifiedVersions.add(release.version()) && auditLogger != null) {
-                    Messages msgs = messagesSupplier.get();
-                    StringBuilder detail = new StringBuilder(msgs.label("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
-                    if (isBreaking(release)) {
-                        detail.append(" ").append(msgs.label("updates.breaking", Map.of("latest", release.version())));
+                try {
+                    if (logChannelNotifiedVersions.add(release.version()) && auditLogger != null) {
+                        Messages msgs = messagesSupplier.get();
+                        StringBuilder detail = new StringBuilder(msgs.label("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
+                        if (isBreaking(release)) {
+                            detail.append(" ").append(msgs.label("updates.breaking", Map.of("latest", release.version())));
+                        }
+                        String summary = extractSummary(release.notes());
+                        if (!summary.isBlank()) {
+                            detail.append(" ").append(msgs.label("updates.summary", Map.of("summary", summary)));
+                        }
+                        auditLogger.accept(new AuditEvent(
+                                Instant.now(),
+                                AuditEvent.Severity.INFO,
+                                "Updater",
+                                "update_available",
+                                release.version(),
+                                true,
+                                Optional.of(detail.toString())
+                        ));
                     }
-                    String summary = extractSummary(release.notes());
-                    if (!summary.isBlank()) {
-                        detail.append(" ").append(msgs.label("updates.summary", Map.of("summary", summary)));
-                    }
-                    auditLogger.accept(new AuditEvent(
-                            Instant.now(),
-                            AuditEvent.Severity.INFO,
-                            "Updater",
-                            "update_available",
-                            release.version(),
-                            true,
-                            Optional.of(detail.toString())
-                    ));
+                } catch (Exception e) {
+                    logger.log(Level.WARNING, "Failed to emit audit notification for available update", e);
                 }
 
                 // Auto-download if enabled, not already pending, and NOT breaking (F6)

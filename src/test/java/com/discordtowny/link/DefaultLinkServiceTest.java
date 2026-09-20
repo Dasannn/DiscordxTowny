@@ -13,10 +13,12 @@ import com.discordtowny.storage.HikariStorage;
 import com.discordtowny.storage.LinkRepository;
 import com.discordtowny.storage.SpaceRepository;
 import com.discordtowny.storage.StorageException;
+import com.discordtowny.CompositeAuditSink;
 import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -120,6 +122,7 @@ class DefaultLinkServiceTest {
                 townyFacade,
                 spaceRepository,
                 syncService,
+                new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run),
                 clock,
                 ForkJoinPool.commonPool()
         );
@@ -348,7 +351,8 @@ class DefaultLinkServiceTest {
         }).when(spyRepo).consumeCodeAndLink(any(), eq(discordId), any(), any());
 
         DefaultLinkService burstService = new DefaultLinkService(
-                spyRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
+                spyRepo, config, discordGateway, townyFacade, spaceRepository, syncService,
+                new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run), clock, ForkJoinPool.commonPool()
         );
 
         for (int i = 0; i < totalRequests; i++) {
@@ -484,7 +488,8 @@ class DefaultLinkServiceTest {
         when(failingSpaceRepo.findAll()).thenThrow(new StorageException("Error de BD en spaces"));
 
         DefaultLinkService failingService = new DefaultLinkService(
-                linkRepository, config, discordGateway, townyFacade, failingSpaceRepo, syncService, clock, ForkJoinPool.commonPool()
+                linkRepository, config, discordGateway, townyFacade, failingSpaceRepo, syncService,
+                new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run), clock, ForkJoinPool.commonPool()
         );
 
         UUID uuid = UUID.randomUUID();
@@ -610,7 +615,8 @@ class DefaultLinkServiceTest {
                 .thenThrow(new StorageException("Error al canjear", new SQLException("disk I/O error")));
 
         DefaultLinkService failService = new DefaultLinkService(
-                mockRepo, config, discordGateway, townyFacade, spaceRepository, syncService, clock, ForkJoinPool.commonPool()
+                mockRepo, config, discordGateway, townyFacade, spaceRepository, syncService,
+                new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run), clock, ForkJoinPool.commonPool()
         );
 
         CompletionException ex = assertThrows(
@@ -654,6 +660,102 @@ class DefaultLinkServiceTest {
 
         assertEquals(1, successCount, "Exactly one of the redemptions must succeed");
         assertEquals(1, failedCount, "The other concurrent redemption must be rejected");
+    }
+
+    // --- T16: Audit persistence tests ---
+
+    @Test
+    @DisplayName("T16: Account linking writes link row to dt_audit_log in database")
+    void linkAccountWritesItsRowToDatabase() {
+        UUID uuid = UUID.randomUUID();
+        String discordId = "discord_user_persist";
+        String code = service.generateCode(uuid, "PlayerPersist").join().orElseThrow();
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultLinkService serviceWithSink = new DefaultLinkService(
+                linkRepository, config, discordGateway, townyFacade, spaceRepository, syncService,
+                sink, clock, ForkJoinPool.commonPool());
+
+        LinkService.LinkResult result = serviceWithSink.redeem(code, discordId).join();
+
+        assertEquals(LinkService.LinkResult.SUCCESS, result);
+        List<AuditEvent> events = storage.audit().recent(uuid.toString(), 10);
+        assertEquals(1, events.size(), "Database must hold 1 audit row for account link");
+        AuditEvent event = events.get(0);
+        assertEquals("link", event.action());
+        assertEquals(discordId, event.actor());
+        assertEquals(uuid.toString(), event.target());
+        assertTrue(event.success());
+        assertEquals(AuditEvent.Severity.INFO, event.severity());
+        verify(discordGateway, times(1)).log(any(AuditEvent.class));
+    }
+
+    @Test
+    @DisplayName("T16: Invalid link attempt writes warning row without exposing code to database")
+    void invalidLinkAttemptWritesWarningRowWithoutExposingCode() {
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultLinkService serviceWithSink = new DefaultLinkService(
+                linkRepository, config, discordGateway, townyFacade, spaceRepository, syncService,
+                sink, clock, ForkJoinPool.commonPool());
+
+        String badCode = "SECRET99";
+        LinkService.LinkResult result = serviceWithSink.redeem(badCode, "discord_attacker").join();
+
+        assertEquals(LinkService.LinkResult.CODE_INVALID, result);
+        List<AuditEvent> events = storage.audit().recent("", 10);
+        assertEquals(1, events.size(), "Database must record invalid link attempt");
+        AuditEvent event = events.get(0);
+        assertEquals("link_attempt", event.action());
+        assertEquals("discord_attacker", event.actor());
+        assertFalse(event.success());
+        assertEquals(AuditEvent.Severity.WARNING, event.severity());
+        assertFalse(event.target().contains(badCode), "Audit target must never contain the code");
+        event.detail().ifPresent(d -> assertFalse(d.contains(badCode), "Audit detail must never contain the code"));
+    }
+
+    @Test
+    @DisplayName("T16: Unlinking an account writes unlink row to dt_audit_log in database")
+    void unlinkAccountWritesItsRowToDatabase() {
+        UUID uuid = UUID.randomUUID();
+        String discordId = "discord_unlink_test";
+        String code = service.generateCode(uuid).join().orElseThrow();
+        service.redeem(code, discordId).join();
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultLinkService serviceWithSink = new DefaultLinkService(
+                linkRepository, config, discordGateway, townyFacade, spaceRepository, syncService,
+                sink, clock, ForkJoinPool.commonPool());
+
+        boolean unlinked = serviceWithSink.unlink(uuid).join();
+
+        assertTrue(unlinked);
+        List<AuditEvent> events = storage.audit().recent(uuid.toString(), 10);
+        assertFalse(events.isEmpty());
+        AuditEvent unlinkEvent = events.stream().filter(e -> "unlink".equals(e.action())).findFirst().orElseThrow();
+        assertEquals(uuid.toString(), unlinkEvent.target());
+        assertTrue(unlinkEvent.success());
+        assertEquals(AuditEvent.Severity.INFO, unlinkEvent.severity());
+    }
+
+    @Test
+    @DisplayName("T16: With no log channel configured linking still writes rows to database")
+    void linkingWithNoLogChannelConfiguredStillWritesRowsToDatabase() {
+        UUID uuid = UUID.randomUUID();
+        String discordId = "discord_no_log_chan";
+        String code = service.generateCode(uuid).join().orElseThrow();
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultLinkService serviceWithSink = new DefaultLinkService(
+                linkRepository, config, discordGateway, townyFacade, spaceRepository, syncService,
+                sink, clock, ForkJoinPool.commonPool());
+
+        LinkService.LinkResult result = serviceWithSink.redeem(code, discordId).join();
+
+        assertEquals(LinkService.LinkResult.SUCCESS, result);
+        List<AuditEvent> events = storage.audit().recent(uuid.toString(), 10);
+        assertEquals(1, events.size(), "Row must be written to database even with no log channel");
+        assertEquals("link", events.get(0).action());
+        assertTrue(events.get(0).success());
     }
 
     // Known coverage boundary (finding 12): exotic interleavings (partial failure followed

@@ -4,12 +4,16 @@ import com.discordtowny.config.PluginConfig;
 import com.discordtowny.discord.DiscordGateway;
 import com.discordtowny.discord.GuildOperation;
 import com.discordtowny.discord.OperationOutcome;
+import com.discordtowny.CompositeAuditSink;
+import com.discordtowny.model.AuditEvent;
 import com.discordtowny.model.SpaceRequest;
 import com.discordtowny.model.SpaceState;
 import com.discordtowny.model.TownSpace;
 import com.discordtowny.space.SpaceService.CreateResult;
+import com.discordtowny.storage.AuditRepository;
 import com.discordtowny.storage.HikariStorage;
 import com.discordtowny.storage.SpaceRepository;
+import com.discordtowny.storage.StorageException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -101,6 +105,7 @@ class DefaultSpaceServiceTest {
                 spaceRepository,
                 config,
                 discordGateway,
+                new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run),
                 clock,
                 ForkJoinPool.commonPool()
         );
@@ -789,5 +794,140 @@ class DefaultSpaceServiceTest {
         assertEquals("Markarth", all.getFirst().townName());
 
         assertTrue(service.find(null).join().isEmpty());
+    }
+
+    // --- T16: Audit persistence tests ---
+
+    @Test
+    @DisplayName("T16: Creating a space writes its row to dt_audit_log in database")
+    void createSpaceWritesItsRowToDatabase() {
+        SpaceRequest req = new SpaceRequest(
+                UUID.randomUUID(), "Riverwood", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        CreateResult result = serviceWithSink.create(req).join();
+
+        assertEquals(CreateResult.SUCCESS, result);
+        List<AuditEvent> events = storage.audit().recent("Riverwood", 10);
+        assertEquals(1, events.size(), "Database must contain exactly 1 audit row for created space");
+        AuditEvent event = events.get(0);
+        assertEquals("space_create", event.action());
+        assertEquals("mayor-discord", event.actor());
+        assertEquals("Riverwood", event.target());
+        assertTrue(event.success());
+        assertEquals(AuditEvent.Severity.INFO, event.severity());
+        assertTrue(event.detail().isPresent());
+        verify(discordGateway, times(1)).log(any(AuditEvent.class));
+    }
+
+    @Test
+    @DisplayName("T16: Failure publishing to Discord still leaves the database row")
+    void failurePublishingToDiscordStillLeavesDatabaseRow() {
+        SpaceRequest req = new SpaceRequest(
+                UUID.randomUUID(), "Riverwood", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        DiscordGateway failingGateway = mock(DiscordGateway.class);
+        when(failingGateway.isAvailable()).thenReturn(true);
+        when(failingGateway.verifyPermissions()).thenReturn(Optional.empty());
+        when(failingGateway.submit(any())).thenReturn(CompletableFuture.completedFuture(OperationOutcome.success()));
+        doThrow(new RuntimeException("Discord gateway connection dropped")).when(failingGateway).log(any());
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), failingGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, failingGateway, sink, clock, ForkJoinPool.commonPool());
+
+        CreateResult result = serviceWithSink.create(req).join();
+
+        assertEquals(CreateResult.SUCCESS, result);
+        List<AuditEvent> events = storage.audit().recent("Riverwood", 10);
+        assertEquals(1, events.size(), "Database row must be preserved despite Discord logging failure");
+        assertEquals("space_create", events.get(0).action());
+        assertTrue(events.get(0).success());
+    }
+
+    @Test
+    @DisplayName("T16: Database failure does not prevent the Discord notice")
+    void databaseFailureDoesNotPreventDiscordNotice() {
+        SpaceRequest req = new SpaceRequest(
+                UUID.randomUUID(), "Riverwood", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        AuditRepository failingRepo = mock(AuditRepository.class);
+        doThrow(new StorageException("Database connection timeout")).when(failingRepo).record(any());
+
+        DiscordGateway gateway = mock(DiscordGateway.class);
+        when(gateway.isAvailable()).thenReturn(true);
+        when(gateway.verifyPermissions()).thenReturn(Optional.empty());
+        when(gateway.submit(any())).thenReturn(CompletableFuture.completedFuture(OperationOutcome.success()));
+
+        CompositeAuditSink sink = new CompositeAuditSink(failingRepo, gateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, gateway, sink, clock, ForkJoinPool.commonPool());
+
+        CreateResult result = serviceWithSink.create(req).join();
+
+        assertEquals(CreateResult.SUCCESS, result);
+        verify(gateway, times(1)).log(argThat(event ->
+                event.action().equals("space_create") && event.success() && event.target().equals("Riverwood")));
+    }
+
+    @Test
+    @DisplayName("T16: With no log channel configured the rows are still written to database")
+    void noLogChannelConfiguredStillWritesRowsToDatabase() {
+        SpaceRequest req = new SpaceRequest(
+                UUID.randomUUID(), "Riverwood", UUID.randomUUID(), List.of("res1", "res2"), "mayor-discord", 2);
+
+        // Default config without log channel (empty logChannelId)
+        PluginConfig noLogChannelConfig = new PluginConfig(
+                new PluginConfig.Discord("token-test", "guild-12345", Optional.empty()),
+                config.database(),
+                config.structure(),
+                config.roles(),
+                config.limits(),
+                config.lifecycle(),
+                config.sync(),
+                config.linking(),
+                config.logging(),
+                config.updates(),
+                config.commands()
+        );
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, noLogChannelConfig, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        CreateResult result = serviceWithSink.create(req).join();
+
+        assertEquals(CreateResult.SUCCESS, result);
+        List<AuditEvent> events = storage.audit().recent("Riverwood", 10);
+        assertFalse(events.isEmpty(), "Rows must be written even when no Discord log channel is configured");
+        assertEquals("space_create", events.get(0).action());
+        assertTrue(events.get(0).success());
+    }
+
+    @Test
+    @DisplayName("T16: Archiving a space writes space_archive row with reason to database")
+    void archiveSpaceWritesItsRowToDatabase() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(townUuid, "Falkreath",
+                Optional.of("cat-1"), Optional.of("t1"), Optional.of("v1"), Optional.of("r1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        serviceWithSink.archive(townUuid, "Town inactive for 30 days").join();
+
+        List<AuditEvent> events = storage.audit().recent("Falkreath", 10);
+        assertEquals(1, events.size(), "Archive must write an audit row");
+        AuditEvent event = events.get(0);
+        assertEquals("space_archive", event.action());
+        assertEquals("Falkreath", event.target());
+        assertTrue(event.success());
+        assertEquals(Optional.of("Town inactive for 30 days"), event.detail());
     }
 }

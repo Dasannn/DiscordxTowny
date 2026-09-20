@@ -24,6 +24,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Default implementation of {@link SpaceService}.
@@ -39,9 +42,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class DefaultSpaceService implements SpaceService {
 
+    private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
+
     private final SpaceRepository spaceRepository;
     private final PluginConfig config;
     private final DiscordGateway discordGateway;
+    private final Consumer<AuditEvent> auditSink;
     private final Clock clock;
     private final Executor executor;
 
@@ -55,20 +61,23 @@ public final class DefaultSpaceService implements SpaceService {
             SpaceRepository spaceRepository,
             PluginConfig config,
             DiscordGateway discordGateway,
+            Consumer<AuditEvent> auditSink,
             Clock clock,
             Executor executor) {
         this.spaceRepository = Objects.requireNonNull(spaceRepository, "spaceRepository cannot be null");
         this.config = Objects.requireNonNull(config, "config cannot be null");
         this.discordGateway = Objects.requireNonNull(discordGateway, "discordGateway cannot be null");
+        this.auditSink = Objects.requireNonNull(auditSink, "auditSink cannot be null");
         this.clock = clock != null ? clock : Clock.systemUTC();
         this.executor = executor != null ? executor : ForkJoinPool.commonPool();
     }
 
-    public DefaultSpaceService(
-            SpaceRepository spaceRepository,
-            PluginConfig config,
-            DiscordGateway discordGateway) {
-        this(spaceRepository, config, discordGateway, Clock.systemUTC(), ForkJoinPool.commonPool());
+    private void audit(AuditEvent event) {
+        try {
+            auditSink.accept(event);
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING, "Failed to deliver audit event: " + t.getMessage(), t);
+        }
     }
 
     @Override
@@ -171,7 +180,7 @@ public final class DefaultSpaceService implements SpaceService {
                         Instant eventTime = clock.instant();
                         String actor = request.mayorDiscordId() != null ? request.mayorDiscordId() : "mayor";
                         if (outcome != null && outcome.succeeded()) {
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     eventTime, AuditEvent.Severity.INFO,
                                     actor, "space_create",
                                     request.townName(), true,
@@ -181,7 +190,7 @@ public final class DefaultSpaceService implements SpaceService {
                             String reason = (outcome != null && outcome.reason().isPresent())
                                     ? outcome.reason().get()
                                     : "Discord operation failed";
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     eventTime, AuditEvent.Severity.ERROR,
                                     actor, "space_create",
                                     request.townName(), false,
@@ -191,7 +200,7 @@ public final class DefaultSpaceService implements SpaceService {
                     })
                     .exceptionally(ex -> {
                         String actor = request.mayorDiscordId() != null ? request.mayorDiscordId() : "mayor";
-                        discordGateway.log(new AuditEvent(
+                        audit(new AuditEvent(
                                 clock.instant(), AuditEvent.Severity.ERROR,
                                 actor, "space_create",
                                 request.townName(), false,
@@ -221,7 +230,7 @@ public final class DefaultSpaceService implements SpaceService {
                     .thenAccept(outcome -> {
                         Instant now = clock.instant();
                         if (outcome != null && outcome.succeeded()) {
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     now, AuditEvent.Severity.INFO,
                                     "plugin", "space_rename", newName, true,
                                     Optional.of("Renamed from " + oldName + " to " + newName)));
@@ -229,7 +238,7 @@ public final class DefaultSpaceService implements SpaceService {
                             String reason = (outcome != null && outcome.reason().isPresent())
                                     ? outcome.reason().get()
                                     : "Rename operation failed";
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     now, AuditEvent.Severity.ERROR,
                                     "plugin", "space_rename", newName, false,
                                     Optional.of(reason)));
@@ -270,7 +279,7 @@ public final class DefaultSpaceService implements SpaceService {
                         Instant eventTime = clock.instant();
                         if (outcome != null && outcome.succeeded()) {
                             spaceRepository.updateState(townUuid, SpaceState.ARCHIVED);
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     eventTime, AuditEvent.Severity.INFO,
                                     "plugin", "space_archive", space.townName(), true,
                                     Optional.ofNullable(reason)));
@@ -278,7 +287,7 @@ public final class DefaultSpaceService implements SpaceService {
                             String errorReason = (outcome != null && outcome.reason().isPresent())
                                     ? outcome.reason().get()
                                     : "Archive operation failed";
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     eventTime, AuditEvent.Severity.ERROR,
                                     "plugin", "space_archive", space.townName(), false,
                                     Optional.of(errorReason)));
@@ -326,7 +335,7 @@ public final class DefaultSpaceService implements SpaceService {
                             } else {
                                 spaceRepository.updateState(request.townUuid(), SpaceState.ACTIVE);
                             }
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     now, AuditEvent.Severity.INFO,
                                     actor, "space_restore",
                                     request.townName(), true,
@@ -335,7 +344,7 @@ public final class DefaultSpaceService implements SpaceService {
                             String reason = (outcome != null && outcome.reason().isPresent())
                                     ? outcome.reason().get()
                                     : "Restore operation failed";
-                            discordGateway.log(new AuditEvent(
+                            audit(new AuditEvent(
                                     now, AuditEvent.Severity.ERROR,
                                     actor, "space_restore",
                                     request.townName(), false,
@@ -362,7 +371,7 @@ public final class DefaultSpaceService implements SpaceService {
                             Instant now = clock.instant();
                             if (outcome != null && outcome.succeeded()) {
                                 spaceRepository.delete(space.townUuid());
-                                discordGateway.log(new AuditEvent(
+                                audit(new AuditEvent(
                                         now, AuditEvent.Severity.INFO,
                                         "admin", "space_purge", space.townName(), true,
                                         Optional.of("Archived space purged")));
@@ -371,7 +380,7 @@ public final class DefaultSpaceService implements SpaceService {
                                 String reason = (outcome != null && outcome.reason().isPresent())
                                         ? outcome.reason().get()
                                         : "Delete operation failed";
-                                discordGateway.log(new AuditEvent(
+                                audit(new AuditEvent(
                                         now, AuditEvent.Severity.ERROR,
                                         "admin", "space_purge", space.townName(), false,
                                         Optional.of(reason)));
