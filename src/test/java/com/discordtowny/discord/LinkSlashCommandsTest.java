@@ -4,7 +4,12 @@ import com.discordtowny.config.Messages;
 import com.discordtowny.config.PluginConfig;
 import com.discordtowny.link.LinkService;
 import com.discordtowny.model.AccountLink;
+import net.dv8tion.jda.api.Permission;
+import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.SelfMember;
 import net.dv8tion.jda.api.entities.User;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
@@ -18,6 +23,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -300,5 +306,284 @@ class LinkSlashCommandsTest {
 
         verify(event).deferReply(true);
         verify(hook).editOriginal("Linked successfully");
+    }
+
+    @Test
+    void emptyLinkChannelSettingAllowsLinkInAnyChannel() {
+        when(event.getName()).thenReturn("link");
+        when(event.getChannelId()).thenReturn("any-channel-999");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("CODE12");
+        when(event.getOption("code")).thenReturn(opt);
+
+        when(linkService.redeem("CODE12", "123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+        when(messages.plain(eq("linking.link-success"), any())).thenReturn("Linked successfully");
+
+        commands.onSlashCommandInteraction(event);
+
+        verify(event).deferReply(true);
+        verify(linkService).redeem("CODE12", "123456789012345678");
+        verify(hook).editOriginal("Linked successfully");
+        verify(event, never()).reply(anyString());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void linkInWrongChannelRefusedEphemerallyWithChannelNameAndCodeRemainsRedeemableInRightChannel() {
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        LinkSlashCommands restrictedCommands = new LinkSlashCommands(linkService, restrictedConfig, messages);
+
+        // Step 1: User runs /link in the wrong channel
+        when(event.getName()).thenReturn("link");
+        when(event.getChannelId()).thenReturn("999888777666555444");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("SECRET");
+        when(event.getOption("code")).thenReturn(opt);
+
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(true)).thenReturn(wrongReplyAction);
+
+        ArgumentCaptor<Map<String, String>> placeholdersCaptor = ArgumentCaptor.forClass(Map.class);
+        when(messages.plain(eq("linking.wrong-channel"), placeholdersCaptor.capture()))
+                .thenReturn("Only allowed in <#111222333444555666>");
+
+        restrictedCommands.onSlashCommandInteraction(event);
+
+        // Verify refusal: answered privately and named the channel
+        verify(event).reply("Only allowed in <#111222333444555666>");
+        verify(wrongReplyAction).setEphemeral(true);
+        verify(wrongReplyAction).queue();
+        assertEquals("<#111222333444555666>", placeholdersCaptor.getValue().get("channel"));
+
+        // Verify code was NOT redeemed on the refusal (remains valid)
+        verify(linkService, never()).redeem(any(), any());
+        verify(event, never()).deferReply(anyBoolean());
+
+        // Step 2: Same user with same code tries again in the right channel
+        SlashCommandInteractionEvent rightEvent = mock(SlashCommandInteractionEvent.class);
+        when(rightEvent.getUser()).thenReturn(user);
+        when(rightEvent.getName()).thenReturn("link");
+        when(rightEvent.getChannelId()).thenReturn("111222333444555666");
+        when(rightEvent.getOption("code")).thenReturn(opt);
+
+        ReplyCallbackAction rightDeferAction = mock(ReplyCallbackAction.class);
+        when(rightEvent.deferReply(true)).thenReturn(rightDeferAction);
+        InteractionHook rightHook = mock(InteractionHook.class);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> callback = inv.getArgument(0);
+            callback.accept(rightHook);
+            return null;
+        }).when(rightDeferAction).queue(any());
+        WebhookMessageEditAction editAction = mock(WebhookMessageEditAction.class);
+        when(rightHook.editOriginal(anyString())).thenReturn(editAction);
+
+        when(linkService.redeem("SECRET", "123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(LinkService.LinkResult.SUCCESS));
+        when(messages.plain(eq("linking.link-success"), any())).thenReturn("Account linked successfully");
+
+        restrictedCommands.onSlashCommandInteraction(rightEvent);
+
+        // Verify redemption: not blocked by cooldown from previous refusal, and successfully redeemed
+        verify(rightEvent, never()).reply(anyString());
+        verify(rightEvent).deferReply(true);
+        verify(linkService, times(1)).redeem("SECRET", "123456789012345678");
+        verify(rightHook).editOriginal("Account linked successfully");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void unlinkInWrongChannelRefusedEphemerallyAndWorksInRightChannel() {
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        LinkSlashCommands restrictedCommands = new LinkSlashCommands(linkService, restrictedConfig, messages);
+
+        // Step 1: /unlink in wrong channel
+        when(event.getName()).thenReturn("unlink");
+        when(event.getChannelId()).thenReturn("999888777666555444");
+
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(true)).thenReturn(wrongReplyAction);
+
+        ArgumentCaptor<Map<String, String>> placeholdersCaptor = ArgumentCaptor.forClass(Map.class);
+        when(messages.plain(eq("linking.wrong-channel"), placeholdersCaptor.capture())).thenReturn("Wrong channel");
+
+        restrictedCommands.onSlashCommandInteraction(event);
+
+        verify(event).reply("Wrong channel");
+        verify(wrongReplyAction).setEphemeral(true);
+        verify(wrongReplyAction).queue();
+        assertEquals("<#111222333444555666>", placeholdersCaptor.getValue().get("channel"));
+        verify(linkService, never()).findByDiscordId(any());
+        verify(linkService, never()).unlink(any(), any(), any());
+
+        // Step 2: /unlink in right channel
+        SlashCommandInteractionEvent rightEvent = mock(SlashCommandInteractionEvent.class);
+        when(rightEvent.getUser()).thenReturn(user);
+        when(rightEvent.getName()).thenReturn("unlink");
+        when(rightEvent.getChannelId()).thenReturn("111222333444555666");
+
+        ReplyCallbackAction rightDeferAction = mock(ReplyCallbackAction.class);
+        when(rightEvent.deferReply(anyBoolean())).thenReturn(rightDeferAction);
+        InteractionHook rightHook = mock(InteractionHook.class);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> callback = inv.getArgument(0);
+            callback.accept(rightHook);
+            return null;
+        }).when(rightDeferAction).queue(any());
+        WebhookMessageEditAction editAction = mock(WebhookMessageEditAction.class);
+        when(rightHook.editOriginal(anyString())).thenReturn(editAction);
+
+        AccountLink link = new AccountLink(UUID.randomUUID(), "123456789012345678", Instant.now(), "Jugador");
+        when(linkService.findByDiscordId("123456789012345678")).thenReturn(CompletableFuture.completedFuture(Optional.of(link)));
+        when(linkService.unlink(link.uuid(), "123456789012345678", link.linkedAt())).thenReturn(CompletableFuture.completedFuture(true));
+        when(messages.plain(eq("linking.unlink-success"), any())).thenReturn("Unlink success");
+
+        restrictedCommands.onSlashCommandInteraction(rightEvent);
+
+        verify(linkService).findByDiscordId("123456789012345678");
+        verify(linkService).unlink(link.uuid(), "123456789012345678", link.linkedAt());
+        verify(rightHook).editOriginal("Unlink success");
+    }
+
+    @Test
+    void configuredChannelNotFoundWarnsOperatorOnceAndMaintainsRestriction() {
+        List<String> warnings = new ArrayList<>();
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild-123", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        LinkSlashCommands restrictedCommands = new LinkSlashCommands(linkService, restrictedConfig, messages, warnings::add);
+
+        Guild guild = mock(Guild.class);
+        when(guild.getName()).thenReturn("Test Guild");
+        when(guild.getId()).thenReturn("guild-123");
+        when(guild.getGuildChannelById("111222333444555666")).thenReturn(null);
+
+        when(event.getGuild()).thenReturn(guild);
+        when(event.getName()).thenReturn("link");
+        when(event.getChannelId()).thenReturn("999888777666555444");
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(true)).thenReturn(wrongReplyAction);
+        when(messages.plain(eq("linking.wrong-channel"), any())).thenReturn("Wrong channel");
+
+        // First invocation: warns operator once
+        restrictedCommands.onSlashCommandInteraction(event);
+
+        assertEquals(1, warnings.size());
+        String warningMsg = warnings.getFirst();
+        assertTrue(warningMsg.contains("discord.link-channel-id"), "Must name the setting key");
+        assertTrue(warningMsg.contains("111222333444555666"), "Must name the configured ID");
+        assertTrue(warningMsg.contains("not found in guild"), "Must state what was observed without asserting deletion");
+        assertFalse(warningMsg.toLowerCase().contains("deleted"), "Must not assert channel was deleted");
+
+        // Guard is NOT silently disabled: refusal still sent
+        verify(event).reply("Wrong channel");
+        verify(wrongReplyAction).queue();
+        verify(linkService, never()).redeem(any(), any());
+
+        // Second invocation: does not warn again
+        restrictedCommands.onSlashCommandInteraction(event);
+        assertEquals(1, warnings.size(), "Must warn operator only once");
+    }
+
+    @Test
+    void configuredChannelInaccessibleWarnsOperatorOnceAndMaintainsRestriction() {
+        List<String> warnings = new ArrayList<>();
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild-123", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        LinkSlashCommands restrictedCommands = new LinkSlashCommands(linkService, restrictedConfig, messages, warnings::add);
+
+        Guild guild = mock(Guild.class);
+        when(guild.getName()).thenReturn("Test Guild");
+        when(guild.getId()).thenReturn("guild-123");
+        GuildChannel channel = mock(GuildChannel.class);
+        when(guild.getGuildChannelById("111222333444555666")).thenReturn(channel);
+
+        SelfMember selfMember = mock(SelfMember.class);
+        when(guild.getSelfMember()).thenReturn(selfMember);
+        when(selfMember.hasAccess(channel)).thenReturn(false);
+
+        when(event.getGuild()).thenReturn(guild);
+        when(event.getName()).thenReturn("unlink");
+        when(event.getChannelId()).thenReturn("999888777666555444");
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(true)).thenReturn(wrongReplyAction);
+        when(messages.plain(eq("linking.wrong-channel"), any())).thenReturn("Wrong channel");
+
+        restrictedCommands.onSlashCommandInteraction(event);
+
+        assertEquals(1, warnings.size());
+        String warningMsg = warnings.getFirst();
+        assertTrue(warningMsg.contains("discord.link-channel-id"), "Must name the setting key");
+        assertTrue(warningMsg.contains("111222333444555666"), "Must name the configured ID");
+        assertTrue(warningMsg.contains("bot lacks access"), "Must identify access problem");
+
+        // Restriction is still enforced
+        verify(event).reply("Wrong channel");
+        verify(wrongReplyAction).queue();
+        verify(linkService, never()).findByDiscordId(any());
+    }
+
+    @Test
+    void configuredChannelMissingMessageSendPermissionWarnsOperator() {
+        List<String> warnings = new ArrayList<>();
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild-123", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        LinkSlashCommands restrictedCommands = new LinkSlashCommands(linkService, restrictedConfig, messages, warnings::add);
+
+        Guild guild = mock(Guild.class);
+        when(guild.getName()).thenReturn("Test Guild");
+        when(guild.getId()).thenReturn("guild-123");
+        GuildChannel channel = mock(GuildChannel.class);
+        when(guild.getGuildChannelById("111222333444555666")).thenReturn(channel);
+
+        SelfMember selfMember = mock(SelfMember.class);
+        when(guild.getSelfMember()).thenReturn(selfMember);
+        when(selfMember.hasAccess(channel)).thenReturn(true);
+        when(selfMember.hasPermission(channel, Permission.MESSAGE_SEND)).thenReturn(false);
+
+        when(event.getGuild()).thenReturn(guild);
+        when(event.getName()).thenReturn("link");
+        when(event.getChannelId()).thenReturn("999888777666555444");
+        ReplyCallbackAction wrongReplyAction = mock(ReplyCallbackAction.class);
+        when(event.reply(anyString())).thenReturn(wrongReplyAction);
+        when(wrongReplyAction.setEphemeral(true)).thenReturn(wrongReplyAction);
+        when(messages.plain(eq("linking.wrong-channel"), any())).thenReturn("Wrong channel");
+
+        restrictedCommands.onSlashCommandInteraction(event);
+
+        assertEquals(1, warnings.size());
+        String warningMsg = warnings.getFirst();
+        assertTrue(warningMsg.contains("discord.link-channel-id"), "Must name the setting key");
+        assertTrue(warningMsg.contains("111222333444555666"), "Must name the configured ID");
+        assertTrue(warningMsg.contains("MESSAGE_SEND"), "Must identify missing MESSAGE_SEND permission");
+
+        // Restriction is still enforced
+        verify(event).reply("Wrong channel");
+        verify(wrongReplyAction).queue();
     }
 }

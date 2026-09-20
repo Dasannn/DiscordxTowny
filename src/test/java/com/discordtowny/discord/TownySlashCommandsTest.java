@@ -1393,4 +1393,57 @@ class TownySlashCommandsTest {
             asyncService.shutdownNow();
         }
     }
+
+    @Test
+    void townCommandWorksInAnyChannelRegardlessOfLinkChannelSetting() {
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        TownySlashCommands restrictedCommands = new TownySlashCommands(
+                townyFacade, linkService, restrictedConfig, messages, trackingExecutor, asyncExecutor, fixedClock);
+        LinkSlashCommands linkingCommands = new LinkSlashCommands(linkService, restrictedConfig, messages);
+
+        when(event.getName()).thenReturn("town");
+        when(event.getChannelId()).thenReturn("other-channel-999888777");
+        OptionMapping opt = mock(OptionMapping.class);
+        when(opt.getAsString()).thenReturn("Rome");
+        when(event.getOption("name")).thenReturn(opt);
+
+        TownSnapshot town = new TownSnapshot(townUuid, "Rome", mayorUuid, List.of(mayorUuid), false, Optional.empty(), 10, 100.0, 1000L);
+        when(townyFacade.townByName("Rome")).thenReturn(Optional.of(town));
+        when(townyFacade.resident(mayorUuid)).thenReturn(Optional.of(new ResidentSnapshot(mayorUuid, "Caesar", Optional.of("Rome"), Optional.of(townUuid), true, true, 0, 0)));
+
+        // Dispatch through linking listener first (simulating JDA event distribution),
+        // verifying that linking listener does not wrongly intercept or refuse the information command.
+        linkingCommands.onSlashCommandInteraction(event);
+        restrictedCommands.onSlashCommandInteraction(event);
+
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+        verify(event, never()).reply(anyString());
+    }
+
+    @Test
+    void linkingListenerIgnoresAllInformationCommandsInAnyChannel() {
+        PluginConfig restrictedConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "guild", Optional.empty(), Optional.of("111222333444555666")),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        LinkSlashCommands linkingCommands = new LinkSlashCommands(linkService, restrictedConfig, messages);
+
+        for (String commandName : List.of("town", "residents", "res", "townlist", "mytown", "help")) {
+            SlashCommandInteractionEvent infoEvent = mock(SlashCommandInteractionEvent.class);
+            when(infoEvent.getName()).thenReturn(commandName);
+            when(infoEvent.getChannelId()).thenReturn("other-channel-999888777");
+
+            linkingCommands.onSlashCommandInteraction(infoEvent);
+
+            verify(infoEvent, never()).reply(anyString());
+            verify(infoEvent, never()).deferReply(anyBoolean());
+        }
+    }
 }

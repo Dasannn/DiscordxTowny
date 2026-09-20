@@ -33,6 +33,7 @@ linking:
   unlink-success: "&aVinculo eliminado. Has perdido los roles que te dio el plugin."
   not-linked: "&cNo tienes ninguna cuenta vinculada."
   link-required: "&cNecesitas vincular tu cuenta de Discord. Usa &f/dt link&c."
+  wrong-channel: "&cEste comando solo se puede usar en {channel}."
 
 space:
   created: "&aEl espacio de &f{town}&a esta listo en Discord."

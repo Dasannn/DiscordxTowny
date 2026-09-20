@@ -63,6 +63,7 @@ class YamlConfigLoaderTest {
         assertEquals("en", config.language());
         assertEquals(TOKEN, config.discord().token());
         assertTrue(config.discord().logChannelId().isEmpty());
+        assertTrue(config.discord().linkChannelId().isEmpty());
         assertEquals(PluginConfig.Database.Type.SQLITE, config.database().type());
         assertEquals(PASSWORD, config.database().password());
         assertEquals(3306, config.database().port());
@@ -107,6 +108,11 @@ class YamlConfigLoaderTest {
                 Arguments.of("discord.guild-id", 123456789012345678L),
                 Arguments.of("discord.log-channel-id", "canal"),
                 Arguments.of("discord.log-channel-id", " "),
+                Arguments.of("discord.link-channel-id", "canal"),
+                Arguments.of("discord.link-channel-id", " "),
+                Arguments.of("discord.link-channel-id", "0"),
+                Arguments.of("discord.link-channel-id", "-1"),
+                Arguments.of("discord.link-channel-id", "18446744073709551616"),
                 Arguments.of("database.type", "postgres"),
                 Arguments.of("database.port", 65536),
                 Arguments.of("database.table-prefix", "dt_; DROP TABLE links"),
@@ -185,6 +191,7 @@ class YamlConfigLoaderTest {
     void optionalLimitsAndValidPlaceholders() throws Exception {
         yaml.set("limits.max-towns", 240);
         yaml.set("discord.log-channel-id", "18446744073709551615");
+        yaml.set("discord.link-channel-id", "18446744073709551615");
         yaml.set("database.pool.minimum-idle", 0);
         yaml.set("lifecycle.archive-reminder-days", 0);
         yaml.set("roles.town-role-color", "#abcdef");
@@ -194,6 +201,58 @@ class YamlConfigLoaderTest {
         save();
         assertTrue(loader.validate().isEmpty());
         assertEquals("18446744073709551615", loader.load().discord().logChannelId().orElseThrow());
+        assertEquals("18446744073709551615", loader.load().discord().linkChannelId().orElseThrow());
+    }
+
+    @Test
+    void absentOptionalLinkChannelLoadsUnrestrictedOnUpgrade(@TempDir Path upgradeFolder) throws Exception {
+        // Simulates an existing server upgrading where config.yml on disk lacks discord.link-channel-id
+        Files.copy(folder.resolve("messages_en.yml"), upgradeFolder.resolve("messages_en.yml"));
+        Files.copy(folder.resolve("messages_es.yml"), upgradeFolder.resolve("messages_es.yml"));
+
+        // Copy existing configuration but remove discord.link-channel-id entirely to simulate disk state before T15
+        YamlConfiguration upgradeYaml = new YamlConfiguration();
+        upgradeYaml.load(folder.resolve("config.yml").toFile());
+        upgradeYaml.set("discord.link-channel-id", null);
+        upgradeYaml.save(upgradeFolder.resolve("config.yml").toFile());
+
+        // Verify the key is genuinely absent on disk, not just empty
+        YamlConfiguration onDisk = new YamlConfiguration();
+        onDisk.load(upgradeFolder.resolve("config.yml").toFile());
+        assertFalse(onDisk.contains("discord.link-channel-id"), "Key must be absent from disk file");
+
+        YamlConfigLoader upgradeLoader = new YamlConfigLoader(upgradeFolder, warnings::add);
+        assertTrue(upgradeLoader.validate().isEmpty(), "Absence of link-channel-id must not produce validation errors");
+        PluginConfig config = assertDoesNotThrow(upgradeLoader::load);
+        assertTrue(config.discord().linkChannelId().isEmpty(), "Absent link-channel-id must load as unrestricted");
+    }
+
+    @Test
+    void absentOptionalSettingsBehaveIdenticallyToEmptySettings() throws Exception {
+        yaml.set("discord.link-channel-id", null);
+        yaml.set("discord.log-channel-id", null);
+        yaml.set("roles.town-role-color", null);
+        save();
+        assertFalse(yaml.contains("discord.link-channel-id"));
+        assertFalse(yaml.contains("discord.log-channel-id"));
+        assertFalse(yaml.contains("roles.town-role-color"));
+
+        assertTrue(loader.validate().isEmpty());
+        PluginConfig config = assertDoesNotThrow(loader::load);
+        assertTrue(config.discord().linkChannelId().isEmpty());
+        assertTrue(config.discord().logChannelId().isEmpty());
+        assertTrue(config.roles().townRoleColor().isEmpty());
+    }
+
+    @Test
+    void absentRequiredKeyFailsNamingExactKey() throws Exception {
+        yaml.set("discord.guild-id", null);
+        save();
+        assertFalse(yaml.contains("discord.guild-id"));
+
+        assertTrue(loader.validate().stream().anyMatch(p -> p.startsWith("discord.guild-id:")));
+        ConfigException failure = assertThrows(ConfigException.class, loader::load);
+        assertTrue(failure.getMessage().contains("discord.guild-id:"));
     }
 
     @Test

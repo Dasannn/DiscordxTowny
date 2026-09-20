@@ -201,10 +201,17 @@ public final class YamlConfigLoader implements ConfigLoader {
             if (!condition) problems.add(key + ": expected " + expected);
         }
 
-        private String text(String key) {
+        private String text(String key, boolean optional) {
             Object value = yaml.get(key);
+            if (optional && value == null) {
+                return "";
+            }
             require(value instanceof String, key, "quoted text if it is a number");
             return value instanceof String str ? str : "";
+        }
+
+        private String text(String key) {
+            return text(key, false);
         }
 
         private String nonEmpty(String key) {
@@ -249,12 +256,12 @@ public final class YamlConfigLoader implements ConfigLoader {
         }
 
         private Optional<String> optional(String key) {
-            String value = text(key);
+            String value = text(key, true);
             return value.isBlank() ? Optional.empty() : Optional.of(value);
         }
 
         private String snowflake(String key, boolean optional) {
-            String value = text(key);
+            String value = text(key, optional);
             if (optional && value.isEmpty()) return value;
             boolean valid = value.matches("[1-9][0-9]{0,19}");
             if (valid) {
@@ -291,7 +298,12 @@ public final class YamlConfigLoader implements ConfigLoader {
             require(!token.strip().equalsIgnoreCase("PON_AQUI_TU_TOKEN"), "discord.token", "your own token, not the example");
             String guild = snowflake("discord.guild-id", false);
             String log = snowflake("discord.log-channel-id", true);
-            var discord = new PluginConfig.Discord(token, guild, log.isEmpty() ? Optional.empty() : Optional.of(log));
+            String link = snowflake("discord.link-channel-id", true);
+            var discord = new PluginConfig.Discord(
+                    token,
+                    guild,
+                    log.isEmpty() ? Optional.empty() : Optional.of(log),
+                    link.isEmpty() ? Optional.empty() : Optional.of(link));
 
             var type = option("database.type", PluginConfig.Database.Type.class);
             String host = text("database.host");
