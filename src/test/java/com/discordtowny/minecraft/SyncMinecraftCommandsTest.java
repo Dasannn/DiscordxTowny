@@ -56,6 +56,14 @@ class SyncMinecraftCommandsTest {
             String key = inv.getArgument(0);
             return Component.text(key != null ? key : "");
         });
+        when(messages.label(any())).thenAnswer(inv -> {
+            String key = inv.getArgument(0);
+            return key != null ? key : "";
+        });
+        when(messages.label(any(), any())).thenAnswer(inv -> {
+            String key = inv.getArgument(0);
+            return key != null ? key : "";
+        });
         when(townyFacade.isAvailable()).thenReturn(true);
     }
 
@@ -520,7 +528,10 @@ class SyncMinecraftCommandsTest {
 
         // Normally completed future carrying failures inside the SyncReport
         SyncService.SyncReport failureReport = new SyncService.SyncReport(
-                1, 0, 0, 1, 0, List.of("Towny is unavailable", "Discord role could not be assigned"));
+                1, 0, 0, 1, 0, List.of(
+                        new SyncService.SyncReport.Problem("sync.problem-towny-unavailable"),
+                        new SyncService.SyncReport.Problem("sync.problem-grant-mayor-role-failed",
+                                Map.of("role", "role-1", "discord", "user-1", "reason", "timeout"))));
         CompletableFuture.runAsync(() -> asyncFuture.complete(failureReport)).join();
 
         assertTrue(scheduled.get());
@@ -530,8 +541,8 @@ class SyncMinecraftCommandsTest {
 
         // Must report the failure details to the player using message keys
         verify(messages).get(eq("sync.problems-header"), eq(Map.of("count", "2")));
-        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Towny is unavailable")));
-        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Discord role could not be assigned")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "sync.problem-towny-unavailable")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "sync.problem-grant-mayor-role-failed")));
 
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(player, atLeastOnce()).sendMessage(captor.capture());
@@ -738,7 +749,10 @@ class SyncMinecraftCommandsTest {
         root.getChild("sync").getCommand().run(ctx);
 
         SyncService.SyncReport partialReport = new SyncService.SyncReport(
-                1, 2, 1, 3, 2, List.of("Discord role error"));
+                1, 2, 1, 3, 2, List.of(
+                        new SyncService.SyncReport.Problem(
+                                "sync.problem-revoke-role-failed",
+                                Map.of("role", "role-1", "discord", "user-1", "reason", "error"))));
         CompletableFuture.runAsync(() -> asyncFuture.complete(partialReport)).join();
 
         assertTrue(scheduled.get());
@@ -746,7 +760,7 @@ class SyncMinecraftCommandsTest {
         verify(player, never()).sendMessage(messages.get("sync.finished"));
         verify(messages).get(eq("sync.repaired"), eq(Map.of("count", "2", "granted", "2", "revoked", "1")));
         verify(messages).get(eq("sync.problems-header"), eq(Map.of("count", "1")));
-        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "Discord role error")));
+        verify(messages).get(eq("sync.problem-entry"), eq(Map.of("problem", "sync.problem-revoke-role-failed")));
 
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(player, atLeastOnce()).sendMessage(captor.capture());
@@ -789,16 +803,19 @@ class SyncMinecraftCommandsTest {
 
         root.getChild("admin").getChild("sync").getCommand().run(ctx);
 
+        SyncService.SyncReport.Problem problem = new SyncService.SyncReport.Problem(
+                "sync.problem-batch-failed", Map.of("batch", "1", "error", "Discord rate limit"));
         SyncService.SyncReport reportWithProblem = new SyncService.SyncReport(
-                2, 0, 0, 0, 0, List.of("Discord rate limit"));
+                2, 0, 0, 0, 0, List.of(problem));
         CompletableFuture.runAsync(() -> asyncFuture.complete(reportWithProblem)).join();
 
         assertTrue(scheduled.get());
 
+        String renderedProblem = "Batch 1 failed: Discord rate limit";
         verify(sender, never()).sendMessage(EnglishMessages.bundled().get("sync.finished"));
         verify(sender).sendMessage(EnglishMessages.bundled().get("sync.report-clean", Map.of("spaces", "2")));
         verify(sender).sendMessage(EnglishMessages.bundled().get("sync.problems-header", Map.of("count", "1")));
-        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.problem-entry", Map.of("problem", "Discord rate limit")));
+        verify(sender).sendMessage(EnglishMessages.bundled().get("sync.problem-entry", Map.of("problem", renderedProblem)));
 
         ArgumentCaptor<Component> captor = ArgumentCaptor.forClass(Component.class);
         verify(sender, atLeastOnce()).sendMessage(captor.capture());
@@ -809,7 +826,7 @@ class SyncMinecraftCommandsTest {
 
         String reportClean = EnglishMessages.bundled().plain("sync.report-clean", Map.of("spaces", "2"));
         String problemsHeader = EnglishMessages.bundled().plain("sync.problems-header", Map.of("count", "1"));
-        String problemEntry = EnglishMessages.bundled().plain("sync.problem-entry", Map.of("problem", "Discord rate limit"));
+        String problemEntry = EnglishMessages.bundled().plain("sync.problem-entry", Map.of("problem", renderedProblem));
 
         assertTrue(plainTexts.contains(reportClean));
         assertTrue(plainTexts.contains(problemsHeader));

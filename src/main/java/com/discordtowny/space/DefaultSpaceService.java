@@ -139,7 +139,15 @@ public final class DefaultSpaceService implements SpaceService {
                     }
 
                     // 5. Discord check: bot must be connected and have required permissions (Discord last)
-                    if (!isDiscordReady()) {
+                    Optional<String> discordUnready = checkDiscordUnready();
+                    if (discordUnready.isPresent()) {
+                        Instant eventTime = clock.instant();
+                        String actor = request.mayorDiscordId() != null ? request.mayorDiscordId() : "mayor";
+                        audit(new AuditEvent(
+                                eventTime, AuditEvent.Severity.ERROR,
+                                actor, "space_create",
+                                request.townName(), false,
+                                discordUnready));
                         return CompletableFuture.completedFuture(CreateResult.DISCORD_UNAVAILABLE);
                     }
 
@@ -417,16 +425,23 @@ public final class DefaultSpaceService implements SpaceService {
         return CompletableFuture.supplyAsync(spaceRepository::findAll, executor);
     }
 
-    private boolean isDiscordReady() {
+    private Optional<String> checkDiscordUnready() {
         if (!discordGateway.isAvailable()) {
-            return false;
+            return Optional.of("Discord gateway is unavailable");
         }
         try {
             Optional<String> permWarning = discordGateway.verifyPermissions();
-            return permWarning == null || permWarning.isEmpty();
+            if (permWarning != null && permWarning.isPresent()) {
+                return Optional.of("Discord bot lacks required permissions: " + permWarning.get());
+            }
         } catch (Exception e) {
-            return false;
+            return Optional.of("Failed to verify Discord permissions: " + e.getMessage());
         }
+        return Optional.empty();
+    }
+
+    private boolean isDiscordReady() {
+        return checkDiscordUnready().isEmpty();
     }
 
     private void releaseReservation(SpaceRequest request) {
