@@ -142,6 +142,13 @@ public final class YamlConfigLoader implements ConfigLoader {
             return;
         }
 
+        // R4: detect keys containing '.' which create ambiguity between YAML mapping keys and Bukkit paths
+        String dottedKey = findKeyWithDot(ownerRoot);
+        if (dottedKey != null) {
+            warning.accept(resourceName + ": key '" + dottedKey + "' contains '.'; catalog merge abandoned");
+            return;
+        }
+
         // F5: detect duplicate top-level sections and duplicate keys
         Map<String, TopLevelSection> ownerSections = new LinkedHashMap<>();
         if (ownerRoot instanceof MappingNode ownerMapping) {
@@ -620,6 +627,42 @@ public final class YamlConfigLoader implements ConfigLoader {
         return false;
     }
 
+    private static String findKeyWithDot(Node root) {
+        if (root == null) return null;
+        return checkNodeForKeyWithDot(root, new HashSet<>());
+    }
+
+    private static String checkNodeForKeyWithDot(Node node, Set<Node> visited) {
+        if (node == null || !visited.add(node)) return null;
+        if (node instanceof MappingNode mapping) {
+            for (NodeTuple tuple : mapping.getValue()) {
+                if (tuple.getKeyNode() instanceof ScalarNode keyNode) {
+                    String val = keyNode.getValue();
+                    if (val != null && val.contains(".")) {
+                        return val;
+                    }
+                } else {
+                    String keyNested = checkNodeForKeyWithDot(tuple.getKeyNode(), visited);
+                    if (keyNested != null) {
+                        return keyNested;
+                    }
+                }
+                String nested = checkNodeForKeyWithDot(tuple.getValueNode(), visited);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        } else if (node instanceof SequenceNode sequence) {
+            for (Node item : sequence.getValue()) {
+                String nested = checkNodeForKeyWithDot(item, visited);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
     private static boolean verifyPreservation(YamlConfiguration original,
                                               YamlConfiguration candidate,
                                               Map<String, TopLevelSection> ownerSections) {
@@ -645,12 +688,34 @@ public final class YamlConfigLoader implements ConfigLoader {
         for (Map.Entry<String, TopLevelSection> entry : ownerSections.entrySet()) {
             String secName = entry.getKey();
             TopLevelSection sec = entry.getValue();
+            if (original.isConfigurationSection(secName)) {
+                if (!candidate.isConfigurationSection(secName)) {
+                    return false;
+                }
+            } else {
+                Object origVal = original.get(secName);
+                Object candVal = candidate.get(secName);
+                // A header the owner left without children is a container, not a value:
+                // every key under it is missing, and filling it is what T23 asks for.
+                boolean filledEmptyContainer = origVal == null
+                        && sec.keys.isEmpty()
+                        && candidate.isConfigurationSection(secName);
+                if (!filledEmptyContainer && !Objects.equals(origVal, candVal)) {
+                    return false;
+                }
+            }
             for (String childKey : sec.keys) {
                 String path = secName + "." + childKey;
-                Object origVal = original.get(path);
-                Object candVal = candidate.get(path);
-                if (!Objects.equals(origVal, candVal)) {
-                    return false;
+                if (original.isConfigurationSection(path)) {
+                    if (!candidate.isConfigurationSection(path)) {
+                        return false;
+                    }
+                } else {
+                    Object origVal = original.get(path);
+                    Object candVal = candidate.get(path);
+                    if (!Objects.equals(origVal, candVal)) {
+                        return false;
+                    }
                 }
             }
         }

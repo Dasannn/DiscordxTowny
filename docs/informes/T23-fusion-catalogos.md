@@ -200,3 +200,32 @@ This section documents the resolution of all blocking and open findings from `do
   3. Added test `CatalogMergeTest.temporaryWriteFailureLeavesTargetUntouchedAndCleansUpTempFile`, which injects a partial temporary file write followed by an `IOException`.
 - **Why it closes F9**:
   Provides explicit test coverage of the temporary write failure stage prior to the move operation, verifying that a failed write leaves the original target untouched, emits no success report, cleans up temporary files in `finally`, and records positive reachability.
+
+---
+
+## Round 5 — Resolution of R4 and R5
+
+This section documents the resolution of findings R4 (dotted leaf keys escaping preservation walks and overriding effective null values) and R5 (false rejection of unchanged nested mappings due to `MemorySection` identity comparison) from `docs/revisiones/T23-fusion-catalogos-r3.md`.
+
+### R4 — Dotted Leaf Keys and Path Ambiguity
+- **Defect**:
+  When an owner configuration defines a key containing dots (e.g. `general.no-permission: null`), SnakeYAML represents this as a single root-level scalar key rather than a nested mapping. Bukkit's `MemorySection.set("general.no-permission", null)` does nothing and does not create intermediate paths for null values, so `originalConfig.getKeys(true)` omits it. Missing-key discovery treats `general` as absent and appends the bundled `general:` mapping with non-null text, changing the effective value of `general.no-permission` from null to the bundled message while retaining the original text. Because the second preservation walk previously visited only `sec.keys` (which was empty for `general.no-permission`), the change was not caught.
+- **What changed**:
+  1. In `YamlConfigLoader.mergeDefaultFile`, added `findKeyWithDot(ownerRoot)` to detect mapping keys containing `.`. Because YAML keys containing `.` create ambiguity between YAML scalar mapping keys and Bukkit configuration paths, and no catalog entry requires a dotted key, any owner file containing a dotted key is safely refused:
+     `warning.accept(resourceName + ": key '" + dottedKey + "' contains '.'; catalog merge abandoned"); return;`
+  2. In `YamlConfigLoader.verifyPreservation`, updated the second walk to verify top-level section keys (`secName`) as well as child keys (`sec.keys`), comparing sections with `isConfigurationSection` and values with `Objects.equals(origVal, candVal)`. If an entry's effective value in candidate differs from original (e.g., null leaf overridden by non-null string), verification fails.
+  3. Added test `CatalogMergeTest.dottedKeyAbortsMergeAndPreservesOwnerFileUntouched` exercising the exact fixture `prefix: '[DT] '\ngeneral.no-permission: null\n`, asserting byte-for-byte preservation of the target file, retention of the effective null value, refusal warning, and absence of success reports.
+- **Why it closes R4**:
+  The merge is refused before splicing occurs whenever an ambiguous dotted key is present. Even in defense-in-depth, the preservation oracle rejects candidate files where an owner's effective value changes.
+
+---
+
+### R5 — Nested Mapping Preservation and Section Object Equality
+- **Defect**:
+  In Round 4, the second walk in `YamlConfigLoader.verifyPreservation` checked `Objects.equals(original.get(path), candidate.get(path))`. When an owner file contains a custom mapping nested deeper than the catalog root (e.g. `owner:\n  nested:\n    message: 'Mine'`), `original.get("owner.nested")` and `candidate.get("owner.nested")` resolve to two distinct `MemorySection` instances. Because `MemorySection` does not override `equals`, the reference equality check always evaluated to `false`, abandoning merges for perfectly preserved files.
+- **What changed**:
+  1. Updated `YamlConfigLoader.verifyPreservation` to compare sections structurally: if `original.isConfigurationSection(path)` is true, candidate must also satisfy `candidate.isConfigurationSection(path)`. Section containers are compared as configuration sections; `Objects.equals` is only applied to scalar/leaf values.
+  2. The same section-aware check is applied to `secName` in the second walk.
+  3. Added test `CatalogMergeTest.nestedMappingPreservedOnSuccessfulMerge` exercising `prefix: '[DT] '\nowner:\n  nested:\n    message: 'Mine'\n`, asserting successful merge, exact preservation of the nested custom message, addition of missing bundled sections, and clean verification.
+- **Why it closes R5**:
+  Sections are compared as sections and leaf values as values, eliminating false rejections caused by `MemorySection` identity inequality while continuing to verify full structural and value preservation.

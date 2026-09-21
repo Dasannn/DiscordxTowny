@@ -1111,4 +1111,66 @@ class CatalogMergeTest {
             assertTrue(tmpFiles.isEmpty(), "Temporary files must be cleaned up on write failure: " + tmpFiles);
         }
     }
+
+    @Test
+    void nestedMappingPreservedOnSuccessfulMerge() throws Exception {
+        // R5: Unchanged nested mappings must be preserved and not fail verification due to section identity
+        String fixture = "prefix: '[DT] '\nowner:\n  nested:\n    message: 'Mine'\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, fixture, StandardCharsets.UTF_8);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        String merged = Files.readString(enPath, StandardCharsets.UTF_8);
+
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.loadFromString(merged);
+
+        assertEquals("[DT] ", parsed.getString("prefix"));
+        assertEquals("Mine", parsed.getString("owner.nested.message"),
+                "Custom nested mapping must be preserved after merge");
+        assertNotNull(parsed.getString("general.no-permission"),
+                "Missing catalog sections must be added");
+        assertNotNull(parsed.getString("space.created"),
+                "Absent sections must be added at EOF");
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("added missing")),
+                "Must report added missing keys: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("verification failed")),
+                "Verification must not fail on preserved nested mapping: " + warnings);
+    }
+
+    @Test
+    void dottedKeyAbortsMergeAndPreservesOwnerFileUntouched() throws Exception {
+        // R4: A key containing '.' is ambiguous between a YAML key and Bukkit path; merge must be refused
+        String fixture = "prefix: '[DT] '\ngeneral.no-permission: null\n";
+        byte[] originalBytes = fixture.getBytes(StandardCharsets.UTF_8);
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.write(enPath, originalBytes);
+
+        YamlConfiguration preParsed = new YamlConfiguration();
+        preParsed.loadFromString(fixture);
+        assertNull(preParsed.getString("general.no-permission"),
+                "Pre-merge effective value must be null");
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        byte[] afterBytes = Files.readAllBytes(enPath);
+        assertArrayEquals(originalBytes, afterBytes,
+                "File with dotted key must be left byte-for-byte untouched");
+
+        YamlConfiguration postParsed = new YamlConfiguration();
+        postParsed.load(enPath.toFile());
+        assertNull(postParsed.getString("general.no-permission"),
+                "Effective value must remain null and not be overwritten by bundled catalog");
+        assertNull(postParsed.getString("general.resident-not-found"),
+                "No bundled keys should be added when merge is abandoned");
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("general.no-permission") && w.contains("contains '.'")),
+                "Warning must be emitted explaining refusal due to dotted key: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
+                "No success report should be emitted when merge is abandoned");
+    }
 }
