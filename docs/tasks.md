@@ -362,7 +362,7 @@ permissions or unrecoverable state.
 ## T13 — Release
 
 - **Branch**: `chore/release` · **Phase** 8 · **Depends on**: T12
-- **Responsible**: architect · **Status**: pipeline ready, awaiting the first published tag
+- **Responsible**: architect · **Status**: integrated (v1.0.0 published with its SHA-256)
 
 **Does**
 
@@ -699,3 +699,56 @@ deleted by hand is visibly distinguished from one whose channels are intact.
 spaces deliberately. Listing must never delete anything.
 
 ---
+
+---
+
+## T23 — Keep an edited catalog complete across upgrades
+
+- **Branch**: `feat/fusion-catalogos` · **Phase** 9 · **Depends on**: T14
+- **Responsible**: agent · **Status**: pending
+- **Zone**: `src/main/java/com/discordtowny/config/YamlConfigLoader.java` and its
+  tests. Nothing else.
+
+**Why**
+
+`saveDefaultFile` writes a catalog only when it is absent, so a version that adds
+texts leaves every existing installation without them. Those texts then fall back
+to bundled English, and the only way out is deleting the file and losing every
+translation the owner edited. This already happened in production: T21 and T22
+added five keys and a live server rendered them in English until they were copied
+in by hand.
+
+**Builds**
+
+- On startup, for each of `messages_en.yml` and `messages_es.yml` that already
+  exists, add the keys present in the bundled file of **that same language** and
+  missing from the owner's file. A missing Spanish key takes the bundled Spanish
+  text, never the English one.
+- A key already present is left exactly as written: same value, same position,
+  same quoting. Never remove a key the owner kept, even one the plugin no longer
+  uses; they may be using it in a fork.
+- Report what was added, once, through the existing warning channel, in English
+  like every other log line.
+
+**Constraints that decide whether this is correct**
+
+- **Do not re-serialize the file.** Loading it with `YamlConfiguration` and
+  saving it back destroys the owner's comments, ordering and quoting. The file
+  must be edited as text.
+- **Do not append a block at the end.** A second `admin:` at the end of a file
+  that already has one is either invalid YAML or silently shadows the first. A
+  missing key is inserted inside its existing section; only a section that is
+  absent altogether is appended whole.
+- **A file that does not parse is not merged.** It is left untouched and the
+  existing fallback warning applies: a syntax error is not a licence to rewrite
+  somebody's file.
+- **Write once, atomically**, and never leave a half-written catalog behind if
+  the write fails. A corrupted catalog is worse than an incomplete one.
+- The 9.1 invariants still hold: `town`, `nation` and `resident` stay
+  untranslated in both catalogs.
+
+**Acceptance**: a catalog with keys removed and other values edited, plus its own
+comments and a custom key of the owner's, comes back with the missing keys added
+in their proper sections, every edited value intact, every comment intact, and
+the custom key still present. Deleting a section entirely and restarting restores
+that section. A file with a syntax error is left byte-for-byte unchanged.

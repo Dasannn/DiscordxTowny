@@ -277,8 +277,17 @@ the plugin shows. It accepts two values, `en` and `es`. The default is `en`.
 
 The plugin ships one message file per language, `messages_en.yml` and
 `messages_es.yml`, and writes both to its folder on first run. There is no
-single `messages.yml` any more. Both files belong to the server owner: once
-written they are never overwritten, and the owner may edit any text in them.
+single `messages.yml` any more. Both files belong to the server owner: an
+existing text is never overwritten, and the owner may edit any text in them.
+
+A version that adds new texts would otherwise leave an existing file without
+them, and those texts would reach players in English until the owner deleted
+the file and lost every edit. So on startup the plugin **adds the keys the file
+lacks**, taking each value from the bundled file of that same language, and
+leaves every key already present exactly as the owner wrote it. Adding a key is
+the only write the plugin ever makes to these files: it never removes a key the
+owner kept, never reorders what is there, and never rewrites the file's
+comments or formatting.
 
 The setting covers everything that reaches a person, in game and in Discord
 alike: command replies, error messages, and the text of the embeds the bot
