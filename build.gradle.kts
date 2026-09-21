@@ -54,6 +54,16 @@ tasks.test {
     // CI forty minutes before it was cancelled by hand. A run that stops making
     // progress must fail instead of waiting for the six-hour job limit.
     timeout.set(Duration.ofMinutes(20))
+
+    // When the suite stalls, the timeout above reports the task and nothing else:
+    // no name, no class, no hint of which test stopped making progress. Printing
+    // every start on CI leaves the culprit as the last line of the log.
+    if (System.getenv("CI") != null) {
+        testLogging {
+            events("started", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+    }
 }
 
 tasks.shadowJar {
