@@ -357,7 +357,7 @@ class DefaultLinkServiceTest {
 
         for (int i = 0; i < totalRequests; i++) {
             final String badCode = "BURST" + i;
-            new Thread(() -> {
+            Thread.ofPlatform().daemon().start(() -> {
                 try {
                     barrier.await();
                     LinkService.LinkResult res = burstService.redeem(badCode, discordId).join();
@@ -366,7 +366,7 @@ class DefaultLinkServiceTest {
                 } finally {
                     latch.countDown();
                 }
-            }).start();
+            });
         }
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));
@@ -641,7 +641,7 @@ class DefaultLinkServiceTest {
 
         for (int i = 0; i < threads; i++) {
             final String discordUser = "discord_concurrent_" + i;
-            new Thread(() -> {
+            Thread.ofPlatform().daemon().start(() -> {
                 try {
                     barrier.await();
                     LinkService.LinkResult res = service.redeem(code, discordUser).join();
@@ -650,7 +650,7 @@ class DefaultLinkServiceTest {
                 } finally {
                     latch.countDown();
                 }
-            }).start();
+            });
         }
 
         assertTrue(latch.await(5, TimeUnit.SECONDS));

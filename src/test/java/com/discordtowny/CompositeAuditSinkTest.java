@@ -160,12 +160,17 @@ class CompositeAuditSinkTest {
             return null;
         }).when(discordGateway).log(any());
 
-        ExecutorService asyncPool = Executors.newFixedThreadPool(2, r -> new Thread(r, "dt-test-worker"));
+        ExecutorService asyncPool = Executors.newFixedThreadPool(2, r -> {
+            Thread t = new Thread(r, "dt-test-worker");
+            t.setDaemon(true);
+            return t;
+        });
         try {
             CompositeAuditSink sink = new CompositeAuditSink(auditRepo, discordGateway, asyncPool);
 
             // Simulate execution from a "Server thread"
             Thread serverThread = new Thread(() -> sink.accept(sampleEvent), "Server thread");
+        serverThread.setDaemon(true);
             serverThread.start();
             serverThread.join();
 

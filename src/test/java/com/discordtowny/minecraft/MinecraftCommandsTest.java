@@ -1219,6 +1219,7 @@ class MinecraftCommandsTest {
         verify(mayor, never()).sendMessage(any(Component.class));
 
         Thread workerThread = new Thread(() -> delayedFuture.complete(CreateResult.SUCCESS), "async-worker-thread");
+        workerThread.setDaemon(true);
         workerThread.start();
         workerThread.join();
 

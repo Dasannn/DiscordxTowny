@@ -1268,8 +1268,8 @@ class TownySlashCommandsTest {
 
     @Test
     void slashCommandTownyReadsOnMainThreadAndDiscordWorkOffMainThread() throws Exception {
-        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
-        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        ExecutorService mainService = Executors.newSingleThreadExecutor(daemonFactory("server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(daemonFactory("discord-worker"));
         try {
             TownySlashCommands threadedCommands = new TownySlashCommands(
                     townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
@@ -1313,8 +1313,8 @@ class TownySlashCommandsTest {
 
     @Test
     void slashCommandFailureContinuationRunsOffMainThread() throws Exception {
-        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
-        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        ExecutorService mainService = Executors.newSingleThreadExecutor(daemonFactory("server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(daemonFactory("discord-worker"));
         try {
             TownySlashCommands threadedCommands = new TownySlashCommands(
                     townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
@@ -1353,8 +1353,8 @@ class TownySlashCommandsTest {
 
     @Test
     void buttonInteractionTownyReadsOnMainThreadAndDiscordWorkOffMainThread() throws Exception {
-        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
-        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        ExecutorService mainService = Executors.newSingleThreadExecutor(daemonFactory("server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(daemonFactory("discord-worker"));
         try {
             TownySlashCommands threadedCommands = new TownySlashCommands(
                     townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
@@ -1405,8 +1405,8 @@ class TownySlashCommandsTest {
 
     @Test
     void buttonInteractionFailureContinuationRunsOffMainThread() throws Exception {
-        ExecutorService mainService = Executors.newSingleThreadExecutor(r -> new Thread(r, "server-main"));
-        ExecutorService asyncService = Executors.newSingleThreadExecutor(r -> new Thread(r, "discord-worker"));
+        ExecutorService mainService = Executors.newSingleThreadExecutor(daemonFactory("server-main"));
+        ExecutorService asyncService = Executors.newSingleThreadExecutor(daemonFactory("discord-worker"));
         try {
             TownySlashCommands threadedCommands = new TownySlashCommands(
                     townyFacade, linkService, config, messages, mainService, asyncService, fixedClock);
@@ -1548,4 +1548,18 @@ class TownySlashCommandsTest {
         verify(disabledEvent, never()).deferReply(anyBoolean());
         verifyNoInteractions(townyFacade);
     }
+
+    /**
+     * A daemon thread factory. A non-daemon worker left behind by a test that did not
+     * shut its executor down keeps the test JVM alive after every test has finished,
+     * and the build then hangs with no failure to point at. Daemon threads cannot.
+     */
+    private static java.util.concurrent.ThreadFactory daemonFactory(String name) {
+        return r -> {
+            Thread t = new Thread(r, name);
+            t.setDaemon(true);
+            return t;
+        };
+    }
+
 }

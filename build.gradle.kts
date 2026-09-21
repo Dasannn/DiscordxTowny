@@ -1,3 +1,4 @@
+import java.time.Duration
 import java.util.zip.ZipFile
 
 plugins {
@@ -47,6 +48,12 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+
+    // A test that leaves a thread blocked forever does not fail: the JVM simply
+    // never exits and the build hangs with nothing to point at. One such test cost
+    // CI forty minutes before it was cancelled by hand. A run that stops making
+    // progress must fail instead of waiting for the six-hour job limit.
+    timeout.set(Duration.ofMinutes(20))
 }
 
 tasks.shadowJar {
