@@ -715,6 +715,42 @@ class CatalogMergeTest {
     }
 
     @Test
+    void blockScalarAtEndOfFileKeepsItsTrailingBlankLines() throws Exception {
+        // The insertion lands at EOF here, right after the scalar's own trailing blank
+        // lines, which is the one place a separator of our own joins the owner's value.
+        String fixture = "prefix: '[DT] '\ngeneral:\n  no-permission: |+\n    Owner line\n\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, fixture, StandardCharsets.UTF_8);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        String merged = Files.readString(enPath, StandardCharsets.UTF_8);
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.loadFromString(merged);
+
+        assertEquals("Owner line\n\n", parsed.getString("general.no-permission"),
+                "A block scalar at the end of the file must keep exactly its own trailing breaks");
+        assertNotNull(parsed.getString("general.resident-not-found"), "Missing key must be added");
+    }
+
+    @Test
+    void writeFailureTestActuallyReachesTheMove() throws Exception {
+        String fixture = "prefix: '[DT] '\ngeneral:\n  no-permission: 'Mine'\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, fixture, StandardCharsets.UTF_8);
+
+        java.util.concurrent.atomic.AtomicInteger moves = new java.util.concurrent.atomic.AtomicInteger();
+        new YamlConfigLoader(folder, warnings::add, (source, target) -> {
+            moves.incrementAndGet();
+            throw new IOException("Simulated disk failure during move");
+        }).load();
+
+        assertTrue(moves.get() > 0,
+                "The failure-injection tests prove nothing unless the merge actually reaches the move");
+    }
+
+    @Test
     void emptySectionIsNotAppendedAsDuplicateSection() throws Exception {
         String fixture = "prefix: '[DT] '\ngeneral:\n";
         Path enPath = folder.resolve("messages_en.yml");
