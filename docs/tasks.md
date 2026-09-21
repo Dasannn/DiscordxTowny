@@ -666,7 +666,7 @@ they are simply never given the new value.
 ## T22 — The admin list tells the truth, and fits on the screen
 
 - **Branch**: `feat/lista-admin` · **Phase** 6 · **Depends on**: T18, T19
-- **Status**: pending · **Zone**: `minecraft/`, `sync/`, the two catalogs
+- **Status**: integrated · **Zone**: `minecraft/`, `sync/`, the two catalogs
 
 **Why**
 
