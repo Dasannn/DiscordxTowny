@@ -130,3 +130,73 @@ The architect compiled and executed the test suite after Round 2, reporting 662 
   1. Updated the test filter to `l -> l.stripLeading().startsWith("towny-read-failed:")` (and similarly for `no-permission:` and `no-towns-found:`), matching the actual YAML key definition rather than substring occurrences within other key names.
   2. Added assertions verifying that none of the present null/empty keys appear in the missing keys warning report.
   3. In `YamlConfigLoader.java`, updated the verification loop to accept `verification.contains(key) || verification.isSet(key)`.
+
+---
+
+## Round 4 — Resolution of R1, R2, R3, F7, and F9
+
+This section documents the resolution of all blocking and open findings from `docs/revisiones/T23-fusion-catalogos-r2.md`: R1 (terminal newline in block scalars at EOF), R2 (nonempty scalar sections), R3 (anchors, aliases, and merge keys), F7 (domain-term prose and nation invariant), and F9 (temporary write failure seam and coverage), along with the universal pre-move verification oracle.
+
+### The Universal Verification Oracle
+- **What changed**:
+  In `YamlConfigLoader.mergeDefaultFile`, before executing `writeAtomically`, the original file content is parsed alongside the candidate via `YamlConfiguration`:
+  1. Every key present in the original configuration must be present in the candidate with an equal value (`Objects.equals(originalConfig.get(k), verification.get(k))`). For configuration sections, candidate must also have a configuration section.
+  2. Every key recorded in SnakeYAML's `ownerSections` (which tracks explicit null, tilde, and empty keys that Bukkit's `YamlConfiguration.getKeys` omits) must have an equal value in the candidate.
+  3. Every key in `verifiedAdditions` must be present and resolvable in the candidate.
+  4. If any check fails, the merge is immediately abandoned, the original file is left untouched, and a warning is emitted (`<resource>: catalog merge verification failed; original untouched`).
+- **Why it closes the entire defect class**:
+  It enforces the core invariant: candidate parsing and nonempty `verifiedAdditions` can never authorize replacing an owner's file if any existing key or value was modified, corrupted, or dropped by the splicer.
+
+---
+
+### R1 — One Terminal Newline in Keep-Chomped Block Scalar at EOF
+- **What changed**:
+  1. In `YamlConfigLoader.mergeCatalogText`, adjusted absent-section insertion logic at EOF: when absent sections are appended to `originalLines.size()`, the empty separator line is placed immediately ahead of the absent sections (`eofInsertions.add(0, new Line("", defaultLineBreak))`), rather than prepended at index 0 of all EOF insertions ahead of sibling keys.
+  2. When no siblings are inserted at EOF, the separator line is suppressed if the last node in the owner file is a block scalar (`isLastNodeBlockScalar`).
+  3. Removed the blanket `insertions.get(originalLines.size()).add(0, new Line("", defaultLineBreak))` from line splice step 4.
+  4. Added test `CatalogMergeTest.blockScalarWithOneTrailingNewlinePreservesExactValueAtEof` exercising the exact single-break fixture `prefix: '[DT] '\ngeneral:\n  no-permission: |+\n    Owner line\n`.
+- **Why it closes R1**:
+  Sibling keys inserted into `general` directly follow `    Owner line` without an intervening blank line, and absent sections following the siblings are separated cleanly. The keep-chomped scalar (`|+`) does not absorb an unwanted trailing newline; `general.no-permission` retains its exact resolved value `"Owner line\n"`.
+
+---
+
+### R2 — Section Name With Nonempty Scalar Value
+- **What changed**:
+  1. Added `isMapping()` and `isEmptyContainer()` to `TopLevelSection`. An empty container is recognized if the value node is an empty `MappingNode`, or a `ScalarNode` with tag `Tag.NULL` or an empty string.
+  2. In `YamlConfigLoader.mergeDefaultFile`, when evaluating bundled mapping sections against existing owner entries, if an owner entry has a matching name but its value is a nonempty scalar (`!ownerSec.isMapping() && !ownerSec.isEmptyContainer()`), the merger recognizes that a top-level name whose value is not a mapping is not a section. It safely aborts the merge with a warning (`<resource>: section '<name>' has a non-mapping scalar value; catalog merge aborted`) and returns without modifying the file.
+  3. The verification oracle independently protects the scalar from value changes.
+  4. Added test `CatalogMergeTest.sectionWithNonEmptyScalarValueAbortsMergeAndPreservesOwnerScalar` using the exact fixture `prefix: '[DT] '\ngeneral: |\n  Owner line\n`.
+- **Why it closes R2**:
+  The nonempty scalar is never mistaken for a mapping container. Catalog lines are never spliced into the scalar string, original bytes are left untouched, and no partial addition can permit a write.
+
+---
+
+### R3 — Merge Keys, Anchors, and Aliases
+- **What changed**:
+  1. In `YamlConfigLoader.mergeDefaultFile`, added detection for anchors, aliases, and merge keys across both the SnakeYAML event stream (`yaml.parse(...)`) and the composed node tree (`ownerRoot`).
+  2. If any `AliasEvent`, `NodeEvent` with an anchor (`getAnchor() != null`), `AnchorNode`, or mapping tuple with key `<<` is encountered, the merger immediately refuses the merge:
+     `warning.accept(resourceName + ": anchors, aliases or merge keys present; catalog merge abandoned"); return;`
+  3. Added test `CatalogMergeTest.mergeKeyAndAnchorAbortsMergeAndPreservesOwnerMappings` using the exact fixture with `defaults: &base` and `general:\n  <<: *base`.
+- **Why it closes R3**:
+  Because SnakeYAML resolves alias nodes to the referenced anchor node whose source marks reside in the anchor rather than the alias site, text splicing cannot reason about occurrence boundaries with marks. Refusing merges on files with anchors, aliases, or merge keys completely prevents splicing duplicate keys into unrelated mappings or overriding inherited values.
+
+---
+
+### F7 — Untranslated Domain Terms (Town, Nation, Resident)
+- **What changed**:
+  In `CatalogMergeTest.invariantsTownNationResidentStayUntranslatedInBothCatalogs`:
+  1. Added exact assertions verifying that `embed.nation` is `"Nation"` in bundled English and Spanish catalogs, in restored disk files, in `messages.plain("embed.nation")`, and in `messages.label("embed.nation")`, asserting absence of `"Nación"` and `"nación"`.
+  2. Added prose assertions verifying that `space.already-exists` contains `"La town"` and does not contain `"pueblo"` or `"ciudad"` in bundled resources and restored disk files.
+  3. Added runtime rendering assertion on `space.already-exists` with the `{town}` placeholder substituted (`Map.of("town", "Cuzco")`), verifying that rendered prose retains `"town"` independent of the placeholder and contains neither `"pueblo"` nor `"ciudad"`.
+- **Why it closes F7**:
+  Placeholder spellings alone no longer satisfy the test. Both concrete test mutations identified in the review (changing `embed.nation` to `Nación` or changing `space.already-exists` prose to use `pueblo`) now fail these assertions.
+
+---
+
+### F9 — Temporary Write Failure Seam and Coverage
+- **What changed**:
+  1. Added `TempWriter` interface seam and constructor `YamlConfigLoader(Path, Consumer<String>, Mover, TempWriter)`.
+  2. In `YamlConfigLoader.writeAtomically`, the temporary file write delegates to `tempWriter.write(tempFile, content)`.
+  3. Added test `CatalogMergeTest.temporaryWriteFailureLeavesTargetUntouchedAndCleansUpTempFile`, which injects a partial temporary file write followed by an `IOException`.
+- **Why it closes F9**:
+  Provides explicit test coverage of the temporary write failure stage prior to the move operation, verifying that a failed write leaves the original target untouched, emits no success report, cleans up temporary files in `finally`, and records positive reachability.

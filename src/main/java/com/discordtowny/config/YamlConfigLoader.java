@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
@@ -25,12 +26,18 @@ import java.util.regex.Pattern;
 import net.kyori.adventure.text.Component;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.yaml.snakeyaml.DumperOptions.ScalarStyle;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.error.Mark;
+import org.yaml.snakeyaml.events.AliasEvent;
+import org.yaml.snakeyaml.events.Event;
+import org.yaml.snakeyaml.events.NodeEvent;
+import org.yaml.snakeyaml.nodes.AnchorNode;
 import org.yaml.snakeyaml.nodes.MappingNode;
 import org.yaml.snakeyaml.nodes.Node;
 import org.yaml.snakeyaml.nodes.NodeTuple;
 import org.yaml.snakeyaml.nodes.ScalarNode;
+import org.yaml.snakeyaml.nodes.SequenceNode;
 
 /**
  * Explicit loading: each load reloads both files and publishes only if everything is valid.
@@ -49,6 +56,7 @@ public final class YamlConfigLoader implements ConfigLoader {
     private final ReloadableMessages messages;
     // The class is final, so a test cannot override a method to inject a failing move.
     private final Mover mover;
+    private final TempWriter tempWriter;
 
     public YamlConfigLoader(Path dataFolder, Consumer<String> warning) {
         this(dataFolder, warning, (source, target) ->
@@ -58,7 +66,12 @@ public final class YamlConfigLoader implements ConfigLoader {
     // The constructor already merges the catalogs, so a seam installed afterwards
     // would arrive too late to see the write it is meant to make fail.
     YamlConfigLoader(Path dataFolder, Consumer<String> warning, Mover mover) {
+        this(dataFolder, warning, mover, (path, content) -> Files.writeString(path, content, StandardCharsets.UTF_8));
+    }
+
+    YamlConfigLoader(Path dataFolder, Consumer<String> warning, Mover mover, TempWriter tempWriter) {
         this.mover = mover;
+        this.tempWriter = tempWriter;
         this.dataFolder = dataFolder;
         this.warning = warning;
         this.bundledEnglish = loadBundledEnglish();
@@ -106,6 +119,26 @@ public final class YamlConfigLoader implements ConfigLoader {
         }
 
         if (ownerRoot != null && !(ownerRoot instanceof MappingNode)) {
+            return;
+        }
+
+        // R3: detect anchors, aliases, and merge keys.
+        // Anchors, aliases and merge keys cannot be reasoned about with marks; refuse the merge.
+        try {
+            for (Event event : yaml.parse(new StringReader(ownerContent))) {
+                if (event instanceof AliasEvent) {
+                    warning.accept(resourceName + ": anchors, aliases or merge keys present; catalog merge abandoned");
+                    return;
+                }
+                if (event instanceof NodeEvent nodeEvent && nodeEvent.getAnchor() != null) {
+                    warning.accept(resourceName + ": anchors, aliases or merge keys present; catalog merge abandoned");
+                    return;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        if (hasAnchorAliasOrMergeKey(ownerRoot)) {
+            warning.accept(resourceName + ": anchors, aliases or merge keys present; catalog merge abandoned");
             return;
         }
 
@@ -166,6 +199,10 @@ public final class YamlConfigLoader implements ConfigLoader {
                             missingKeys.add(secName + "." + childKeyNode.getValue());
                         }
                     }
+                } else if (!ownerSec.isMapping() && !ownerSec.isEmptyContainer()) {
+                    // R2: Section name in owner has a nonempty scalar value, not a mapping or empty container
+                    warning.accept(resourceName + ": section '" + secName + "' has a non-mapping scalar value; catalog merge aborted");
+                    return;
                 } else {
                     Set<String> ownerKeys = ownerSec.keys;
                     for (NodeTuple childTuple : childMapping.getValue()) {
@@ -206,6 +243,20 @@ public final class YamlConfigLoader implements ConfigLoader {
             return;
         }
 
+        // Oracle: verify that every key present in original exists in candidate with an equal value
+        YamlConfiguration originalConfig = new YamlConfiguration();
+        try {
+            originalConfig.loadFromString(ownerContent);
+        } catch (InvalidConfigurationException | RuntimeException e) {
+            warning.accept(resourceName + ": original catalog could not be parsed; catalog merge abandoned");
+            return;
+        }
+
+        if (!verifyPreservation(originalConfig, verification, ownerSections)) {
+            warning.accept(resourceName + ": catalog merge verification failed; original untouched");
+            return;
+        }
+
         // F5: report only additions actually made and verified in the written result
         List<String> verifiedAdditions = new ArrayList<>();
         for (String key : missingKeys) {
@@ -232,7 +283,7 @@ public final class YamlConfigLoader implements ConfigLoader {
     void writeAtomically(Path target, String content, String resourceName) throws IOException {
         Path tempFile = Files.createTempFile(dataFolder, target.getFileName().toString(), ".tmp");
         try {
-            Files.writeString(tempFile, content, StandardCharsets.UTF_8);
+            tempWriter.write(tempFile, content);
             moveFile(tempFile, target, resourceName);
         } finally {
             Files.deleteIfExists(tempFile);
@@ -253,6 +304,11 @@ public final class YamlConfigLoader implements ConfigLoader {
     /** How the finished file replaces the original. A seam, so a test can make the move fail. */
     interface Mover {
         void move(Path source, Path target) throws IOException;
+    }
+
+    /** How the temporary file is written. A seam, so a test can make the temporary write fail. */
+    interface TempWriter {
+        void write(Path path, String content) throws IOException;
     }
 
 
@@ -355,18 +411,28 @@ public final class YamlConfigLoader implements ConfigLoader {
                     }
                 }
             }
-            insertions.computeIfAbsent(originalLines.size(), k -> new ArrayList<>()).addAll(eofInsertions);
+            if (!eofInsertions.isEmpty()) {
+                List<Line> atEof = insertions.computeIfAbsent(originalLines.size(), k -> new ArrayList<>());
+                if (!atEof.isEmpty()) {
+                    // There are already sibling insertions at EOF.
+                    // Separate the sibling insertions from the absent sections with an empty line.
+                    eofInsertions.add(0, new Line("", defaultLineBreak));
+                } else if (!originalLines.isEmpty()) {
+                    // No sibling insertions at EOF, but appending absent sections to the file.
+                    Line last = originalLines.get(originalLines.size() - 1);
+                    if (!last.content.isBlank() && !isLastNodeBlockScalar(ownerSections)) {
+                        eofInsertions.add(0, new Line("", defaultLineBreak));
+                    }
+                }
+                atEof.addAll(eofInsertions);
+            }
         }
 
         // 4. Splice lines
-        boolean appendingAtEof = !absentSections.isEmpty();
         if (insertions.containsKey(originalLines.size()) && !originalLines.isEmpty()) {
             Line last = originalLines.get(originalLines.size() - 1);
             if (last.lineBreak.isEmpty()) {
                 originalLines.set(originalLines.size() - 1, new Line(last.content, defaultLineBreak));
-            }
-            if (appendingAtEof && !last.content.isBlank()) {
-                insertions.get(originalLines.size()).add(0, new Line("", defaultLineBreak));
             }
         }
 
@@ -466,6 +532,21 @@ public final class YamlConfigLoader implements ConfigLoader {
             return !childTuples.isEmpty();
         }
 
+        boolean isMapping() {
+            return valueNode instanceof MappingNode;
+        }
+
+        boolean isEmptyContainer() {
+            if (valueNode instanceof MappingNode mapping) {
+                return mapping.getValue().isEmpty();
+            }
+            if (valueNode instanceof ScalarNode scalar) {
+                String val = scalar.getValue();
+                return val == null || val.isEmpty() || "tag:yaml.org,2002:null".equals(scalar.getTag().getValue());
+            }
+            return valueNode == null;
+        }
+
         NodeTuple getLastChild() {
             return childTuples.get(childTuples.size() - 1);
         }
@@ -486,6 +567,95 @@ public final class YamlConfigLoader implements ConfigLoader {
             }
             return "  ";
         }
+    }
+
+    private static boolean isLastNodeBlockScalar(Map<String, TopLevelSection> ownerSections) {
+        if (ownerSections == null || ownerSections.isEmpty()) {
+            return false;
+        }
+        TopLevelSection lastSec = null;
+        for (TopLevelSection sec : ownerSections.values()) {
+            lastSec = sec;
+        }
+        if (lastSec == null) {
+            return false;
+        }
+        Node valNode;
+        if (lastSec.hasChildren()) {
+            NodeTuple lastChild = lastSec.getLastChild();
+            valNode = lastChild.getValueNode() != null ? lastChild.getValueNode() : lastChild.getKeyNode();
+        } else {
+            valNode = lastSec.valueNode;
+        }
+        if (valNode instanceof ScalarNode sn) {
+            ScalarStyle style = sn.getScalarStyle();
+            return style == ScalarStyle.LITERAL || style == ScalarStyle.FOLDED;
+        }
+        return false;
+    }
+
+    private static boolean hasAnchorAliasOrMergeKey(Node root) {
+        if (root == null) return false;
+        return checkNodeForAnchorAliasOrMergeKey(root, new HashSet<>());
+    }
+
+    private static boolean checkNodeForAnchorAliasOrMergeKey(Node node, Set<Node> visited) {
+        if (node == null) return false;
+        if (!visited.add(node)) return false;
+        if (node.getAnchor() != null) return true;
+        if (node instanceof AnchorNode) return true;
+        if (node instanceof MappingNode mapping) {
+            for (NodeTuple tuple : mapping.getValue()) {
+                if (tuple.getKeyNode() instanceof ScalarNode keyNode) {
+                    if ("<<".equals(keyNode.getValue())) return true;
+                }
+                if (checkNodeForAnchorAliasOrMergeKey(tuple.getKeyNode(), visited)) return true;
+                if (checkNodeForAnchorAliasOrMergeKey(tuple.getValueNode(), visited)) return true;
+            }
+        } else if (node instanceof SequenceNode sequence) {
+            for (Node item : sequence.getValue()) {
+                if (checkNodeForAnchorAliasOrMergeKey(item, visited)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean verifyPreservation(YamlConfiguration original,
+                                              YamlConfiguration candidate,
+                                              Map<String, TopLevelSection> ownerSections) {
+        // 1. Every key present in original must be present in candidate with an equal value
+        for (String key : original.getKeys(true)) {
+            if (original.isConfigurationSection(key)) {
+                if (!candidate.isConfigurationSection(key)) {
+                    return false;
+                }
+            } else {
+                if (!candidate.contains(key) && !candidate.isSet(key)) {
+                    return false;
+                }
+                Object origVal = original.get(key);
+                Object candVal = candidate.get(key);
+                if (!Objects.equals(origVal, candVal)) {
+                    return false;
+                }
+            }
+        }
+
+        // 2. Also verify keys in ownerSections from SnakeYAML (covers present null/empty keys that Bukkit omits from getKeys)
+        for (Map.Entry<String, TopLevelSection> entry : ownerSections.entrySet()) {
+            String secName = entry.getKey();
+            TopLevelSection sec = entry.getValue();
+            for (String childKey : sec.keys) {
+                String path = secName + "." + childKey;
+                Object origVal = original.get(path);
+                Object candVal = candidate.get(path);
+                if (!Objects.equals(origVal, candVal)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     private static final class BundledCatalog {

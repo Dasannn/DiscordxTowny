@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -453,7 +454,16 @@ class CatalogMergeTest {
         assertFalse(esBundled.getString("general.no-towns-found").contains("ciudad"));
         assertFalse(esBundled.getString("general.no-towns-found").contains("pueblo"));
         assertTrue(esBundled.getString("space.already-exists").contains("town"));
+        assertTrue(esBundled.getString("space.already-exists").contains("La town"),
+                "Bundled space.already-exists must use 'La town' in prose");
         assertFalse(esBundled.getString("space.already-exists").contains("ciudad"));
+        assertFalse(esBundled.getString("space.already-exists").contains("pueblo"),
+                "Bundled space.already-exists must not translate town to pueblo");
+
+        // F7: embed.nation must be untranslated 'Nation', not 'Nación'
+        assertEquals("Nation", esBundled.getString("embed.nation"), "embed.nation must be 'Nation'");
+        assertFalse(esBundled.getString("embed.nation").toLowerCase().contains("naci"),
+                "embed.nation must not be translated");
 
         // 2. Exercise the merger and test restored disk and runtime output
         configYaml.set("language", "es");
@@ -477,14 +487,32 @@ class CatalogMergeTest {
 
         String restoredSpaceExists = parsedEs.getString("space.already-exists");
         assertNotNull(restoredSpaceExists);
-        assertTrue(restoredSpaceExists.contains("town"), "Restored message must use 'town': " + restoredSpaceExists);
+        assertTrue(restoredSpaceExists.contains("La town"), "Restored message must contain prose 'La town': " + restoredSpaceExists);
         assertFalse(restoredSpaceExists.contains("ciudad"), "Restored message must not use 'ciudad': " + restoredSpaceExists);
+        assertFalse(restoredSpaceExists.contains("pueblo"), "Restored message must not use 'pueblo': " + restoredSpaceExists);
+
+        String restoredNation = parsedEs.getString("embed.nation");
+        assertNotNull(restoredNation);
+        assertEquals("Nation", restoredNation, "Restored embed.nation must be 'Nation'");
+        assertFalse(restoredNation.toLowerCase().contains("naci"), "Restored embed.nation must not be 'Nación'");
 
         // Runtime rendering check
         Messages messages = loader.messages();
         String plainResident = messages.plain("general.resident-not-found", Map.of("resident", "Mario"));
         assertTrue(plainResident.contains("resident"), "Runtime text must preserve 'resident'");
         assertFalse(plainResident.contains("residente"), "Runtime text must not translate to 'residente'");
+
+        // F7: Render space.already-exists with town placeholder replaced; prose must still retain 'town' and not 'pueblo'
+        String plainSpaceExists = messages.plain("space.already-exists", Map.of("town", "Cuzco"));
+        assertTrue(plainSpaceExists.contains("town"), "Rendered space.already-exists prose must retain 'town': " + plainSpaceExists);
+        assertFalse(plainSpaceExists.contains("pueblo"), "Rendered space.already-exists must not contain 'pueblo': " + plainSpaceExists);
+        assertFalse(plainSpaceExists.contains("ciudad"), "Rendered space.already-exists must not contain 'ciudad': " + plainSpaceExists);
+
+        // F7: Render embed.nation
+        String plainNation = messages.plain("embed.nation", Map.of());
+        assertTrue(plainNation.contains("Nation"), "Rendered embed.nation must retain 'Nation': " + plainNation);
+        assertFalse(plainNation.toLowerCase().contains("naci"), "Rendered embed.nation must not contain 'Nación': " + plainNation);
+        assertEquals("Nation", messages.label("embed.nation"), "Label embed.nation must be 'Nation'");
     }
 
     @Test
@@ -968,5 +996,119 @@ class CatalogMergeTest {
         parsed.loadFromString(merged);
         assertEquals("Custom", parsed.getString("general.no-permission"));
         assertNotNull(parsed.getString("general.resident-not-found"));
+    }
+
+    @Test
+    void blockScalarWithOneTrailingNewlinePreservesExactValueAtEof() throws Exception {
+        // R1: One terminal newline in a keep-chomped scalar at EOF must not gain an extra blank line
+        String fixture = "prefix: '[DT] '\ngeneral:\n  no-permission: |+\n    Owner line\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, fixture, StandardCharsets.UTF_8);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        String merged = Files.readString(enPath, StandardCharsets.UTF_8);
+
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.loadFromString(merged);
+
+        assertEquals("Owner line\n", parsed.getString("general.no-permission"),
+                "Keep-chomped block scalar with 1 terminal break must preserve exactly 1 break, not gain a second: " + merged);
+
+        assertNotNull(parsed.getString("general.resident-not-found"), "Missing sibling keys must still be added");
+        assertNotNull(parsed.getString("space.created"), "Absent sections must be added at EOF");
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("added missing")),
+                "Must report added missing keys: " + warnings);
+        assertFalse(merged.contains("    Owner line\n\n  resident-not-found:"),
+                "Sibling keys must not be preceded by an empty line directly after scalar");
+    }
+
+    @Test
+    void sectionWithNonEmptyScalarValueAbortsMergeAndPreservesOwnerScalar() throws Exception {
+        // R2: A section name whose value is a nonempty scalar must not receive inserted keys inside its scalar
+        String fixture = "prefix: '[DT] '\ngeneral: |\n  Owner line\n";
+        byte[] originalBytes = fixture.getBytes(StandardCharsets.UTF_8);
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.write(enPath, originalBytes);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        byte[] afterBytes = Files.readAllBytes(enPath);
+        assertArrayEquals(originalBytes, afterBytes,
+                "File containing nonempty scalar section must be left byte-for-byte untouched");
+
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.load(enPath.toFile());
+        assertEquals("Owner line\n", parsed.getString("general"),
+                "Owner scalar value must remain untouched and not swallow missing message lines");
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("general") && (w.contains("scalar") || w.contains("verification failed"))),
+                "Warning must be emitted explaining refusal/verification failure: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
+                "No success report should be emitted when merge is aborted");
+    }
+
+    @Test
+    void mergeKeyAndAnchorAbortsMergeAndPreservesOwnerMappings() throws Exception {
+        // R3: Anchors, aliases and merge keys cannot be reasoned about with marks; merge must be refused
+        String fixture = "prefix: '[DT] '\ndefaults: &base\n  no-permission: 'Mine'\ngeneral:\n  <<: *base\n";
+        byte[] originalBytes = fixture.getBytes(StandardCharsets.UTF_8);
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.write(enPath, originalBytes);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        byte[] afterBytes = Files.readAllBytes(enPath);
+        assertArrayEquals(originalBytes, afterBytes,
+                "File with anchors, aliases or merge keys must be left byte-for-byte untouched");
+
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.load(enPath.toFile());
+        assertEquals("Mine", parsed.getString("defaults.no-permission"),
+                "Original defaults mapping must not receive misplaced additions or duplicate keys");
+        assertEquals("Mine", parsed.getString("general.no-permission"),
+                "Inherited value must remain Mine");
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("anchors, aliases or merge keys present")),
+                "Warning must be emitted for anchors/aliases/merge keys: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
+                "No success report should be emitted when merge is aborted");
+    }
+
+    @Test
+    void temporaryWriteFailureLeavesTargetUntouchedAndCleansUpTempFile() throws Exception {
+        String fixture = "prefix: '[DT] '\ngeneral:\n  no-permission: 'Mine'\n";
+        byte[] originalBytes = fixture.getBytes(StandardCharsets.UTF_8);
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.write(enPath, originalBytes);
+
+        java.util.concurrent.atomic.AtomicInteger writeAttempts = new java.util.concurrent.atomic.AtomicInteger();
+        YamlConfigLoader failingLoader = new YamlConfigLoader(folder, warnings::add,
+                (source, target) -> Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING),
+                (file, content) -> {
+                    writeAttempts.incrementAndGet();
+                    Files.writeString(file, content.substring(0, Math.min(10, content.length())), StandardCharsets.UTF_8);
+                    throw new IOException("Simulated disk error during temporary write");
+                });
+
+        failingLoader.load();
+
+        assertTrue(writeAttempts.get() > 0, "Temporary write must be attempted during merge");
+
+        byte[] afterBytes = Files.readAllBytes(enPath);
+        assertArrayEquals(originalBytes, afterBytes,
+                "On temporary write failure, target file must be left untouched");
+
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
+                "No success report should be emitted after temporary write failure");
+
+        try (var stream = Files.list(folder)) {
+            List<Path> tmpFiles = stream.filter(p -> p.getFileName().toString().endsWith(".tmp")).toList();
+            assertTrue(tmpFiles.isEmpty(), "Temporary files must be cleaned up on write failure: " + tmpFiles);
+        }
     }
 }
