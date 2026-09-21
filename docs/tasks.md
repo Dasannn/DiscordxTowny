@@ -362,7 +362,7 @@ permissions or unrecoverable state.
 ## T13 — Release
 
 - **Branch**: `chore/release` · **Phase** 8 · **Depends on**: T12
-- **Responsible**: architect · **Status**: pending
+- **Responsible**: architect · **Status**: pipeline ready, awaiting the first published tag
 
 **Does**
 

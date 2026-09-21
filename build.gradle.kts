@@ -6,7 +6,9 @@ plugins {
 }
 
 group = "com.discordtowny"
-version = "0.1.0-SNAPSHOT"
+// The release pipeline passes -PreleaseVersion=<tag without the leading v>, so the
+// jar name, paper-plugin.yml and the GitHub tag can never disagree about the version.
+version = (findProperty("releaseVersion") ?: "0.1.0-SNAPSHOT").toString()
 
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(25))

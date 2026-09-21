@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Resolve the version from the tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: ./gradlew build -PreleaseVersion=$VERSION --no-daemon
+
+      # The updater refuses a release whose runnable jar is ambiguous, so exactly one
+      # jar is staged, named so that it matches the canonical DiscordTowny-<x>.jar
+      # pattern. Copying by explicit name also fails loudly if the build ever renames
+      # its output, instead of shipping the wrong file.
+      - name: Stage the jar and its checksum
+        run: |
+          mkdir -p release
+          cp "build/libs/DiscordTowny-$VERSION.jar" release/
+          cd release
+          sha256sum "DiscordTowny-$VERSION.jar" > "DiscordTowny-$VERSION.jar.sha256"
+          echo "SHA256=$(cut -d' ' -f1 "DiscordTowny-$VERSION.jar.sha256")" >> "$GITHUB_ENV"
+
+      # Release notes are NOT auto-generated. The updater reads the body looking for a
+      # SHA-256, and any line mentioning sha256 without a valid 64-hex token makes it
+      # refuse the whole release. Commit subjects in this repository do mention sha256,
+      # so generated notes would brick the update they are announcing.
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: DiscordTowny ${{ env.VERSION }}
+          body: |
+            SHA-256: ${{ env.SHA256 }}
+
+            See CHANGELOG.md for the changes in this version.
+          files: |
+            release/DiscordTowny-${{ env.VERSION }}.jar
+            release/DiscordTowny-${{ env.VERSION }}.jar.sha256
