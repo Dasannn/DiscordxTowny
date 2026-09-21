@@ -142,13 +142,6 @@ public final class YamlConfigLoader implements ConfigLoader {
             return;
         }
 
-        // R4: detect keys containing '.' which create ambiguity between YAML mapping keys and Bukkit paths
-        String dottedKey = findKeyWithDot(ownerRoot);
-        if (dottedKey != null) {
-            warning.accept(resourceName + ": key '" + dottedKey + "' contains '.'; catalog merge abandoned");
-            return;
-        }
-
         // F5: detect duplicate top-level sections and duplicate keys
         Map<String, TopLevelSection> ownerSections = new LinkedHashMap<>();
         if (ownerRoot instanceof MappingNode ownerMapping) {
@@ -235,6 +228,19 @@ public final class YamlConfigLoader implements ConfigLoader {
             return;
         }
 
+        // R6: YAML line breaks that splitIntoLines does not recognize (U+0085, U+2028, U+2029) make marks untrustworthy
+        if (hasUnsupportedLineBreak(ownerContent)) {
+            warning.accept(resourceName + ": unsupported line break; catalog merge abandoned");
+            return;
+        }
+
+        // R7: detect root mapping keys containing '.' which create ambiguity between YAML mapping keys and Bukkit paths
+        String dottedKey = findRootKeyWithDot(ownerRoot);
+        if (dottedKey != null) {
+            warning.accept(resourceName + ": key '" + dottedKey + "' contains '.'; catalog merge abandoned");
+            return;
+        }
+
         BundledCatalog bundledCatalog = new BundledCatalog(bundledContent, bundledMapping);
         String updatedContent = mergeCatalogText(ownerContent, ownerSections, bundledCatalog,
                 missingKeys, absentSections, missingKeysByExistingSection);
@@ -259,7 +265,15 @@ public final class YamlConfigLoader implements ConfigLoader {
             return;
         }
 
-        if (!verifyPreservation(originalConfig, verification, ownerSections)) {
+        Set<String> scheduledEmptySectionFills = new HashSet<>();
+        for (String secName : missingKeysByExistingSection.keySet()) {
+            TopLevelSection ownerSec = ownerSections.get(secName);
+            if (ownerSec != null && (ownerSec.isEmptyContainer() || ownerSec.keys.isEmpty())) {
+                scheduledEmptySectionFills.add(secName);
+            }
+        }
+
+        if (!verifyPreservation(originalConfig, verification, ownerSections, scheduledEmptySectionFills)) {
             warning.accept(resourceName + ": catalog merge verification failed; original untouched");
             return;
         }
@@ -271,7 +285,7 @@ public final class YamlConfigLoader implements ConfigLoader {
                 verifiedAdditions.add(key);
             }
         }
-        if (verifiedAdditions.isEmpty()) {
+        if (verifiedAdditions.size() != missingKeys.size() || verifiedAdditions.isEmpty()) {
             return;
         }
 
@@ -510,7 +524,7 @@ public final class YamlConfigLoader implements ConfigLoader {
         return "\n";
     }
 
-    private static final class TopLevelSection {
+    static final class TopLevelSection {
         final NodeTuple tuple;
         final ScalarNode keyNode;
         final Node valueNode;
@@ -627,45 +641,35 @@ public final class YamlConfigLoader implements ConfigLoader {
         return false;
     }
 
-    private static String findKeyWithDot(Node root) {
-        if (root == null) return null;
-        return checkNodeForKeyWithDot(root, new HashSet<>());
+    private static boolean hasUnsupportedLineBreak(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\u0085' || c == '\u2028' || c == '\u2029') {
+                return true;
+            }
+        }
+        return false;
     }
 
-    private static String checkNodeForKeyWithDot(Node node, Set<Node> visited) {
-        if (node == null || !visited.add(node)) return null;
-        if (node instanceof MappingNode mapping) {
+    private static String findRootKeyWithDot(Node root) {
+        if (root instanceof MappingNode mapping) {
             for (NodeTuple tuple : mapping.getValue()) {
                 if (tuple.getKeyNode() instanceof ScalarNode keyNode) {
                     String val = keyNode.getValue();
                     if (val != null && val.contains(".")) {
                         return val;
                     }
-                } else {
-                    String keyNested = checkNodeForKeyWithDot(tuple.getKeyNode(), visited);
-                    if (keyNested != null) {
-                        return keyNested;
-                    }
-                }
-                String nested = checkNodeForKeyWithDot(tuple.getValueNode(), visited);
-                if (nested != null) {
-                    return nested;
-                }
-            }
-        } else if (node instanceof SequenceNode sequence) {
-            for (Node item : sequence.getValue()) {
-                String nested = checkNodeForKeyWithDot(item, visited);
-                if (nested != null) {
-                    return nested;
                 }
             }
         }
         return null;
     }
 
-    private static boolean verifyPreservation(YamlConfiguration original,
-                                              YamlConfiguration candidate,
-                                              Map<String, TopLevelSection> ownerSections) {
+    static boolean verifyPreservation(YamlConfiguration original,
+                                      YamlConfiguration candidate,
+                                      Map<String, TopLevelSection> ownerSections,
+                                      Set<String> scheduledEmptySectionFills) {
         // 1. Every key present in original must be present in candidate with an equal value
         for (String key : original.getKeys(true)) {
             if (original.isConfigurationSection(key)) {
@@ -697,8 +701,11 @@ public final class YamlConfigLoader implements ConfigLoader {
                 Object candVal = candidate.get(secName);
                 // A header the owner left without children is a container, not a value:
                 // every key under it is missing, and filling it is what T23 asks for.
+                // A null may become a section only when that name is a bundled mapping section
+                // the merge scheduled to fill.
                 boolean filledEmptyContainer = origVal == null
                         && sec.keys.isEmpty()
+                        && scheduledEmptySectionFills.contains(secName)
                         && candidate.isConfigurationSection(secName);
                 if (!filledEmptyContainer && !Objects.equals(origVal, candVal)) {
                     return false;

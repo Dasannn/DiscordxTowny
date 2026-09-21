@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -12,9 +13,15 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.nodes.MappingNode;
+import org.yaml.snakeyaml.nodes.NodeTuple;
+import org.yaml.snakeyaml.nodes.ScalarNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -1172,5 +1179,140 @@ class CatalogMergeTest {
                 "Warning must be emitted explaining refusal due to dotted key: " + warnings);
         assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
                 "No success report should be emitted when merge is abandoned");
+    }
+
+    @Test
+    void unsupportedLineBreakNelAbortsMergeAndPreservesOwnerFileUntouched() throws Exception {
+        // R6: SnakeYAML treats NEL (\u0085) as a line break while standard splitters do not.
+        // Files containing unsupported YAML line breaks must be refused, leaving the file untouched.
+        String fixture = "owner-note: 'Mine'\u0085general:\nprefix:\n";
+        byte[] originalBytes = fixture.getBytes(StandardCharsets.UTF_8);
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.write(enPath, originalBytes);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        byte[] afterBytes = Files.readAllBytes(enPath);
+        assertArrayEquals(originalBytes, afterBytes,
+                "File with unsupported line break (NEL) must be left byte-for-byte untouched");
+
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("unsupported line break")),
+                "Warning must be emitted explaining refusal due to unsupported line break: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
+                "No success report should be emitted when merge is abandoned");
+    }
+
+    @Test
+    void prefixScalarLeafNeverBecomesASection() throws Exception {
+        // R6: prefix is a bundled scalar leaf, not an empty container scheduled to be filled.
+        // It must never satisfy the empty-container exception or become a configuration section.
+        String fixture = "prefix:\ngeneral:\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, fixture, StandardCharsets.UTF_8);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        String merged = Files.readString(enPath, StandardCharsets.UTF_8);
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.loadFromString(merged);
+
+        assertFalse(parsed.isConfigurationSection("prefix"),
+                "prefix must never become a configuration section");
+        assertNull(parsed.getString("prefix"),
+                "prefix must remain null/scalar, not receive child keys");
+        assertNotNull(parsed.getString("general.no-permission"),
+                "general section must receive its missing children");
+    }
+
+    @Test
+    void preservationOracleRejectsCandidateTurningScalarOrUnrelatedHeaderIntoSection() throws Exception {
+        // R6: A null may become a section ONLY when that name is a bundled mapping section
+        // the merge scheduled to fill. Turning prefix or an unrelated owner header into a section must be rejected.
+        YamlConfiguration original = new YamlConfiguration();
+        original.loadFromString("prefix: null\nowner: null\ngeneral:\n");
+
+        YamlConfiguration candidatePrefixAsSection = new YamlConfiguration();
+        candidatePrefixAsSection.loadFromString("prefix:\n  no-permission: 'Misplaced'\ngeneral:\n  no-permission: 'Text'\n");
+
+        Set<String> scheduledFills = Set.of("general");
+
+        Yaml snake = new Yaml();
+        MappingNode root = (MappingNode) snake.compose(new StringReader("prefix: null\nowner: null\ngeneral:\n"));
+        Map<String, YamlConfigLoader.TopLevelSection> ownerSections = new LinkedHashMap<>();
+        for (NodeTuple tuple : root.getValue()) {
+            if (tuple.getKeyNode() instanceof ScalarNode sn) {
+                ownerSections.put(sn.getValue(), new YamlConfigLoader.TopLevelSection(tuple, sn, tuple.getValueNode()));
+            }
+        }
+
+        assertFalse(YamlConfigLoader.verifyPreservation(original, candidatePrefixAsSection, ownerSections, scheduledFills),
+                "Preservation must reject candidate where prefix became a configuration section");
+
+        YamlConfiguration candidateOwnerAsSection = new YamlConfiguration();
+        candidateOwnerAsSection.loadFromString("prefix: null\nowner:\n  no-permission: 'Misplaced'\ngeneral:\n  no-permission: 'Text'\n");
+        assertFalse(YamlConfigLoader.verifyPreservation(original, candidateOwnerAsSection, ownerSections, scheduledFills),
+                "Preservation must reject candidate where unrelated owner header became a configuration section");
+    }
+
+    @Test
+    void listWithDottedKeyMergesNormallyAndPreservesListIntact() throws Exception {
+        // R7: Dotted keys inside list items (sequences) do not create Bukkit configuration path collisions.
+        // The merge must proceed normally and preserve the list and its dotted keys intact.
+        String fixture = "prefix: '[DT] '\nowner-notes:\n  - release.name: 'Mine'\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, fixture, StandardCharsets.UTF_8);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        String merged = Files.readString(enPath, StandardCharsets.UTF_8);
+        YamlConfiguration parsed = new YamlConfiguration();
+        parsed.loadFromString(merged);
+
+        assertEquals("[DT] ", parsed.getString("prefix"),
+                "prefix must be preserved");
+        List<?> ownerNotes = parsed.getList("owner-notes");
+        assertNotNull(ownerNotes, "owner-notes list must be preserved");
+        assertEquals(1, ownerNotes.size(), "owner-notes must contain 1 entry");
+        assertTrue(ownerNotes.get(0) instanceof Map, "List item must be a map");
+        assertEquals("Mine", ((Map<?, ?>) ownerNotes.get(0)).get("release.name"),
+                "release.name key inside list map must be preserved");
+
+        assertNotNull(parsed.getString("general.no-permission"),
+                "Missing catalog sections must be added");
+        assertNotNull(parsed.getString("space.created"),
+                "Absent sections must be added at EOF");
+
+        assertTrue(merged.contains("- release.name: 'Mine'"),
+                "Raw list entry must remain intact in merged file");
+        assertTrue(warnings.stream().anyMatch(w -> w.contains("added missing")),
+                "Must report added missing keys: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("contains '.'")),
+                "Must not warn about dotted keys inside lists: " + warnings);
+    }
+
+    @Test
+    void completeCatalogWithDottedRootKeyEmitsNoRefusalWarning() throws Exception {
+        // R7: When the catalog is already complete and nothing was going to be written,
+        // a refusal warning must not be announced.
+        String bundled;
+        try (var in = getClass().getResourceAsStream("/messages_en.yml")) {
+            assertNotNull(in);
+            bundled = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+
+        String completeWithDottedKey = bundled + "\ncustom.root.key: 'Custom'\n";
+        Path enPath = folder.resolve("messages_en.yml");
+        Files.writeString(enPath, completeWithDottedKey, StandardCharsets.UTF_8);
+
+        loader = new YamlConfigLoader(folder, warnings::add);
+        loader.load();
+
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("contains '.'")),
+                "No refusal warning should be emitted when catalog is already complete: " + warnings);
+        assertTrue(warnings.stream().noneMatch(w -> w.contains("added missing")),
+                "No added missing warning should be emitted when catalog is already complete: " + warnings);
     }
 }

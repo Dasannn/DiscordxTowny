@@ -229,3 +229,39 @@ This section documents the resolution of findings R4 (dotted leaf keys escaping 
   3. Added test `CatalogMergeTest.nestedMappingPreservedOnSuccessfulMerge` exercising `prefix: '[DT] '\nowner:\n  nested:\n    message: 'Mine'\n`, asserting successful merge, exact preservation of the nested custom message, addition of missing bundled sections, and clean verification.
 - **Why it closes R5**:
   Sections are compared as sections and leaf values as values, eliminating false rejections caused by `MemorySection` identity inequality while continuing to verify full structural and value preservation.
+
+---
+
+## Round 6 — Resolution of R6 and R7
+
+This section documents the resolution of findings R6 (coordinate misalignment from unsupported YAML line breaks like NEL, empty-container exception provenance escaping to scalar leaves, and partial addition writes) and R7 (overly broad recursive dotted-key refusal rejecting sequences/lists and emitting refusal warnings on complete catalogs) from `docs/revisiones/T23-fusion-catalogos-r4.md`.
+
+### R6 — Line Break Coordinate Disagreement, Exception Provenance, and Addition Completeness
+- **Defect**:
+  SnakeYAML treats non-standard YAML line breaks such as U+0085 (NEL, Next Line), U+2028 (Line Separator), and U+2029 (Paragraph Separator) as line breaks and increments its node-mark line counts for them. In contrast, line splitters that recognize only CR and LF count fewer lines. When an owner file contains these characters (e.g. `owner-note: 'Mine'<NEL>general:\nprefix:\n`), every line index derived from node marks is shifted relative to the splicer's line array. Spliced keys for `general` then land indented under `prefix:` instead of `general:`.
+  Furthermore, the empty-container exception introduced in earlier rounds checked only that a null value transitioned to a configuration section without verifying provenance: whether that key denoted a bundled mapping section that the merge actually scheduled to fill. Because `prefix` in the fixture was null with no child keys, the exception authorized turning the scalar leaf `prefix` into a configuration section.
+  Finally, `verifiedAdditions` permitted writes as long as a nonempty subset of missing keys was added, allowing files to be written even when intended section additions completely failed.
+- **What changed**:
+  1. In `YamlConfigLoader.mergeDefaultFile`, added `hasUnsupportedLineBreak(ownerContent)` to detect YAML line breaks unrecognized by standard line splitters (U+0085, U+2028, U+2029). If any are found when a merge is required, the merge is safely abandoned with a warning (`<resource>: unsupported line break; catalog merge abandoned`) and returns before candidate generation, leaving the owner file byte-for-byte untouched.
+  2. In `YamlConfigLoader.mergeDefaultFile`, tracked provenance by constructing `scheduledEmptySectionFills`: the set of section names that were empty containers in the owner file and were bundled mapping sections scheduled to receive child keys.
+  3. In `YamlConfigLoader.verifyPreservation`, restricted the empty-container exception: a null value is permitted to transition to a configuration section if and only if `secName` is in `scheduledEmptySectionFills`. Neither bundled scalar leaves such as `prefix` nor unrelated custom owner headers such as `owner:` can satisfy the exception; attempting to turn them into sections fails verification.
+  4. Enforced full completion in addition verification: `if (verifiedAdditions.size() != missingKeys.size() || verifiedAdditions.isEmpty()) return;`. A candidate file is never written unless 100% of the scheduled missing keys are present in the verified candidate.
+  5. Added test `CatalogMergeTest.unsupportedLineBreakNelAbortsMergeAndPreservesOwnerFileUntouched` verifying that owner files with NEL are left byte-for-byte untouched, emit the refusal warning, and emit no success report.
+  6. Added test `CatalogMergeTest.prefixScalarLeafNeverBecomesASection` verifying that `prefix` remains a scalar null and never becomes a configuration section during merge.
+  7. Added test `CatalogMergeTest.preservationOracleRejectsCandidateTurningScalarOrUnrelatedHeaderIntoSection` directly exercising `verifyPreservation` to ensure that turning `prefix` or an unrelated owner header into a configuration section is rejected.
+- **Why it closes R6**:
+  Coordinate misalignment is prevented before splicing occurs. Provenance tracking guarantees that scalar leaves and unrelated headers can never become configuration sections. Full addition completeness ensures that candidates with dropped or misplaced keys are never written to disk.
+
+---
+
+### R7 — Dotted Keys in Lists and Complete Catalog Refusals
+- **Defect**:
+  The dotted-key check added in Round 5 recursively walked all YAML nodes, including mapping keys within sequences/lists (e.g. `owner-notes:\n  - release.name: 'Mine'`). Because Bukkit parses sequences as list values and never walks their internal map keys as configuration paths via `ConfigurationSection.set`, there is no YAML-key/Bukkit-path collision. Rejecting such files was an availability defect.
+  Additionally, the check ran before missing-key discovery, causing refusal warnings to be emitted even when the catalog was already complete and nothing was going to be merged.
+- **What changed**:
+  1. Replaced recursive node traversal with `findRootKeyWithDot(ownerRoot)`. The check now inspects only root mapping keys of the composed document where the YAML-key versus Bukkit configuration path ambiguity actually exists. Keys in nested sequences/lists are ignored.
+  2. Moved the root dotted-key check after `if (missingKeys.isEmpty()) return;`. If a catalog is already complete, no merge is needed, and no refusal warning is announced.
+  3. Added test `CatalogMergeTest.listWithDottedKeyMergesNormallyAndPreservesListIntact` verifying that files containing lists with dotted keys merge normally, add missing catalog sections, preserve the list and its dotted keys intact, and emit no dotted-key warning.
+  4. Added test `CatalogMergeTest.completeCatalogWithDottedRootKeyEmitsNoRefusalWarning` verifying that an already complete catalog with a dotted root key emits neither a refusal warning nor an added-missing report.
+- **Why it closes R7**:
+  The dotted-key policy is applied strictly to root mapping keys. Non-conflicting sequence data is preserved and allowed to merge, and complete catalogs do not emit spurious refusal warnings.
