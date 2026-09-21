@@ -37,6 +37,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -96,8 +97,15 @@ class MinecraftCommandsTest {
         when(messages.get(any(), any())).thenAnswer(inv -> Component.text("ES:" + inv.getArgument(0)));
         when(messages.label(any())).thenAnswer(inv -> "ES:" + inv.getArgument(0));
         when(messages.label(any(), any())).thenAnswer(inv -> "ES:" + inv.getArgument(0));
+        // The list rows must be distinguishable from one another, or a verification of one
+        // row silently matches every row and the test cannot tell page 2 from a repeated page 1.
+        when(messages.get(eq("admin.list-entry"), any())).thenAnswer(inv -> {
+            java.util.Map<String, String> ph = inv.getArgument(1);
+            return Component.text("ES:admin.list-entry:" + new java.util.TreeMap<>(ph));
+        });
         when(messages.label(eq("admin.channel-text"))).thenReturn("texto");
         when(messages.label(eq("admin.channel-voice"))).thenReturn("voz");
+        when(messages.label(eq("admin.channel-deleted"))).thenReturn("borrado");
         when(messages.label(eq("admin.none"))).thenReturn("sin registrar");
         when(messages.label(eq("admin.not-applicable"))).thenReturn("N/A");
         when(messages.label(eq("admin.state-active"))).thenReturn("activo");
@@ -117,6 +125,7 @@ class MinecraftCommandsTest {
         when(consoleMessages.label(any(), any())).thenAnswer(inv -> "EN:" + inv.getArgument(0));
         when(consoleMessages.label(eq("admin.channel-text"))).thenReturn("text");
         when(consoleMessages.label(eq("admin.channel-voice"))).thenReturn("voice");
+        when(consoleMessages.label(eq("admin.channel-deleted"))).thenReturn("deleted");
         when(consoleMessages.label(eq("admin.none"))).thenReturn("none");
         when(consoleMessages.label(eq("admin.not-applicable"))).thenReturn("N/A");
         when(consoleMessages.label(eq("admin.state-active"))).thenReturn("active");
@@ -719,6 +728,314 @@ class MinecraftCommandsTest {
                 "residents", "2",
                 "activity", "none"
         )));
+    }
+
+    @Test
+    void adminListReportsArchivedSpaceWithDeletedChannelsAsDeleted() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        TownSpace archivedSpace = new TownSpace(UUID.randomUUID(), "OldRome", Optional.of("cat"),
+                Optional.of("txt-old"), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace)));
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.existingResourceIds(List.of("txt-old"))).thenReturn(Set.of());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin, times(2)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "OldRome",
+                "status", "archivado",
+                "channels", "borrado",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+    }
+
+    @Test
+    void adminListForConsoleReportsArchivedSpaceWithDeletedChannelsInEnglish() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        ConsoleCommandSender console = mock(ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        TownSpace archivedSpace = new TownSpace(UUID.randomUUID(), "OldRome", Optional.of("cat"),
+                Optional.of("txt-old"), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace)));
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.existingResourceIds(List.of("txt-old"))).thenReturn(Set.of());
+
+        CommandContext<CommandSourceStack> ctx = createContext(console);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(console, times(2)).sendMessage(any(Component.class));
+        verify(console).sendMessage(consoleMessages.get("admin.list-header", Map.of("count", "1")));
+        verify(console).sendMessage(consoleMessages.get("admin.list-entry", Map.of(
+                "town", "OldRome",
+                "status", "archived",
+                "channels", "deleted",
+                "residents", "N/A",
+                "activity", "none"
+        )));
+    }
+
+    @Test
+    void adminListReportsArchivedSpaceWithIntactChannelsAsIntact() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        TownSpace archivedSpace = new TownSpace(UUID.randomUUID(), "OldRome", Optional.of("cat"),
+                Optional.of("txt-old"), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace)));
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.existingResourceIds(List.of("txt-old"))).thenReturn(Set.of("txt-old"));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin, times(2)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "OldRome",
+                "status", "archivado",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+    }
+
+    @Test
+    void adminListWhenDiscordFailsReadDoesNotReportChannelsAsDeleted() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        TownSpace archivedSpace = new TownSpace(UUID.randomUUID(), "OldRome", Optional.of("cat"),
+                Optional.of("txt-old"), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace)));
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.existingResourceIds(any())).thenThrow(new IllegalStateException("Discord gateway timeout"));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin, times(2)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "OldRome",
+                "status", "archivado",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+    }
+
+    @Test
+    void adminListWhenDiscordUnavailableDoesNotReportChannelsAsDeleted() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        TownSpace archivedSpace = new TownSpace(UUID.randomUUID(), "OldRome", Optional.of("cat"),
+                Optional.of("txt-old"), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace)));
+        when(discordGateway.isAvailable()).thenReturn(false);
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin, times(2)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "OldRome",
+                "status", "archivado",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+    }
+
+    @Test
+    void adminListNeverDeletesOrPurgesRows() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        UUID townUuid = UUID.randomUUID();
+        TownSpace archivedSpace = new TownSpace(townUuid, "OldRome", Optional.of("cat"),
+                Optional.of("txt-old"), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace)));
+        when(discordGateway.isAvailable()).thenReturn(true);
+        when(discordGateway.existingResourceIds(any())).thenReturn(Set.of());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(spaceService, never()).purgeArchived();
+        verify(spaceService, never()).archive(any(), any());
+    }
+
+    @Test
+    void adminListWithMoreThanOnePagePaginatesAndShowsNextPageHint() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        List<TownSpace> spaces = new ArrayList<>();
+        for (int i = 1; i <= 15; i++) {
+            spaces.add(new TownSpace(UUID.randomUUID(), "Town" + (i < 10 ? "0" + i : i), Optional.of("cat"),
+                    Optional.of("txt" + i), Optional.empty(), Optional.empty(),
+                    SpaceState.ACTIVE, Instant.now(), Optional.empty(), Optional.empty()));
+        }
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(spaces));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin, times(13)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "15")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Town01",
+                "status", "activo",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Town10",
+                "status", "activo",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+        verify(admin, never()).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Town11",
+                "status", "activo",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+        verify(admin).sendMessage(messages.get("admin.list-page", Map.of("current", "1", "total", "2")));
+        verify(admin).sendMessage(messages.get("admin.list-next", Map.of("next", "2")));
+    }
+
+    @Test
+    void adminListPageTwoShowsRemainingSpacesAndNoNextHint() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        List<TownSpace> spaces = new ArrayList<>();
+        for (int i = 1; i <= 15; i++) {
+            spaces.add(new TownSpace(UUID.randomUUID(), "Town" + (i < 10 ? "0" + i : i), Optional.of("cat"),
+                    Optional.of("txt" + i), Optional.empty(), Optional.empty(),
+                    SpaceState.ACTIVE, Instant.now(), Optional.empty(), Optional.empty()));
+        }
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(spaces));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        // Brigadier's IntegerArgumentType.getInteger asks for int.class, not Integer.class.
+        when(ctx.getArgument("page", int.class)).thenReturn(2);
+
+        root.getChild("admin").getChild("list").getChild("page").getCommand().run(ctx);
+
+        verify(admin, times(7)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "15")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Town11",
+                "status", "activo",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Town15",
+                "status", "activo",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+        verify(admin, never()).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Town01",
+                "status", "activo",
+                "channels", "texto",
+                "residents", "N/A",
+                "activity", "sin registrar"
+        )));
+        verify(admin).sendMessage(messages.get("admin.list-page", Map.of("current", "2", "total", "2")));
+        verify(admin, never()).sendMessage(messages.get(eq("admin.list-next"), any()));
+    }
+
+    @Test
+    void adminListBrigadierDispatchWithPageArgument() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        CommandDispatcher<CommandSourceStack> dispatcher = new CommandDispatcher<>();
+        dispatcher.getRoot().addChild(root);
+
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+        CommandSourceStack stack = mock(CommandSourceStack.class);
+        when(stack.getSender()).thenReturn(admin);
+
+        List<TownSpace> spaces = new ArrayList<>();
+        for (int i = 1; i <= 15; i++) {
+            spaces.add(new TownSpace(UUID.randomUUID(), "Town" + (i < 10 ? "0" + i : i), Optional.of("cat"),
+                    Optional.of("txt" + i), Optional.empty(), Optional.empty(),
+                    SpaceState.ACTIVE, Instant.now(), Optional.empty(), Optional.empty()));
+        }
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(spaces));
+
+        int result = dispatcher.execute("dt admin list 2", stack);
+        assertEquals(1, result);
+
+        verify(admin).sendMessage(messages.get("admin.list-page", Map.of("current", "2", "total", "2")));
+    }
+
+    @Test
+    void adminListSinglePageNeverShowsPageOrNextHints() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        TownSpace space = new TownSpace(UUID.randomUUID(), "Rome", Optional.of("cat"),
+                Optional.of("txt"), Optional.of("vc"), Optional.of("role1"),
+                SpaceState.ACTIVE, Instant.now(), Optional.empty(), Optional.empty());
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(space)));
+        when(discordGateway.roleHolders("role1")).thenReturn(Set.of("user1", "user2"));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("list").getCommand().run(ctx);
+
+        verify(admin, times(2)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.list-header", Map.of("count", "1")));
+        verify(admin).sendMessage(messages.get("admin.list-entry", Map.of(
+                "town", "Rome",
+                "status", "activo",
+                "channels", "texto voz",
+                "residents", "2",
+                "activity", "sin registrar"
+        )));
+        verify(admin, never()).sendMessage(messages.get(eq("admin.list-page"), any()));
+        verify(admin, never()).sendMessage(messages.get(eq("admin.list-next"), any()));
     }
 
     // --- /dt admin info tests ---

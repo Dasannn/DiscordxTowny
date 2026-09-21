@@ -15,12 +15,15 @@ import com.discordtowny.sync.SyncService;
 import com.discordtowny.towny.TownyFacade;
 import com.discordtowny.update.DefaultUpdateService;
 import com.discordtowny.update.UpdateService;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
 import io.papermc.paper.command.brigadier.Commands;
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -32,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -57,6 +61,7 @@ public final class MinecraftCommands {
 
     public static final String PERMISSION_USE = "discordtowny.use";
     public static final String PERMISSION_ADMIN = "discordtowny.admin";
+    public static final int PAGE_SIZE = 10;
 
     private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
     private static final long CONFIRMATION_EXPIRY_SECONDS = 30L;
@@ -783,69 +788,11 @@ public final class MinecraftCommands {
                 })
         );
 
-        // /dt admin list
+        // /dt admin list [page]
         admin.then(Commands.literal("list")
-                .executes(ctx -> {
-                    CommandSender sender = ctx.getSource().getSender();
-                    Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
-
-                    SpaceService spaceService = spaceServiceSupplier.get();
-                    if (spaceService == null) {
-                        sender.sendMessage(msg.get("general.database-unavailable"));
-                        return 1;
-                    }
-
-                    spaceService.findAll().thenAccept(spaces -> {
-                        scheduler.accept(() -> {
-                            if (spaces.isEmpty()) {
-                                sender.sendMessage(msg.get("admin.list-empty"));
-                                return;
-                            }
-
-                            sender.sendMessage(msg.get("admin.list-header", Map.of(
-                                    "count", String.valueOf(spaces.size())
-                            )));
-
-                            DiscordGateway gw = discordGatewaySupplier.get();
-                            String naLabel = msg.label("admin.not-applicable");
-                            for (TownSpace space : spaces) {
-                                String residents = (gw != null && gw.isAvailable() && space.roleId().isPresent())
-                                        ? String.valueOf(gw.roleHolders(space.roleId().get()).size())
-                                        : naLabel;
-
-                                String textLabel = msg.label("admin.channel-text");
-                                String voiceLabel = msg.label("admin.channel-voice");
-                                String noneLabel = msg.label("admin.none");
-
-                                String channels;
-                                if (space.textChannelId().isPresent() && space.voiceChannelId().isPresent()) {
-                                    channels = textLabel + " " + voiceLabel;
-                                } else if (space.textChannelId().isPresent()) {
-                                    channels = textLabel;
-                                } else if (space.voiceChannelId().isPresent()) {
-                                    channels = voiceLabel;
-                                } else {
-                                    channels = noneLabel;
-                                }
-
-                                String activity = space.lastActivityAt().map(Instant::toString).orElse(noneLabel);
-
-                                sender.sendMessage(msg.get("admin.list-entry", Map.of(
-                                        "town", space.townName(),
-                                        "status", formatSpaceState(space.state(), msg),
-                                        "channels", channels.trim(),
-                                        "residents", residents,
-                                        "activity", activity
-                                )));
-                            }
-                        });
-                    }).exceptionally(ex -> {
-                        scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
-                        return null;
-                    });
-
-                    return 1;
-                })
+                .executes(ctx -> executeAdminList(ctx, 1, spaceServiceSupplier, discordGatewaySupplier, messagesSupplier, consoleMessagesSupplier, scheduler))
+                .then(Commands.argument("page", IntegerArgumentType.integer(1))
+                        .executes(ctx -> executeAdminList(ctx, IntegerArgumentType.getInteger(ctx, "page"), spaceServiceSupplier, discordGatewaySupplier, messagesSupplier, consoleMessagesSupplier, scheduler)))
         );
 
         // /dt admin info <town>
@@ -1425,5 +1372,159 @@ public final class MinecraftCommands {
                 }
             }
         } catch (Throwable ignored) {}
+    }
+
+    private static int executeAdminList(
+            CommandContext<CommandSourceStack> ctx,
+            int requestedPage,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<DiscordGateway> discordGatewaySupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Consumer<Runnable> scheduler) {
+        CommandSender sender = ctx.getSource().getSender();
+        Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+
+        SpaceService spaceService = spaceServiceSupplier.get();
+        if (spaceService == null) {
+            sender.sendMessage(msg.get("general.database-unavailable"));
+            return 1;
+        }
+
+        spaceService.findAll().thenAccept(spaces -> {
+            if (spaces.isEmpty()) {
+                scheduler.accept(() -> sender.sendMessage(msg.get("admin.list-empty")));
+                return;
+            }
+
+            int totalSpaces = spaces.size();
+            int totalPages = Math.max(1, (int) Math.ceil((double) totalSpaces / PAGE_SIZE));
+            int page = Math.max(1, Math.min(requestedPage, totalPages));
+            int start = (page - 1) * PAGE_SIZE;
+            int end = Math.min(start + PAGE_SIZE, totalSpaces);
+            List<TownSpace> pageSpaces = spaces.subList(start, end);
+
+            DiscordGateway gw = discordGatewaySupplier.get();
+            boolean discordAvailable = gw != null && gw.isAvailable();
+
+            List<String> archivedChannelIdsToCheck = new ArrayList<>();
+            for (TownSpace s : pageSpaces) {
+                if (s.state() == SpaceState.ARCHIVED) {
+                    s.textChannelId().ifPresent(archivedChannelIdsToCheck::add);
+                    s.voiceChannelId().ifPresent(archivedChannelIdsToCheck::add);
+                }
+            }
+
+            Set<String> existingResourceIds = null;
+            if (discordAvailable && !archivedChannelIdsToCheck.isEmpty()) {
+                try {
+                    existingResourceIds = gw.existingResourceIds(archivedChannelIdsToCheck);
+                } catch (Exception ignored) {
+                    // A failed read is not proof of absence
+                    existingResourceIds = null;
+                }
+            }
+
+            String naLabel = msg.label("admin.not-applicable");
+            String textLabel = msg.label("admin.channel-text");
+            String voiceLabel = msg.label("admin.channel-voice");
+            String noneLabel = msg.label("admin.none");
+            String deletedLabel = msg.label("admin.channel-deleted");
+
+            List<Component> entryMessages = new ArrayList<>(pageSpaces.size());
+            for (TownSpace space : pageSpaces) {
+                String residents = naLabel;
+                if (discordAvailable && space.roleId().isPresent()) {
+                    try {
+                        residents = String.valueOf(gw.roleHolders(space.roleId().get()).size());
+                    } catch (Exception ignored) {
+                        residents = naLabel;
+                    }
+                }
+
+                String channels;
+                if (space.state() == SpaceState.ARCHIVED) {
+                    boolean hasText = space.textChannelId().isPresent();
+                    boolean hasVoice = space.voiceChannelId().isPresent();
+                    if (!hasText && !hasVoice) {
+                        channels = noneLabel;
+                    } else if (existingResourceIds != null) {
+                        boolean textExists = hasText && existingResourceIds.contains(space.textChannelId().get());
+                        boolean voiceExists = hasVoice && existingResourceIds.contains(space.voiceChannelId().get());
+                        if (textExists && voiceExists) {
+                            channels = textLabel + " " + voiceLabel;
+                        } else if (textExists) {
+                            channels = textLabel;
+                        } else if (voiceExists) {
+                            channels = voiceLabel;
+                        } else {
+                            channels = deletedLabel;
+                        }
+                    } else {
+                        // Failed read or Discord unavailable: report database state, never "deleted"
+                        if (hasText && hasVoice) {
+                            channels = textLabel + " " + voiceLabel;
+                        } else if (hasText) {
+                            channels = textLabel;
+                        } else {
+                            channels = voiceLabel;
+                        }
+                    }
+                } else {
+                    if (space.textChannelId().isPresent() && space.voiceChannelId().isPresent()) {
+                        channels = textLabel + " " + voiceLabel;
+                    } else if (space.textChannelId().isPresent()) {
+                        channels = textLabel;
+                    } else if (space.voiceChannelId().isPresent()) {
+                        channels = voiceLabel;
+                    } else {
+                        channels = noneLabel;
+                    }
+                }
+
+                String activity = space.lastActivityAt().map(Instant::toString).orElse(noneLabel);
+
+                entryMessages.add(msg.get("admin.list-entry", Map.of(
+                        "town", space.townName(),
+                        "status", formatSpaceState(space.state(), msg),
+                        "channels", channels.trim(),
+                        "residents", residents,
+                        "activity", activity
+                )));
+            }
+
+            Component headerMessage = msg.get("admin.list-header", Map.of(
+                    "count", String.valueOf(totalSpaces)
+            ));
+
+            Component pageMessage = totalPages > 1
+                    ? msg.get("admin.list-page", Map.of(
+                            "current", String.valueOf(page),
+                            "total", String.valueOf(totalPages)))
+                    : null;
+
+            Component nextMessage = (totalPages > 1 && page < totalPages)
+                    ? msg.get("admin.list-next", Map.of(
+                            "next", String.valueOf(page + 1)))
+                    : null;
+
+            scheduler.accept(() -> {
+                sender.sendMessage(headerMessage);
+                for (Component entry : entryMessages) {
+                    sender.sendMessage(entry);
+                }
+                if (pageMessage != null) {
+                    sender.sendMessage(pageMessage);
+                }
+                if (nextMessage != null) {
+                    sender.sendMessage(nextMessage);
+                }
+            });
+        }).exceptionally(ex -> {
+            scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
+            return null;
+        });
+
+        return 1;
     }
 }

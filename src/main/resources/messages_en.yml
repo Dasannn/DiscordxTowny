@@ -168,6 +168,9 @@ admin:
   problem-town-ruined: "Town ruined in Towny but space still ACTIVE"
   reload-restart-discord: "Changes to Discord bot token or guild ID require a server restart."
   reload-restart-database: "Changes to database configuration require a server restart."
+  channel-deleted: "deleted"
+  list-page: "&7Page &f{current}&7 of &f{total}&7."
+  list-next: "&7Use &f/dt admin list {next}&7 to see the next page."
 
 # Labels for the embeds the bot publishes in Discord. Spec 9.1: the language
 # setting covers these too, so they are not hard-coded in the code.
