@@ -19,7 +19,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v5
 
       - name: Compilar y probar
-        run: ./gradlew build --no-daemon
+      # gradlew is invoked through bash on purpose. The execute bit does not exist
+      # on Windows, where this repository is developed, so upgrading the Gradle
+      # wrapper can silently drop it again and every job dies on its first line
+      # with "Permission denied". Through bash the bit cannot matter.
+        run: bash gradlew build --no-daemon
 
       - uses: actions/upload-artifact@v5
         with:

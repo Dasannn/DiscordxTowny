@@ -24,7 +24,11 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Build and test
-        run: ./gradlew build -PreleaseVersion=$VERSION --no-daemon
+      # gradlew is invoked through bash on purpose. The execute bit does not exist
+      # on Windows, where this repository is developed, so upgrading the Gradle
+      # wrapper can silently drop it again and every job dies on its first line
+      # with "Permission denied". Through bash the bit cannot matter.
+        run: bash gradlew build -PreleaseVersion=$VERSION --no-daemon
 
       # The updater refuses a release whose runnable jar is ambiguous, so exactly one
       # jar is staged, named so that it matches the canonical DiscordTowny-<x>.jar
