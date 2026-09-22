@@ -705,7 +705,7 @@ spaces deliberately. Listing must never delete anything.
 ## T23 — Keep an edited catalog complete across upgrades
 
 - **Branch**: `feat/fusion-catalogos` · **Phase** 9 · **Depends on**: T14
-- **Responsible**: agent · **Status**: pending
+- **Responsible**: agent · **Status**: integrated (seven rounds; reviewed five times)
 - **Zone**: `src/main/java/com/discordtowny/config/YamlConfigLoader.java` and its
   tests. Nothing else.
 
@@ -821,3 +821,8 @@ that it is a breaking change; `confirm` leaves a jar in the update folder whose
 SHA-256 equals the published one, with the running jar untouched. With the
 network unreachable, `status` says the check failed and never says the server is
 up to date.
+
+**Follow-up left open by the fifth review:** U+2028 and U+2029 are refused by the
+same guard as U+0085, but only U+0085 is exercised by a test. Flow mappings and
+anchors are refused rather than merged; an owner who uses either keeps a file
+that can never be upgraded, which was accepted deliberately and can be revisited.

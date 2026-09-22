@@ -60,4 +60,4 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0-T22. In progress: T23 catalog merge.
+See `docs/tasks.md`. Integrated: T0-T23. In progress: T24 updater delivery host.
