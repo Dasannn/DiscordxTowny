@@ -19,7 +19,11 @@ import java.util.concurrent.CompletableFuture;
  */
 public interface UpdateService {
 
-    CompletableFuture<Optional<Release>> checkForUpdate();
+    CompletableFuture<CheckResult> checkForUpdate();
+
+    default CompletableFuture<Optional<Release>> checkForUpdateOptional() {
+        return checkForUpdate().thenApply(CheckResult::release);
+    }
 
     /**
      * Downloads the release, verifies its SHA-256 against the published checksum,
@@ -117,5 +121,51 @@ public interface UpdateService {
         NETWORK_ERROR,
         TOO_LARGE,
         IO_ERROR
+    }
+
+    record CheckResult(CheckStatus status, Optional<Release> release, Optional<String> error) {
+        public static CheckResult upToDate() {
+            return new CheckResult(CheckStatus.UP_TO_DATE, Optional.empty(), Optional.empty());
+        }
+
+        public static CheckResult updateAvailable(Release release) {
+            return new CheckResult(CheckStatus.UPDATE_AVAILABLE, Optional.of(release), Optional.empty());
+        }
+
+        public static CheckResult checkFailed(String error) {
+            return new CheckResult(CheckStatus.CHECK_FAILED, Optional.empty(), Optional.ofNullable(error));
+        }
+
+        public static CheckResult checkFailed(String error, Release cachedRelease) {
+            return new CheckResult(CheckStatus.CHECK_FAILED, Optional.ofNullable(cachedRelease), Optional.ofNullable(error));
+        }
+
+        public static CheckResult notChecked(String reason) {
+            return new CheckResult(CheckStatus.NOT_CHECKED, Optional.empty(), Optional.ofNullable(reason));
+        }
+
+        public boolean isSuccess() {
+            return status == CheckStatus.UP_TO_DATE || status == CheckStatus.UPDATE_AVAILABLE;
+        }
+
+        public boolean isFailed() {
+            return status == CheckStatus.CHECK_FAILED;
+        }
+
+        public boolean isNotChecked() {
+            return status == CheckStatus.NOT_CHECKED;
+        }
+
+        public Optional<Release> getRelease() {
+            return release;
+        }
+
+        public Optional<String> getError() {
+            return error;
+        }
+
+        public CheckStatus getStatus() {
+            return status;
+        }
     }
 }

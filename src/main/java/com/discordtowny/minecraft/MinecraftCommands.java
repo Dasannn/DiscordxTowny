@@ -1029,21 +1029,26 @@ public final class MinecraftCommands {
             Instant pending = pendingUpdateConfirmations.get(senderKey);
             boolean isConfirmed = pending != null && Instant.now().isBefore(pending);
 
-            updateService.checkForUpdate().thenAccept(optRelease -> {
+            updateService.checkForUpdate().thenAccept(checkResult -> {
                 scheduler.accept(() -> {
-                    if (updateService.isLastCheckFailed()) {
+                    if (checkResult.status() == UpdateService.CheckStatus.CHECK_FAILED) {
                         String reason = DefaultUpdateService.formatCheckFailureReason(
-                                updateService.getLastCheckError().orElse(null), msg);
+                                checkResult.error().orElse(null), msg);
                         sender.sendMessage(msg.get("updates.check-failed", Map.of("reason", reason)));
                         return;
                     }
 
-                    if (optRelease.isEmpty()) {
+                    if (checkResult.status() == UpdateService.CheckStatus.NOT_CHECKED) {
+                        sender.sendMessage(msg.get("updates.not-checked"));
+                        return;
+                    }
+
+                    if (checkResult.release().isEmpty()) {
                         sender.sendMessage(msg.get("updates.up-to-date"));
                         return;
                     }
 
-                    UpdateService.Release release = optRelease.get();
+                    UpdateService.Release release = checkResult.release().get();
                     if (updateService.isBreaking(release) && !isConfirmed) {
                         pendingUpdateConfirmations.put(senderKey, Instant.now().plusSeconds(CONFIRMATION_EXPIRY_SECONDS));
                         sender.sendMessage(msg.get("updates.confirm-breaking", Map.of("latest", release.version())));
@@ -1116,14 +1121,15 @@ public final class MinecraftCommands {
                         }
                     }
 
-                    if (updateService.isLastCheckFailed()) {
+                    UpdateService.CheckStatus status = updateService.checkStatus();
+                    if (status == UpdateService.CheckStatus.CHECK_FAILED) {
                         String reason = DefaultUpdateService.formatCheckFailureReason(
                                 updateService.getLastCheckError().orElse(null), msg);
                         sender.sendMessage(msg.get("updates.check-failed", Map.of("reason", reason)));
                     } else if (!hasUpdateInfo) {
-                        if (updateService.checkStatus() == UpdateService.CheckStatus.NOT_CHECKED) {
+                        if (status == UpdateService.CheckStatus.NOT_CHECKED) {
                             sender.sendMessage(msg.get("updates.not-checked"));
-                        } else {
+                        } else if (status == UpdateService.CheckStatus.UP_TO_DATE) {
                             sender.sendMessage(msg.get("updates.up-to-date"));
                         }
                     }

@@ -1409,7 +1409,7 @@ class MinecraftCommandsTest {
     void adminUpdateWhenUpToDateReportsUpToDate() throws Exception {
         UpdateService updateService = mock(UpdateService.class);
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(UpdateService.CheckResult.upToDate()));
 
         LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
         Player admin = mock(Player.class);
@@ -1429,7 +1429,7 @@ class MinecraftCommandsTest {
         UpdateService updateService = mock(UpdateService.class);
         UpdateService.Release release = new UpdateService.Release("1.1.0", "url", "hash", "notes");
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(UpdateService.CheckResult.updateAvailable(release)));
         when(updateService.isBreaking(release)).thenReturn(false);
         when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.SUCCESS));
 
@@ -1452,7 +1452,7 @@ class MinecraftCommandsTest {
         UpdateService updateService = mock(UpdateService.class);
         UpdateService.Release release = new UpdateService.Release("2.0.0", "url", "hash", "notes [breaking]");
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(UpdateService.CheckResult.updateAvailable(release)));
         when(updateService.isBreaking(release)).thenReturn(true);
         when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.SUCCESS));
 
@@ -1588,7 +1588,7 @@ class MinecraftCommandsTest {
         UpdateService updateService = mock(UpdateService.class);
         UpdateService.Release release = new UpdateService.Release("1.1.0", "url", "hash", "notes");
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(UpdateService.CheckResult.updateAvailable(release)));
         when(updateService.isBreaking(release)).thenReturn(false);
         when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.CHECKSUM_MISMATCH));
 
@@ -1608,7 +1608,7 @@ class MinecraftCommandsTest {
         UpdateService updateService = mock(UpdateService.class);
         UpdateService.Release release = new UpdateService.Release("1.1.0", "url", "hash", "notes");
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.of(release)));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(UpdateService.CheckResult.updateAvailable(release)));
         when(updateService.isBreaking(release)).thenReturn(false);
         when(updateService.download(release)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.NETWORK_ERROR));
 
@@ -1698,7 +1698,8 @@ class MinecraftCommandsTest {
     void adminUpdateReportsCheckFailedWhenCheckFails() throws Exception {
         UpdateService updateService = mock(UpdateService.class);
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(
+                UpdateService.CheckResult.checkFailed("could not reach GitHub (TimeoutException)")));
         when(updateService.isLastCheckFailed()).thenReturn(true);
         when(updateService.getLastCheckError()).thenReturn(Optional.of("could not reach GitHub (TimeoutException)"));
 
@@ -1718,7 +1719,7 @@ class MinecraftCommandsTest {
     void adminUpdateReportsCheckFailedWhenCheckThrowsExceptionally() throws Exception {
         UpdateService updateService = mock(UpdateService.class);
         when(updateService.isUpdatePending()).thenReturn(false);
-        CompletableFuture<Optional<UpdateService.Release>> failed = new CompletableFuture<>();
+        CompletableFuture<UpdateService.CheckResult> failed = new CompletableFuture<>();
         failed.completeExceptionally(new java.io.IOException("Untrusted destination rejected by official source policy"));
         when(updateService.checkForUpdate()).thenReturn(failed);
 
@@ -1738,7 +1739,8 @@ class MinecraftCommandsTest {
     void adminUpdateForConsoleReportsCheckFailedInEnglish() throws Exception {
         UpdateService updateService = mock(UpdateService.class);
         when(updateService.isUpdatePending()).thenReturn(false);
-        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(
+                UpdateService.CheckResult.checkFailed("could not reach GitHub")));
         when(updateService.isLastCheckFailed()).thenReturn(true);
         when(updateService.getLastCheckError()).thenReturn(Optional.of("could not reach GitHub"));
 
@@ -1751,6 +1753,49 @@ class MinecraftCommandsTest {
 
         verify(console).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("EN:updates.check-failed")));
         verify(console, never()).sendMessage(consoleMessages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateClassifiesFailedCheckEvenIfMutableStateIsClearedConcurrently() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        // Check A failed, carrying error in CheckResult
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(
+                UpdateService.CheckResult.checkFailed("rate limit exceeded")));
+        // Meanwhile, mutable service state was cleared by a concurrent check B or reload
+        when(updateService.isLastCheckFailed()).thenReturn(false);
+        when(updateService.getLastCheckError()).thenReturn(Optional.empty());
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        // Must classify the failure carried with the result, NOT the cleared service-wide state
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateWhenServiceStoppedReportsNotCheckedNeverUpToDate() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(
+                UpdateService.CheckResult.notChecked("service is stopped")));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.not-checked")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
     }
 
     @Test

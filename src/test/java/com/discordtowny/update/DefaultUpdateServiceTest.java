@@ -367,14 +367,14 @@ class DefaultUpdateServiceTest {
         );
 
         // First check with network failure
-        Optional<UpdateService.Release> firstCheck = service.checkForUpdate().join();
+        Optional<UpdateService.Release> firstCheck = service.checkForUpdate().join().release();
         assertTrue(firstCheck.isEmpty(), "Normal operation under network failure: returns Optional.empty()");
 
         long warningCountAfterFirst = countOutageWarnings();
         assertEquals(1, warningCountAfterFirst, "Must log network failure exactly once");
 
         // Second check with network failure still active
-        Optional<UpdateService.Release> secondCheck = service.checkForUpdate().join();
+        Optional<UpdateService.Release> secondCheck = service.checkForUpdate().join().release();
         assertTrue(secondCheck.isEmpty(), "Second check returns Optional.empty()");
 
         long warningCountAfterSecond = countOutageWarnings();
@@ -382,12 +382,12 @@ class DefaultUpdateServiceTest {
 
         // Now restore network
         throwNetworkError.set(false);
-        Optional<UpdateService.Release> thirdCheck = service.checkForUpdate().join();
+        Optional<UpdateService.Release> thirdCheck = service.checkForUpdate().join().release();
         assertTrue(thirdCheck.isPresent(), "Check succeeds once network is restored");
 
         // Now simulate network failure dropping again
         throwNetworkError.set(true);
-        Optional<UpdateService.Release> fourthCheck = service.checkForUpdate().join();
+        Optional<UpdateService.Release> fourthCheck = service.checkForUpdate().join().release();
         assertTrue(fourthCheck.isEmpty());
 
         long warningCountAfterFourth = countOutageWarnings();
@@ -425,7 +425,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> updateOpt = serviceAgainst190.checkForUpdate().join();
+        Optional<UpdateService.Release> updateOpt = serviceAgainst190.checkForUpdate().join().release();
         assertTrue(updateOpt.isPresent(), "1.10.0 must be recognized as newer than 1.9.0 (two-digit minor)");
         assertEquals("1.10.0", updateOpt.get().version());
 
@@ -446,7 +446,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> equalOpt = serviceEqual.checkForUpdate().join();
+        Optional<UpdateService.Release> equalOpt = serviceEqual.checkForUpdate().join().release();
         assertTrue(equalOpt.isEmpty(), "Equal version 1.10.0 vs 1.10.0 is not an update");
 
         // Older version test: running 1.10.0 and release is 1.9.0
@@ -477,7 +477,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> olderOpt = serviceOlder.checkForUpdate().join();
+        Optional<UpdateService.Release> olderOpt = serviceOlder.checkForUpdate().join().release();
         assertTrue(olderOpt.isEmpty(), "Older version 1.9.0 vs 1.10.0 is not an update");
     }
 
@@ -514,7 +514,7 @@ class DefaultUpdateServiceTest {
             );
 
             assertDoesNotThrow(() -> {
-                Optional<UpdateService.Release> result = service.checkForUpdate().join();
+                Optional<UpdateService.Release> result = service.checkForUpdate().join().release();
                 assertTrue(result.isEmpty(), "Malformed response should yield empty Optional rather than crashing");
             });
         }
@@ -665,7 +665,7 @@ class DefaultUpdateServiceTest {
         );
 
         // First check: detects version and auto-downloads
-        Optional<UpdateService.Release> release = service.checkForUpdate().join();
+        Optional<UpdateService.Release> release = service.checkForUpdate().join().release();
         assertTrue(release.isPresent());
 
         // F13: Synchronize with observed operation and notification completion (no race condition)
@@ -790,16 +790,16 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> first = service.checkForUpdate().join();
+        Optional<UpdateService.Release> first = service.checkForUpdate().join().release();
         assertTrue(first.isPresent());
 
         // Second check hits 403 rate limit -> uses cached release
-        Optional<UpdateService.Release> second = service.checkForUpdate().join();
+        Optional<UpdateService.Release> second = service.checkForUpdate().join().release();
         assertTrue(second.isPresent(), "Cached release should be returned when rate-limited");
         assertEquals("1.10.0", second.get().version());
 
         // Third check: because reset time is in the future, transport is not even queried
-        Optional<UpdateService.Release> third = service.checkForUpdate().join();
+        Optional<UpdateService.Release> third = service.checkForUpdate().join().release();
         assertTrue(third.isPresent());
         assertEquals(2, checkCount.get(), "HTTP transport should not be queried while rate limit window is active");
     }
@@ -840,10 +840,10 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> first = service.checkForUpdate().join();
+        Optional<UpdateService.Release> first = service.checkForUpdate().join().release();
         assertTrue(first.isPresent());
 
-        Optional<UpdateService.Release> second = service.checkForUpdate().join();
+        Optional<UpdateService.Release> second = service.checkForUpdate().join().release();
         assertTrue(second.isPresent());
         assertEquals("1.10.0", second.get().version());
     }
@@ -1043,7 +1043,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
         transportHitCount.set(0);
-        Optional<UpdateService.Release> untrustedCheckResult = serviceWithUntrustedAsset.checkForUpdate().join();
+        Optional<UpdateService.Release> untrustedCheckResult = serviceWithUntrustedAsset.checkForUpdate().join().release();
         assertTrue(untrustedCheckResult.isEmpty(), "Release with untrusted checksum asset URL must be refused");
         assertEquals(1, transportHitCount.get(), "Untrusted checksum asset must NEVER be contacted over network!");
     }
@@ -1109,7 +1109,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
+        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join().release();
         assertTrue(releaseOpt.isEmpty(), "Release with malformed, wrong-artifact, or ambiguous digest must be refused: " + bodyText);
     }
 
@@ -1160,7 +1160,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
+        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join().release();
         assertTrue(releaseOpt.isPresent(), "Release with checksums.txt should be parsed successfully");
         assertEquals(runnableSha, releaseOpt.get().sha256(), "Must extract runnable jar SHA, NOT sources jar SHA!");
 
@@ -1204,7 +1204,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> conflictingResult = serviceConflictingAssets.checkForUpdate().join();
+        Optional<UpdateService.Release> conflictingResult = serviceConflictingAssets.checkForUpdate().join().release();
         assertTrue(conflictingResult.isEmpty(), "Conflicting checksum assets must refuse without falling back to body digest!");
 
         // 2. Conflicting body digests must refuse without falling back to asset
@@ -1242,7 +1242,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> conflictingBodyResult = serviceConflictingBody.checkForUpdate().join();
+        Optional<UpdateService.Release> conflictingBodyResult = serviceConflictingBody.checkForUpdate().join().release();
         assertTrue(conflictingBodyResult.isEmpty(), "Conflicting body digests must refuse without falling back to checksum asset!");
     }
 
@@ -1656,7 +1656,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
+        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join().release();
         assertTrue(releaseOpt.isPresent());
         UpdateService.Release release = releaseOpt.get();
 
@@ -1716,7 +1716,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
+        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join().release();
         assertTrue(releaseOpt.isPresent());
         UpdateService.Release release = releaseOpt.get();
 
@@ -1903,16 +1903,16 @@ class DefaultUpdateServiceTest {
         );
 
         // Check 1: truncated body fails parse
-        Optional<UpdateService.Release> first = service.checkForUpdate().join();
+        Optional<UpdateService.Release> first = service.checkForUpdate().join().release();
         assertTrue(first.isEmpty(), "Truncated JSON should fail parsing");
 
         // Check 2: succeeds and commits ETag
-        Optional<UpdateService.Release> second = service.checkForUpdate().join();
+        Optional<UpdateService.Release> second = service.checkForUpdate().join().release();
         assertTrue(second.isPresent());
         assertEquals("1.10.0", second.get().version());
 
         // Check 3: 304 returns cached release
-        Optional<UpdateService.Release> third = service.checkForUpdate().join();
+        Optional<UpdateService.Release> third = service.checkForUpdate().join().release();
         assertTrue(third.isPresent());
         assertEquals("1.10.0", third.get().version());
     }
@@ -2193,7 +2193,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
+        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join().release();
         assertTrue(releaseOpt.isEmpty());
 
         boolean networkWarningLogged = logRecords.stream().anyMatch(r ->
@@ -2235,7 +2235,7 @@ class DefaultUpdateServiceTest {
         );
 
         assertDoesNotThrow(() -> {
-            Optional<UpdateService.Release> res = service.checkForUpdate().join();
+            Optional<UpdateService.Release> res = service.checkForUpdate().join().release();
             assertTrue(res.isEmpty());
         });
     }
@@ -2269,12 +2269,12 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> first = service.checkForUpdate().join();
+        Optional<UpdateService.Release> first = service.checkForUpdate().join().release();
         assertTrue(first.isEmpty());
         assertEquals(1, transportCalls.get());
 
         // Second check within the 120-second Retry-After window must NOT call transport
-        Optional<UpdateService.Release> second = service.checkForUpdate().join();
+        Optional<UpdateService.Release> second = service.checkForUpdate().join().release();
         assertTrue(second.isEmpty());
         assertEquals(1, transportCalls.get(), "Transport must NOT be contacted while Retry-After delay is active");
     }
@@ -2676,7 +2676,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join();
+        Optional<UpdateService.Release> releaseOpt = service.checkForUpdate().join().release();
         assertTrue(releaseOpt.isPresent(), "Release 1.0.0 must be found");
         UpdateService.Release release = releaseOpt.get();
         assertEquals("1.0.0", release.version());
@@ -2835,7 +2835,7 @@ class DefaultUpdateServiceTest {
                 "Initial Spanish status must NEVER render 'Estás en la última versión'!");
 
         // 2. First check: fails
-        Optional<UpdateService.Release> res1 = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res1 = service.checkForUpdate().join().release();
         assertTrue(res1.isEmpty());
         assertTrue(service.isLastCheckFailed(), "isLastCheckFailed must be true after network failure");
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
@@ -2846,7 +2846,7 @@ class DefaultUpdateServiceTest {
         assertEquals(1, warningsCount1, "First network failure must log a warning");
 
         // Second check: fails again -> warning must be silenced
-        Optional<UpdateService.Release> res2 = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res2 = service.checkForUpdate().join().release();
         assertTrue(res2.isEmpty());
         assertTrue(service.isLastCheckFailed());
         long warningsCount2 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
@@ -3018,7 +3018,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res = service.checkForUpdate().join().release();
         assertTrue(res.isEmpty(), "Release declaring invalid checksum token on same line must be refused");
         assertTrue(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
@@ -3076,7 +3076,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res = service.checkForUpdate().join().release();
         assertTrue(res.isEmpty(), "Release declaring conflicting checksum tokens on same line must be refused");
         assertTrue(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
@@ -3123,13 +3123,13 @@ class DefaultUpdateServiceTest {
         );
 
         // First check succeeds
-        Optional<UpdateService.Release> res1 = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res1 = service.checkForUpdate().join().release();
         assertTrue(res1.isPresent());
         assertFalse(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, service.checkStatus());
 
         // Second check hits 429: cached release is returned, but last check MUST be marked failed
-        Optional<UpdateService.Release> res2 = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res2 = service.checkForUpdate().join().release();
         assertTrue(res2.isPresent(), "Cached release must still be returned for convenience");
         assertTrue(service.isLastCheckFailed(), "isLastCheckFailed must be true after rate limit");
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
@@ -3137,7 +3137,7 @@ class DefaultUpdateServiceTest {
         assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("rate limit"));
 
         // Third check hits rate limit window shortcut before expiration: cached release returned, check failed
-        Optional<UpdateService.Release> res3 = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res3 = service.checkForUpdate().join().release();
         assertTrue(res3.isPresent());
         assertTrue(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
@@ -3227,7 +3227,7 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res = service.checkForUpdate().join().release();
         assertTrue(res.isEmpty(), "Multiple runnable jars without unique canonical match must be refused");
         assertTrue(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
@@ -3270,11 +3270,355 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        Optional<UpdateService.Release> res = service.checkForUpdate().join().release();
         assertTrue(res.isEmpty(), "Release without published checksum must be refused at discovery");
         assertTrue(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
         assertTrue(service.getLastCheckError().isPresent());
         assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("no published checksum"));
+    }
+
+    @Test
+    @DisplayName("A stopped service check returns NOT_CHECKED and never reports up-to-date (F1)")
+    void stoppedServiceCheckReturnsNotCheckedAndNeverUpToDate() {
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                (uri, headers, timeout) -> fail("Transport must not be called when stopped"),
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        service.stop();
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.NOT_CHECKED, result.status());
+        assertTrue(result.release().isEmpty());
+        assertTrue(result.error().isPresent());
+        assertTrue(result.error().get().contains("stopped"));
+
+        List<String> enLines = service.renderStatusMessages(EnglishMessages.bundled());
+        assertTrue(enLines.stream().anyMatch(l -> l.contains("No update check has been performed yet")),
+                "Must report not-checked, got: " + enLines);
+        assertFalse(enLines.stream().anyMatch(l -> l.contains("latest version")),
+                "Must NEVER report up to date when stopped!");
+    }
+
+    @Test
+    @DisplayName("BSD format with two declarations on same line and invalid first refuses release even with valid checksum asset (F2)")
+    void bsdTwoDeclarationsOnSameLineWithInvalidFirstRefusesReleaseEvenWithValidChecksumAsset() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Malformed declaration before valid declaration on the very same line
+        String bodyText = "SHA256 (DiscordTowny-1.10.0.jar) = invalid SHA256 (./DiscordTowny-1.10.0.jar) = " + validHex;
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "checksums.txt",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String validChecksumAsset = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(validChecksumAsset.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertTrue(result.release().isEmpty(), "Release must be refused due to invalid declaration on body line");
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status());
+        assertTrue(service.isLastCheckFailed());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("checksum"));
+    }
+
+    @Test
+    @DisplayName("sha256sum format whose filename absorbs a malformed declaration refuses release without fallback (F2)")
+    void sha256sumFilenameAbsorbingMalformedDeclarationRefusesReleaseEvenWithValidChecksumAsset() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Candidate where filename contains an absorbed invalid declaration
+        String bodyText = validHex + "  SHA-256=invalid/DiscordTowny-1.10.0.jar";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "checksums.txt",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String validChecksumAsset = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(validChecksumAsset.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertTrue(result.release().isEmpty(), "Absorbed checksum declaration in filename must cause release to be refused");
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status());
+        assertTrue(service.isLastCheckFailed());
+    }
+
+    @Test
+    @DisplayName("Valid labeled checksum declaration with jar name is discovered successfully (F7)")
+    void validLabeledChecksumWithJarNameIsDiscoveredSuccessfully() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Valid labeled format with jar name that was broken in round 3 by broad sumMatcher
+        String bodyText = "SHA-256: " + validHex + " DiscordTowny-1.10.0.jar";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "checksums.txt",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String validChecksumAsset = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(validChecksumAsset.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertTrue(result.release().isPresent(), "Release with valid labeled checksum must be accepted");
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, result.status());
+        assertEquals("1.10.0", result.release().get().version());
+        assertEquals(validHex, result.release().get().sha256());
+        assertFalse(service.isLastCheckFailed());
+    }
+
+    @Test
+    @DisplayName("HTTP 500 when fetching checksum asset reports network failure, not invalid checksum (F8)")
+    void checksumAssetHttp500RendersNetworkFailureReasonNotInvalidChecksum() {
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "Release without hash in body",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """;
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".sha256")) {
+                return new HttpTransport.HttpResponse(500, Map.of(), new ByteArrayInputStream("Internal Server Error".getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertTrue(result.release().isEmpty());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status());
+        assertTrue(service.isLastCheckFailed());
+
+        // Error message must classify as network error
+        assertTrue(service.getLastCheckError().isPresent());
+        String error = service.getLastCheckError().get();
+        assertTrue(error.contains("could not reach GitHub") || error.contains("status 500"));
+
+        // Render status messages in English
+        List<String> enLines = service.renderStatusMessages(EnglishMessages.bundled());
+        assertTrue(enLines.stream().anyMatch(l -> l.contains("could not reach GitHub")),
+                "Status must mention network failure reason 'could not reach GitHub', got: " + enLines);
+        assertFalse(enLines.stream().anyMatch(l -> l.contains("checksum is invalid or ambiguous")),
+                "Status must NEVER claim checksum is invalid when asset could not be retrieved!");
+
+        // Render status messages in Spanish
+        Messages esMessages = loadSpanishMessages();
+        List<String> esLines = service.renderStatusMessages(esMessages);
+        assertTrue(esLines.stream().anyMatch(l -> l.contains("no se pudo conectar con GitHub")),
+                "Spanish status must mention 'no se pudo conectar con GitHub', got: " + esLines);
+        assertFalse(esLines.stream().anyMatch(l -> l.contains("suma de comprobación no es válida")),
+                "Spanish status must NEVER claim checksum is invalid when asset HTTP 500 occurred!");
+    }
+
+    @Test
+    @DisplayName("HTTP 403 rate limit when fetching checksum asset reports rate limit, not invalid checksum (F8)")
+    void checksumAssetHttp403RateLimitRendersRateLimitReasonNotInvalidChecksum() {
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "Release without hash in body",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """;
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".sha256")) {
+                return new HttpTransport.HttpResponse(403, Map.of(
+                        "x-ratelimit-remaining", "0",
+                        "x-ratelimit-reset", String.valueOf(Instant.now().getEpochSecond() + 3600)
+                ), new ByteArrayInputStream(new byte[0]));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertTrue(result.release().isEmpty());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status());
+        assertTrue(service.isLastCheckFailed());
+
+        // Error message must classify as rate limit
+        assertTrue(service.getLastCheckError().isPresent());
+        String error = service.getLastCheckError().get().toLowerCase(Locale.ROOT);
+        assertTrue(error.contains("rate limit"), "Error must contain 'rate limit', got: " + error);
+
+        // Render status messages in English
+        List<String> enLines = service.renderStatusMessages(EnglishMessages.bundled());
+        assertTrue(enLines.stream().anyMatch(l -> l.contains("rate limit exceeded")),
+                "Status must mention rate limit exceeded, got: " + enLines);
+        assertFalse(enLines.stream().anyMatch(l -> l.contains("checksum is invalid")),
+                "Status must NEVER claim checksum is invalid when asset was rate limited!");
+
+        // Render status messages in Spanish
+        Messages esMessages = loadSpanishMessages();
+        List<String> esLines = service.renderStatusMessages(esMessages);
+        assertTrue(esLines.stream().anyMatch(l -> l.contains("límite de peticiones")),
+                "Spanish status must name the rate limit, got: " + esLines);
+        assertFalse(esLines.stream().anyMatch(l -> l.contains("suma de comprobación no es válida")),
+                "Spanish status must NEVER claim checksum is invalid when rate limited!");
     }
 }

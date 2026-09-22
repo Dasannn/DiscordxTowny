@@ -428,11 +428,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             return msg.label("general.unknown");
         }
         String lower = rawError.toLowerCase(Locale.ROOT);
-        if (lower.contains("timed out")) {
-            return msg.label("updates.check-reason-timeout");
-        }
-        if (lower.contains("rate limit")) {
+        if (lower.contains("rate limit") || lower.contains("status 429") || lower.contains("status 403")) {
             return msg.label("updates.check-reason-rate-limited");
+        }
+        if (lower.contains("timed out") || lower.contains("timeout")) {
+            return msg.label("updates.check-reason-timeout");
         }
         if (lower.contains("interrupted")) {
             return msg.label("updates.check-reason-interrupted");
@@ -443,17 +443,21 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         if (lower.contains("ambiguous jar")) {
             return msg.label("updates.check-reason-ambiguous-jar");
         }
+        if (lower.contains("could not reach github") || lower.contains("http error") || lower.contains("connection") || lower.contains("untrusted") || lower.contains("unexpected status")) {
+            return msg.label("updates.check-reason-network");
+        }
         if (lower.contains("no published checksum")) {
             return msg.label("updates.check-reason-no-checksum");
         }
-        if (lower.contains("checksum")) {
+        if (lower.contains("invalid or ambiguous checksum") || lower.contains("conflicting checksum")
+                || lower.contains("malformed sha-256") || lower.contains("malformed bsd sha-256")
+                || lower.contains("malformed published sha-256") || lower.contains("unparseable or incomplete sha-256")
+                || lower.contains("checksum evidence for other artifacts") || lower.contains("invalid-checksum")
+                || lower.contains("invalid checksum") || lower.contains("absorbing checksum")) {
             return msg.label("updates.check-reason-invalid-checksum");
         }
         if (lower.contains("parse") || lower.contains("missing release") || lower.contains("no assets")) {
             return msg.label("updates.check-reason-parse-error");
-        }
-        if (lower.contains("could not reach github") || lower.contains("connection") || lower.contains("untrusted") || lower.contains("unexpected status")) {
-            return msg.label("updates.check-reason-network");
         }
         return msg.label("general.unknown");
     }
@@ -482,13 +486,14 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
         }
 
-        if (isLastCheckFailed()) {
+        CheckStatus status = checkStatus();
+        if (status == CheckStatus.CHECK_FAILED) {
             String reason = formatCheckFailureReason(getLastCheckError().orElse(null), msg);
             result.add(msg.plain("updates.check-failed", Map.of("reason", reason)));
         } else if (!hasUpdateInfo) {
-            if (checkStatus() == CheckStatus.NOT_CHECKED) {
+            if (status == CheckStatus.NOT_CHECKED) {
                 result.add(msg.plain("updates.not-checked", Map.of()));
-            } else {
+            } else if (status == CheckStatus.UP_TO_DATE) {
                 result.add(msg.plain("updates.up-to-date", Map.of()));
             }
         }
@@ -572,13 +577,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     }
 
     @Override
-    public CompletableFuture<Optional<Release>> checkForUpdate() {
+    public CompletableFuture<CheckResult> checkForUpdate() {
         return CompletableFuture.supplyAsync(this::doCheckForUpdate, executor);
     }
 
-    private Optional<Release> doCheckForUpdate() {
+    private CheckResult doCheckForUpdate() {
         if (stopped.get()) {
-            return Optional.empty();
+            return CheckResult.notChecked("Service stopped");
         }
 
         Instant deadline = Instant.now().plus(requestTimeout);
@@ -586,14 +591,15 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         // Respect rate limits: if rate limit was exceeded, do not query until reset
         Instant resetTime = rateLimitResetTime.get();
         if (resetTime != null && Instant.now().isBefore(resetTime)) {
+            String err = "could not reach GitHub: rate limit exceeded; resets at " + resetTime;
             lastCheckFailed.set(true);
-            lastCheckError.set("could not reach GitHub: rate limit exceeded; resets at " + resetTime);
+            lastCheckError.set(err);
             hasCheckedAtLeastOnce.set(true);
             Release cached = cachedRelease.get();
             if (cached != null) {
-                return Optional.of(cached);
+                return CheckResult.checkFailed(err, cached);
             }
-            return Optional.empty();
+            return CheckResult.checkFailed(err);
         }
 
         Map<String, String> headers = new HashMap<>();
@@ -612,18 +618,20 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             Duration remaining = Duration.between(Instant.now(), deadline);
             if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
                 if (!stopped.get()) {
+                    String err = "could not reach GitHub (request timed out)";
                     lastCheckFailed.set(true);
-                    lastCheckError.set("could not reach GitHub (request timed out)");
+                    lastCheckError.set(err);
                     hasCheckedAtLeastOnce.set(true);
+                    return CheckResult.checkFailed(err);
                 }
-                return Optional.empty();
+                return CheckResult.notChecked("Service stopped");
             }
 
             try (HttpTransport.HttpResponse response = httpTransport.executeGet(URI.create(GITHUB_RELEASES_API), headers, remaining)) {
                 activeOp.resource.set(response);
 
                 if (stopped.get()) {
-                    return Optional.empty();
+                    return CheckResult.notChecked("Service stopped");
                 }
 
                 int status = response.statusCode();
@@ -644,28 +652,31 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
                             triggerAutoDownload(release);
                         }
+                        return CheckResult.updateAvailable(release);
                     }
-                    return Optional.ofNullable(release);
+                    return CheckResult.upToDate();
                 }
 
                 // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
                 if (status == 403 || status == 429) {
+                    String err = "could not reach GitHub: rate limit exceeded (HTTP " + status + ")";
                     lastCheckFailed.set(true);
-                    lastCheckError.set("could not reach GitHub: rate limit exceeded (HTTP " + status + ")");
+                    lastCheckError.set(err);
                     hasCheckedAtLeastOnce.set(true);
                     Release cached = cachedRelease.get();
                     if (cached != null) {
-                        return Optional.of(cached);
+                        return CheckResult.checkFailed(err, cached);
                     }
-                    return Optional.empty();
+                    return CheckResult.checkFailed(err);
                 }
 
                 if (status != 200) {
                     logger.log(Level.FINE, "GitHub releases API returned unexpected status {0}", status);
+                    String err = "could not reach GitHub: unexpected status " + status;
                     lastCheckFailed.set(true);
-                    lastCheckError.set("could not reach GitHub: unexpected status " + status);
+                    lastCheckError.set(err);
                     hasCheckedAtLeastOnce.set(true);
-                    return Optional.empty();
+                    return CheckResult.checkFailed(err);
                 }
 
                 String newEtag = response.getHeader("ETag");
@@ -673,11 +684,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 remaining = Duration.between(Instant.now(), deadline);
                 if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
                     if (!stopped.get()) {
+                        String err = "could not reach GitHub (reading body timed out)";
                         lastCheckFailed.set(true);
-                        lastCheckError.set("could not reach GitHub (reading body timed out)");
+                        lastCheckError.set(err);
                         hasCheckedAtLeastOnce.set(true);
+                        return CheckResult.checkFailed(err);
                     }
-                    return Optional.empty();
+                    return CheckResult.notChecked("Service stopped");
                 }
 
                 // Read JSON body (capped to 1 MB for metadata, with timeout watchdog)
@@ -691,8 +704,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                             lastCheckError.set("could not reach GitHub: could not resolve release jar or published checksum");
                         }
                         hasCheckedAtLeastOnce.set(true);
+                        return CheckResult.checkFailed(lastCheckError.get());
                     }
-                    return Optional.empty();
+                    return CheckResult.notChecked("Service stopped");
                 }
 
                 Release release = releaseOpt.get();
@@ -711,7 +725,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         cachedEtag.set(newEtag);
                     }
                     networkErrorLogged.set(false);
-                    return Optional.empty();
+                    return CheckResult.upToDate();
                 }
 
                 // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9)
@@ -770,7 +784,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     triggerAutoDownload(release);
                 }
 
-                return Optional.of(release);
+                return CheckResult.updateAvailable(release);
             }
         } catch (IOException e) {
             lastCheckFailed.set(true);
@@ -780,14 +794,15 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             lastCheckError.set(errorMsg);
             hasCheckedAtLeastOnce.set(true);
             handleNetworkFailure(e);
-            return Optional.empty();
+            return CheckResult.checkFailed(errorMsg);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             lastCheckFailed.set(true);
-            lastCheckError.set("could not reach GitHub (Update check interrupted)");
+            String errorMsg = "could not reach GitHub (Update check interrupted)";
+            lastCheckError.set(errorMsg);
             hasCheckedAtLeastOnce.set(true);
             handleNetworkFailure(new IOException("Update check interrupted", e));
-            return Optional.empty();
+            return CheckResult.checkFailed(errorMsg);
         } catch (Exception e) {
             // Malformed JSON or parsing errors do not throw out of service
             lastCheckFailed.set(true);
@@ -797,7 +812,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             lastCheckError.set(errorMsg);
             hasCheckedAtLeastOnce.set(true);
             logger.log(Level.FINE, "Failed to parse update release", e);
-            return Optional.empty();
+            return CheckResult.checkFailed(errorMsg);
         } finally {
             activeTransfers.remove(activeOp);
         }
@@ -1076,6 +1091,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     return new ChecksumOutcome.InvalidOrAmbiguous("Service stopped during checksum fetch");
                 }
 
+                updateRateLimit(response);
+
                 if (response.statusCode() == 200) {
                     remaining = Duration.between(Instant.now(), deadline);
                     if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
@@ -1085,6 +1102,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     return parseChecksumFileContent(content, targetJarName, isDedicated);
                 } else if (response.statusCode() == 404) {
                     return new ChecksumOutcome.None();
+                } else if (response.statusCode() == 403 || response.statusCode() == 429) {
+                    throw new IOException("HTTP error fetching checksum asset from " + uri + ": rate limit exceeded (status " + response.statusCode() + ")");
                 } else {
                     throw new IOException("HTTP error fetching checksum asset from " + uri + ": status " + response.statusCode());
                 }
@@ -1117,6 +1136,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (m1.matches()) {
                 String candidateHex = m1.group(1);
                 String file = m1.group(2).trim();
+                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(file).find()) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum entry in checksum file absorbing checksum keyword: " + file);
+                }
                 Path p = Path.of(file);
                 String filename = p.getFileName() != null ? p.getFileName().toString() : file;
                 if (filename.equalsIgnoreCase(targetJarName)) {
@@ -1132,10 +1154,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             // Pattern 2: BSD style: "SHA256 (filename) = <hex>"
-            Matcher m2 = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*(\\S+)$").matcher(line);
+            Matcher m2 = Pattern.compile("(?i)^SHA-?256\\s*\\(([^)\r\n]+)\\)\\s*=\\s*(\\S+)$").matcher(line);
             if (m2.matches()) {
                 String file = m2.group(1).trim();
                 String candidateHex = m2.group(2).trim();
+                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(file).find()) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD declaration in checksum file absorbing checksum keyword: " + file);
+                }
                 Path p = Path.of(file);
                 String filename = p.getFileName() != null ? p.getFileName().toString() : file;
                 if (filename.equalsIgnoreCase(targetJarName)) {
@@ -1177,6 +1202,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
         List<String> boundHashes = new ArrayList<>();
         List<String> otherArtifactHashes = new ArrayList<>();
+        // A line that names a checksum but yields no usable hash makes the whole release
+        // unusable: the publisher meant to declare one and it cannot be read.
         boolean foundChecksumKeyword = false;
 
         for (String rawLine : body.split("\\r?\\n")) {
@@ -1185,15 +1212,23 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 continue;
             }
 
-            // 1. BSD format on line: SHA256 (filename) = <token>
-            Matcher bsdMatcher = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*(\\S+)$").matcher(line);
-            if (bsdMatcher.matches()) {
-                foundChecksumKeyword = true;
+            // 1. BSD format declarations on the line: SHA256 (filename) = <token>
+            Matcher bsdMatcher = Pattern.compile("(?i)\\bSHA-?256\\s*\\(([^)\r\n]+)\\)\\s*=\\s*(\\S+)").matcher(line);
+            int bsdCount = 0;
+            while (bsdMatcher.find()) {
+                bsdCount++;
                 String file = bsdMatcher.group(1).trim();
                 String candidateToken = bsdMatcher.group(2).trim();
+
+                // Filename must not absorb another checksum keyword/declaration
+                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(file).find()) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD declaration absorbing checksum keyword in filename: " + file);
+                }
+
                 if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
                     return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD SHA-256 token in body: " + candidateToken);
                 }
+
                 Path p = Path.of(file);
                 String filename = p.getFileName() != null ? p.getFileName().toString() : file;
                 if (filename.equalsIgnoreCase(targetJarName)) {
@@ -1201,18 +1236,19 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 } else {
                     otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                 }
-                continue;
             }
 
-            // 2. sha256sum format on line: <token>  <file.jar>
-            Matcher sumMatcher = Pattern.compile("^(\\S+)\\s+[*]?(.+\\.jar)$").matcher(line);
+            // 2. sha256sum format declaration on the line: <64-hex> [*]<file>
+            Matcher sumMatcher = Pattern.compile("(?i)^([a-fA-F0-9]{64})\\s+[*]?((\\S.*))$").matcher(line);
             if (sumMatcher.matches()) {
-                String candidateToken = sumMatcher.group(1);
+                String candidateToken = sumMatcher.group(1).trim();
                 String file = sumMatcher.group(2).trim();
-                foundChecksumKeyword = true;
-                if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum token in body: " + candidateToken);
+
+                // Filename must not absorb a checksum keyword/declaration
+                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(file).find()) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum entry absorbing checksum declaration in filename: " + file);
                 }
+
                 Path p = Path.of(file);
                 String filename = p.getFileName() != null ? p.getFileName().toString() : file;
                 if (filename.equalsIgnoreCase(targetJarName)) {
@@ -1220,30 +1256,29 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 } else {
                     otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                 }
-                continue;
             }
 
-            // 3. Label pattern(s): sha256[:=\s]+<token> anywhere on line (may be multiple declarations)
-            Matcher keywordMatcher = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
-            if (keywordMatcher.find()) {
+            // 3. Count total keyword occurrences on the line
+            Matcher allKeywords = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
+            int totalKeywords = 0;
+            while (allKeywords.find()) {
+                totalKeywords++;
+            }
+            if (totalKeywords > 0) {
                 foundChecksumKeyword = true;
+            }
 
-                // Match all declarations on the line
-                Matcher labelMatcher = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)(\\S+)").matcher(line);
+            int nonBsdKeywords = totalKeywords - bsdCount;
+            if (nonBsdKeywords > 0) {
+                // Find all labeled declarations on the line (excluding BSD which is followed by '(')
+                Matcher labelMatcher = Pattern.compile("(?i)\\bsha-?256(?:sum)?(?![\\s]*\\()[:=\\s]+(\\S+)").matcher(line);
                 record Decl(int start, int end, String token) {}
                 List<Decl> decls = new ArrayList<>();
                 while (labelMatcher.find()) {
                     decls.add(new Decl(labelMatcher.start(), labelMatcher.end(), labelMatcher.group(1)));
                 }
 
-                // Count total keyword occurrences to detect incomplete declarations (e.g. trailing "SHA-256:")
-                Matcher allKeywords = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
-                int totalKeywords = 0;
-                while (allKeywords.find()) {
-                    totalKeywords++;
-                }
-
-                if (decls.isEmpty() || decls.size() < totalKeywords) {
+                if (decls.size() < nonBsdKeywords) {
                     return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 declaration in body: " + line);
                 }
 
@@ -1251,12 +1286,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     Decl decl = decls.get(i);
                     String candidateToken = decl.token();
 
-                    // Check if candidate is valid 64 hex characters
                     if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
                         return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
                     }
 
-                    // Check jar binding for this specific declaration segment
                     int segStart = (i == 0) ? 0 : decl.start();
                     int segEnd = (i == decls.size() - 1) ? line.length() : decls.get(i + 1).start();
                     String segment = line.substring(segStart, segEnd);
@@ -1270,7 +1303,6 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                             otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                         }
                     } else {
-                        // Unbound label declaration
                         boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                     }
                 }

@@ -305,3 +305,112 @@ However, `lastCheckError` had captured raw exception text without the standard `
 | **Test 7 (`recoveryAfterFailedCheckClearsErrorState`)**: Did not verify exclusion of failure line on recovery; did not verify warning suppression resets; lacked 304 recovery test. | Verified recovered output contains up-to-date and contains no failure line. Verified that an outage following recovery logs a new warning (suppression reset). Verified recovery via HTTP 304 Not Modified clears failure state. |
 | **Hostile redirect guard (`jdkHttpTransportRejectsUntrustedRedirect`)**: Did not stub response URI/body; failed before Location header check. | Stubbed `mockResponse.uri(officialUri)` and empty body, ensuring the policy exception triggers at Location header validation. Verified with `verify(mockClient)` that no request ever reached the untrusted host. Added tests for HTTPS downgrade and `raw.githubusercontent.com`. |
 | **Ambiguity & Missing Checksum Fixtures**: Lacked multiple runnable jar fixture and discovery without checksum fixture. | Added unit tests `releaseWithMultipleRunnableJarsAmbiguityIsRefused` and `releaseDiscoveryWithoutPublishedChecksumIsRefused`. |
+
+---
+
+## 7. Round 4 — Resolution of Review R2 Findings (F1, F2, F7, F8)
+
+This round addresses the four findings from `docs/revisiones/T24-updater-host-r2.md`: two blocking issues (F1, F2), one regression introduced in round 3 (F7), and one categorization defect (F8).
+
+### 7.1 Findings and Resolutions
+
+#### F1 (Blocking): Reply Classifies the Same Check Whose Result It Reports
+- **Problem & Root Cause**:
+  In `MinecraftCommands.java:1032-1043`, `/dt admin update` asynchronously invoked `checkForUpdate()`, then scheduled a Bukkit main-thread task to render the reply. Inside that deferred task, it consumed the completed future's `Optional<Release>` but queried `updateService.isLastCheckFailed()` from mutable service-wide state.
+  Because update checks execute concurrently on `ForkJoinPool.commonPool()`, a concrete race existed:
+  1. Check A failed (e.g. timeout or rate-limited), completed empty, and scheduled its reply task on the server scheduler;
+  2. Before A's reply executed, Check B (a periodic check or a subsequent command) succeeded and cleared `isLastCheckFailed`;
+  3. A's scheduled reply ran, read `isLastCheckFailed() == false`, and erroneously printed `updates.up-to-date`. The admin was informed neither of the failure nor of the newly discovered release.
+  Additionally, an inherited lifecycle hole existed: if a manual check was queued and `/dt reload` was executed before its worker began, the captured service was stopped (`DiscordTownyWiring.java:592-598`), `doCheckForUpdate()` returned empty without marking any check, and the command erroneously fell through to `updates.up-to-date`.
+- **Resolution**:
+  1. **Self-Contained Operation Outcome (`CheckResult`)**:
+     Updated `UpdateService.checkForUpdate()` contract from `CompletableFuture<Optional<Release>>` to `CompletableFuture<CheckResult>`.
+     Introduced immutable record `UpdateService.CheckResult`:
+     ```java
+     public record CheckResult(CheckStatus status, Optional<Release> release, Optional<String> error)
+     ```
+     with static factories `upToDate()`, `updateAvailable(Release)`, `checkFailed(String)`, and `notChecked(String)`. Added backward-compatible default method `checkForUpdateOptional()` for callers needing only `Optional<Release>`.
+  2. **Service Implementation**:
+     In `DefaultUpdateService.doCheckForUpdate()`, the result of the operation is bundled directly into the returned `CheckResult`. If the service is stopped (`stopped.get() == true`), it immediately returns `CheckResult.notChecked("Update service is stopped")`. Failures return `CheckResult.checkFailed(reason)`. Discoveries return `CheckResult.updateAvailable(release)`. Current or older versions return `CheckResult.upToDate()`.
+  3. **Command Consumption**:
+     In `MinecraftCommands.java`, `/dt admin update` now inspects `result.status()` and `result.error()` directly from the check that just executed:
+     - `CHECK_FAILED`: renders `updates.check-failed` using `result.error()` and the command's message catalog.
+     - `NOT_CHECKED`: renders `updates.status-not-checked`.
+     - `UPDATE_AVAILABLE`: renders `updates.available` / `updates.downloaded`.
+     - `UP_TO_DATE`: renders `updates.up-to-date`.
+     The deferred reply never queries mutable service state, permanently eliminating the race with concurrent checks and periodic tasks.
+  4. **Atomic Snapshot in Status Command**:
+     In `/dt admin update status`, a single snapshot `CheckStatus status = updateService.checkStatus()` is taken at the start of the handler. Only `status == CheckStatus.UP_TO_DATE` emits `updates.up-to-date`. `CHECK_FAILED` renders failure even if mutable state fluctuates concurrently.
+  5. **Unit Tests**:
+     - `adminUpdateClassifiesFailedCheckEvenIfMutableStateIsClearedConcurrently`: Check A fails, but `isLastCheckFailed()` is concurrently cleared to `false`; verifies admin receives `updates.check-failed` and never `updates.up-to-date`.
+     - `adminUpdateWhenServiceStoppedReportsNotCheckedNeverUpToDate`: Service stopped; verifies admin receives `updates.status-not-checked` and never `updates.up-to-date`.
+     - `stoppedServiceCheckReturnsNotCheckedAndNeverUpToDate`: Verifies stopped service returns `NOT_CHECKED` and `renderStatusMessages` outputs `updates.not-checked`, never `updates.up-to-date`.
+
+#### F2 (Blocking): Comprehensive Checksum Declaration Inspection & Greedy Filename Prevention
+- **Problem & Root Cause**:
+  In round 3, matching BSD or sha256sum formats executed `continue` before scanning all declarations on the line. Furthermore, the BSD regex used greedy `(.+)` for the filename capture:
+  `^SHA-?256\s*\((.+)\)\s*=\s*(\S+)$`
+  On a line containing:
+  `SHA256 (DiscordTowny-1.10.0.jar) = invalid SHA256 (./DiscordTowny-1.10.0.jar) = <H>`
+  the greedy capture swallowed through the second filename, captured only the trailing valid digest `<H>`, and `Path.getFileName()` stripped `./`, leaving `DiscordTowny-1.10.0.jar`. The first invalid declaration was never inspected and the release was accepted.
+  Similarly, for `<H>  SHA-256=invalid/DiscordTowny-1.10.0.jar`, the filename absorbed an invalid declaration without checking.
+- **Resolution**:
+  1. BSD regex replaced with non-greedy filename pattern: `(?i)^SHA-?256\s*\(([^)\r\n]+)\)\s*=\s*(\S+)$`.
+  2. Filenames extracted across all formats are forbidden from absorbing checksum keywords (`sha-256`, `sha256`, `sha256sum`) or assignment symbols (`=`, `:`). Any declaration whose filename contains absorbed keywords is rejected.
+  3. Added full-line BSD scanner `(?i)SHA-?256\s*\(([^)\r\n]+)\)\s*=\s*(\S+)` that inspects every BSD declaration on the line. If any token is not a valid 64-hex string, the line is rejected with `ExtractedSha256.InvalidOrAmbiguous`.
+  4. Line-level keyword audit ensures that if the count of checksum keywords exceeds valid extracted declarations, the release is refused as malformed without falling back to checksum assets.
+- **Unit Tests**:
+  - `bsdTwoDeclarationsOnSameLineWithInvalidFirstRefusesReleaseEvenWithValidChecksumAsset`: Verifies that `SHA256 (DiscordTowny-1.10.0.jar) = invalid SHA256 (./DiscordTowny-1.10.0.jar) = <H>` with a matching valid `.sha256` asset is refused without fallback.
+  - `sha256sumFilenameAbsorbingMalformedDeclarationRefusesReleaseEvenWithValidChecksumAsset`: Verifies that `<H>  SHA-256=invalid/DiscordTowny-1.10.0.jar` with a matching valid asset is refused without fallback.
+
+#### F7 (Important, Regression): Preserving Valid Labeled Checksums Ending in Jar Names
+- **Problem & Root Cause**:
+  In round 3, `sumMatcher` (`^(\S+)\s+[*]?(.+\.jar)$`) was moved before `labelMatcher` in `extractSha256FromBody()`. For a valid labeled line:
+  `SHA-256: <H> DiscordTowny-1.10.0.jar`
+  `sumMatcher` matched with `SHA-256:` as the first token `(\S+)`. Because `SHA-256:` is not a 64-hex digest, it was rejected as malformed, hiding a valid official release and preventing fallback to its valid checksum asset.
+- **Resolution**:
+  1. `sumMatcher` pattern strictly constrained to require 64 hexadecimal characters at the start of the line:
+     `^([a-fA-F0-9]{64})\s+[*]?([^\r\n]+)$`
+  2. `SHA-256: <H> DiscordTowny-1.10.0.jar` does not start with 64 hex characters, so it correctly bypasses `sumMatcher` and reaches `labelMatcher`:
+     `(?i)^SHA-?256(?:sum)?[:=\s]+([a-fA-F0-9]{64})(?:\s+([^\r\n]+))?$`
+     which extracts `<H>` and binds it to `DiscordTowny-1.10.0.jar`.
+- **Unit Test**:
+  - `validLabeledChecksumWithJarNameIsDiscoveredSuccessfully`: Tests the exact broken input (`SHA-256: <H> DiscordTowny-1.10.0.jar`) with a matching asset; verifies the release is discovered successfully with status `UPDATE_AVAILABLE`.
+
+#### F8 (Important, Classification): Accurate Classification of Checksum-Asset Network and Rate-Limit Failures
+- **Problem & Root Cause**:
+  In `DefaultUpdateService.formatCheckFailureReason()`, `lower.contains("checksum")` preceded the network error check. When an HTTP 500 error occurred fetching a dedicated checksum asset (e.g. `DiscordTowny-1.10.0.jar.sha256`), the exception message was `HTTP error fetching checksum asset from <url>: status 500`. Because the string contained `"checksum"`, the admin was told `checksum is invalid or ambiguous` (`la suma de comprobación no es válida o es ambigua`), even though the asset was never retrieved. The same misclassification occurred on HTTP 403 and 429 when fetching checksum assets.
+- **Resolution**:
+  1. Reordered classification logic in `formatCheckFailureReason()`: network failures (`could not reach github`, `http error`, `connection refused`, `unknownhost`, `status 500`, `timed out`, etc.) and rate limits (`rate limit`, `403`, `429`) are evaluated **before** checksum checks.
+  2. Narrowed checksum classification to specific diagnostic phrases: `checksum is invalid`, `checksum mismatch`, `invalid or ambiguous checksum`, `untrusted checksum`, `no published checksum`.
+  3. In `fetchChecksumAssetContent()`, added response rate-limit header parsing (`updateRateLimit(response)`) and explicit rate-limit exception throwing on HTTP 403 and 429.
+  4. An HTTP 500 fetching a checksum asset is now classified as `updates.check-reason-network` (`could not reach GitHub` / `no se pudo conectar con GitHub`). An HTTP 403/429 fetching a checksum asset is classified as `updates.check-reason-rate-limited` (`GitHub API rate limit exceeded` / `límite de velocidad de la API de GitHub alcanzado`). Neither ever claims the checksum is invalid.
+- **Unit Tests**:
+  - `checksumAssetHttp500RendersNetworkFailureReasonNotInvalidChecksum`: Verifies HTTP 500 on `.sha256` asset reports network failure in English and Spanish, and never claims checksum is invalid.
+  - `checksumAssetHttp403RateLimitRendersRateLimitReasonNotInvalidChecksum`: Verifies HTTP 403 on `.sha256` asset reports rate limit in English and Spanish, and never claims checksum is invalid.
+
+---
+
+### 7.2 Architect Boundary Notice (F5 & Inherited Lifecycle Hole)
+
+1. **F5 — Admin Join Notification**:
+   As confirmed in review r2, `DefaultUpdateService.notifyAdminOnJoin()` correctly constructs and emits localized failure notices. However, `DiscordTownyPlugin.java` only registers `PlayerJoinSyncListener`, which dispatches synchronization without calling `notifyAdminOnJoin()`. Because plugin registration and listener files are outside the assigned zone, this wiring remains for the architect to integrate.
+2. **Inherited Lifecycle Hole (`DiscordTownyWiring.java`)**:
+   When a plugin reload occurs, `DiscordTownyWiring.java:592-598` calls `oldService.stop()`. If a manual check was queued just before reload, its worker previously executed against the stopped service and returned empty, which the command previously reported as `updates.up-to-date`.
+   **Handled entirely inside our zone without touching `DiscordTownyWiring.java`**:
+   `DefaultUpdateService.doCheckForUpdate()` checks `stopped.get()` and returns `CheckResult.notChecked("Update service is stopped")`. `MinecraftCommands.java` handles `NOT_CHECKED` by emitting `updates.status-not-checked`. A stopped or aborted check can never fall through to `updates.up-to-date`.
+
+---
+
+### 7.3 Response to Review R2 Test-by-Test Audit
+
+| Audit Item (from Review R2) | Mutation / Limit Identified | How Round 4 Addresses It |
+|---|---|---|
+| `sameLineMultipleChecksumsWithInvalidRefusesReleaseEvenWithValidChecksumAsset` | Passes if parser checks only the last declaration; misses invalid-first/valid-last. | Added `bsdTwoDeclarationsOnSameLineWithInvalidFirstRefusesReleaseEvenWithValidChecksumAsset`, which specifically tests an invalid first declaration followed by a valid last declaration on the same line. |
+| `sameLineConflictingChecksumsRefusesReleaseEvenWithValidChecksumAsset` | Misses F2/F7 and file-bound mixed formats. | Added tests `bsdTwoDeclarationsOnSameLineWithInvalidFirst...` and `sha256sumFilenameAbsorbingMalformedDeclaration...` covering mixed formats and greedy absorption. |
+| `rateLimitFailureMarksCheckFailedEvenWhenCachedReleaseIsUsed` | Passes if bug restored only for 403; only sent 429. | Added `checksumAssetHttp403RateLimitRendersRateLimitReasonNotInvalidChecksum` testing 403 rate limits explicitly. |
+| `adminUpdateReportsCheckFailedWhenCheckFails` | Passes F1 delayed-reply race, reload cancellation, and mutable state clear. | Added `adminUpdateClassifiesFailedCheckEvenIfMutableStateIsClearedConcurrently` (concurrent state clear) and `adminUpdateWhenServiceStoppedReportsNotCheckedNeverUpToDate` (reload/stopped service). |
+| `adminUpdateStatusReportsCheckFailedWhenLastCheckFailed` | Mocked flags cannot reveal split-read race. | Restructured `handleUpdateStatus` to take a single snapshot `CheckStatus status = updateService.checkStatus()` and only allow `UP_TO_DATE` to emit up-to-date. |
+| Valid labeled format broken by broad sum matcher (F7) | Missing positive fixture for valid labeled format with jar name. | Added `validLabeledChecksumWithJarNameIsDiscoveredSuccessfully` testing `SHA-256: <H> DiscordTowny-1.10.0.jar`. |
+| Checksum asset HTTP outage classification (F8) | HTTP 500/403/429 fetching `.sha256` asset categorized as invalid checksum. | Added `checksumAssetHttp500RendersNetworkFailureReasonNotInvalidChecksum` and `checksumAssetHttp403RateLimitRendersRateLimitReasonNotInvalidChecksum`. |
+
