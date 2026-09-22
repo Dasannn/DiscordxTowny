@@ -131,6 +131,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     // Network error deduplication (log once until restored)
     private final AtomicBoolean networkErrorLogged = new AtomicBoolean(false);
 
+    // Check failure state tracking
+    private final AtomicBoolean lastCheckFailed = new AtomicBoolean(false);
+    private final AtomicReference<String> lastCheckError = new AtomicReference<>(null);
+    private final AtomicBoolean hasCheckedAtLeastOnce = new AtomicBoolean(false);
+
     // Notification deduplication (once per version)
     private final Set<String> consoleNotifiedVersions = ConcurrentHashMap.newKeySet();
     private final Set<String> logChannelNotifiedVersions = ConcurrentHashMap.newKeySet();
@@ -389,6 +394,58 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return available != null && !isUpdatePending() && isBreaking(available);
     }
 
+    @Override
+    public boolean isLastCheckFailed() {
+        return lastCheckFailed.get();
+    }
+
+    @Override
+    public Optional<String> getLastCheckError() {
+        return Optional.ofNullable(lastCheckError.get());
+    }
+
+    @Override
+    public CheckStatus checkStatus() {
+        if (lastCheckFailed.get()) {
+            return CheckStatus.CHECK_FAILED;
+        }
+        if (latestAvailableUpdate != null) {
+            return CheckStatus.UPDATE_AVAILABLE;
+        }
+        if (!hasCheckedAtLeastOnce.get()) {
+            return CheckStatus.NOT_CHECKED;
+        }
+        return CheckStatus.UP_TO_DATE;
+    }
+
+    public List<String> renderStatusMessages(Messages msg) {
+        List<String> result = new ArrayList<>();
+        result.add(msg.plain("updates.status-current", Map.of("current", currentVersion)));
+
+        if (isUpdatePending()) {
+            String ver = getAvailableUpdate()
+                    .map(Release::version)
+                    .orElse(currentVersion);
+            result.add(msg.plain("updates.downloaded", Map.of("latest", ver)));
+        } else if (getAvailableUpdate().isPresent()) {
+            Release release = getAvailableUpdate().get();
+            result.add(msg.plain("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
+            if (isBreaking(release)) {
+                result.add(msg.plain("updates.breaking", Map.of("latest", release.version())));
+            }
+            String summary = extractSummary(release.notes());
+            if (!summary.isBlank()) {
+                result.add(msg.plain("updates.summary", Map.of("summary", summary)));
+            }
+        } else if (isLastCheckFailed()) {
+            String reason = getLastCheckError().orElseGet(() -> msg.label("general.unknown"));
+            result.add(msg.plain("updates.check-failed", Map.of("reason", reason)));
+        } else {
+            result.add(msg.plain("updates.up-to-date", Map.of()));
+        }
+        return result;
+    }
+
     public static String extractSummary(String notes) {
         if (notes == null || notes.isBlank()) {
             return "";
@@ -469,7 +526,14 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         // Respect rate limits: if rate limit was exceeded, do not query until reset
         Instant resetTime = rateLimitResetTime.get();
         if (resetTime != null && Instant.now().isBefore(resetTime)) {
-            return Optional.ofNullable(cachedRelease.get());
+            Release cached = cachedRelease.get();
+            if (cached != null) {
+                return Optional.of(cached);
+            }
+            lastCheckFailed.set(true);
+            lastCheckError.set("could not reach GitHub: rate limit exceeded; resets at " + resetTime);
+            hasCheckedAtLeastOnce.set(true);
+            return Optional.empty();
         }
 
         Map<String, String> headers = new HashMap<>();
@@ -487,6 +551,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         try {
             Duration remaining = Duration.between(Instant.now(), deadline);
             if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                if (!stopped.get()) {
+                    lastCheckFailed.set(true);
+                    lastCheckError.set("could not reach GitHub (request timed out)");
+                    hasCheckedAtLeastOnce.set(true);
+                }
                 return Optional.empty();
             }
 
@@ -505,6 +574,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 // 304 Not Modified: release has not changed, use cache
                 if (status == 304) {
                     networkErrorLogged.set(false);
+                    lastCheckFailed.set(false);
+                    lastCheckError.set(null);
+                    hasCheckedAtLeastOnce.set(true);
                     Release release = cachedRelease.get();
                     if (release != null) {
                         latestAvailableUpdate = release;
@@ -518,11 +590,21 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
                 if (status == 403 || status == 429) {
-                    return Optional.ofNullable(cachedRelease.get());
+                    Release cached = cachedRelease.get();
+                    if (cached != null) {
+                        return Optional.of(cached);
+                    }
+                    lastCheckFailed.set(true);
+                    lastCheckError.set("could not reach GitHub: rate limit exceeded (HTTP " + status + ")");
+                    hasCheckedAtLeastOnce.set(true);
+                    return Optional.empty();
                 }
 
                 if (status != 200) {
                     logger.log(Level.FINE, "GitHub releases API returned unexpected status {0}", status);
+                    lastCheckFailed.set(true);
+                    lastCheckError.set("could not reach GitHub: unexpected status " + status);
+                    hasCheckedAtLeastOnce.set(true);
                     return Optional.empty();
                 }
 
@@ -530,6 +612,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 remaining = Duration.between(Instant.now(), deadline);
                 if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
+                    if (!stopped.get()) {
+                        lastCheckFailed.set(true);
+                        lastCheckError.set("could not reach GitHub (reading body timed out)");
+                        hasCheckedAtLeastOnce.set(true);
+                    }
                     return Optional.empty();
                 }
 
@@ -538,12 +625,21 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 Optional<Release> releaseOpt = parseRelease(json, deadline);
 
                 if (releaseOpt.isEmpty() || stopped.get()) {
+                    if (!stopped.get()) {
+                        lastCheckFailed.set(true);
+                        lastCheckError.compareAndSet(null, "could not reach GitHub: could not resolve release jar or published checksum");
+                        hasCheckedAtLeastOnce.set(true);
+                    }
                     return Optional.empty();
                 }
 
                 Release release = releaseOpt.get();
                 SemanticVersion latestSemVer = SemanticVersion.parse(release.version());
                 SemanticVersion currentSemVer = SemanticVersion.parse(currentVersion);
+
+                lastCheckFailed.set(false);
+                lastCheckError.set(null);
+                hasCheckedAtLeastOnce.set(true);
 
                 if (!latestSemVer.isNewerThan(currentSemVer)) {
                     // Not newer: running current or newer version
@@ -558,6 +654,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9)
                 networkErrorLogged.set(false);
+                lastCheckFailed.set(false);
+                lastCheckError.set(null);
+                hasCheckedAtLeastOnce.set(true);
                 if (newEtag != null) {
                     cachedEtag.set(newEtag);
                 }
@@ -612,14 +711,29 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 return Optional.of(release);
             }
         } catch (IOException e) {
+            lastCheckFailed.set(true);
+            String errorMsg = e.getMessage() != null && !e.getMessage().isBlank()
+                    ? "could not reach GitHub (" + e.getMessage() + ")"
+                    : "could not reach GitHub";
+            lastCheckError.set(errorMsg);
+            hasCheckedAtLeastOnce.set(true);
             handleNetworkFailure(e);
             return Optional.empty();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            lastCheckFailed.set(true);
+            lastCheckError.set("could not reach GitHub (Update check interrupted)");
+            hasCheckedAtLeastOnce.set(true);
             handleNetworkFailure(new IOException("Update check interrupted", e));
             return Optional.empty();
         } catch (Exception e) {
             // Malformed JSON or parsing errors do not throw out of service
+            lastCheckFailed.set(true);
+            String errorMsg = e.getMessage() != null && !e.getMessage().isBlank()
+                    ? "could not reach GitHub (" + e.getMessage() + ")"
+                    : "could not reach GitHub (Failed to parse update release)";
+            lastCheckError.set(errorMsg);
+            hasCheckedAtLeastOnce.set(true);
             logger.log(Level.FINE, "Failed to parse update release", e);
             return Optional.empty();
         } finally {
@@ -735,6 +849,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             if (eligibleJars.isEmpty()) {
+                lastCheckError.set("No runnable jar asset found in release");
                 return Optional.empty();
             }
 
@@ -754,6 +869,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     selectedJar = matches.getFirst();
                 } else {
                     logger.warning("Ambiguous jar assets in release: multiple candidates found, refusing without staging.");
+                    lastCheckError.set("Ambiguous jar assets in release");
                     return Optional.empty();
                 }
             }
@@ -765,12 +881,14 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             ChecksumOutcome assetOutcome = extractChecksumFromAssets(checksumAssets, selectedJarName, deadline);
             if (assetOutcome instanceof ChecksumOutcome.InvalidOrAmbiguous inv) {
                 logger.warning("Invalid or ambiguous checksum evidence in assets for " + selectedJarName + ": " + inv.reason() + "; refusing without fallback.");
+                lastCheckError.set("Invalid or ambiguous checksum in assets: " + inv.reason());
                 return Optional.empty();
             }
 
             ChecksumOutcome bodyOutcome = extractSha256FromBody(notes, selectedJarName);
             if (bodyOutcome instanceof ChecksumOutcome.InvalidOrAmbiguous inv) {
                 logger.warning("Invalid or ambiguous checksum evidence in body for " + selectedJarName + ": " + inv.reason() + "; refusing without fallback.");
+                lastCheckError.set("Invalid or ambiguous checksum in release body: " + inv.reason());
                 return Optional.empty();
             }
 
@@ -778,6 +896,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (assetOutcome instanceof ChecksumOutcome.Valid vAsset && bodyOutcome instanceof ChecksumOutcome.Valid vBody) {
                 if (!vAsset.sha256().equalsIgnoreCase(vBody.sha256())) {
                     logger.warning("Conflicting checksums between release body and checksum asset for " + selectedJarName + "; refusing.");
+                    lastCheckError.set("Conflicting checksums between release body and checksum asset");
                     return Optional.empty();
                 }
                 finalSha256 = vAsset.sha256();
@@ -787,11 +906,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 finalSha256 = vBody.sha256();
             } else {
                 logger.warning("No published checksum found for " + selectedJarName + "; refusing without staging.");
+                lastCheckError.set("No published checksum found for " + selectedJarName);
                 return Optional.empty();
             }
 
             if (!isValidSha256(finalSha256)) {
                 logger.warning("Malformed published SHA-256 checksum for " + selectedJarName + "; refusing.");
+                lastCheckError.set("Malformed published SHA-256 checksum for " + selectedJarName);
                 return Optional.empty();
             }
 

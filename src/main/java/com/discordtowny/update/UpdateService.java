@@ -54,6 +54,43 @@ public interface UpdateService {
     boolean isAwaitingConfirmation();
 
     /**
+     * Returns true if the most recent update check failed to complete.
+     */
+    default boolean isLastCheckFailed() {
+        return false;
+    }
+
+    /**
+     * Returns the failure reason of the most recent update check, if it failed.
+     */
+    default Optional<String> getLastCheckError() {
+        return Optional.empty();
+    }
+
+    /**
+     * Distinct status outcomes for an update check.
+     */
+    enum CheckStatus {
+        UP_TO_DATE,
+        UPDATE_AVAILABLE,
+        CHECK_FAILED,
+        NOT_CHECKED
+    }
+
+    /**
+     * Returns the current status of update checking.
+     */
+    default CheckStatus checkStatus() {
+        if (isLastCheckFailed()) {
+            return CheckStatus.CHECK_FAILED;
+        }
+        if (getAvailableUpdate().isPresent()) {
+            return CheckStatus.UPDATE_AVAILABLE;
+        }
+        return CheckStatus.UP_TO_DATE;
+    }
+
+    /**
      * Stops the periodic check and abandons any transfer in flight.
      *
      * <p>Part of the contract because the service owns a scheduler and a worker:

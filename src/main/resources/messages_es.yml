@@ -120,6 +120,7 @@ updates:
   download-failed: "&cNo se pudo descargar la actualización: {reason}."
   checksum-mismatch: "&cLa descarga no coincide con el checksum publicado y fue descartada."
   up-to-date: "&aEstás en la última versión."
+  check-failed: "&cNo se pudo comprobar si hay actualizaciones: {reason}."
   breaking: "&c&lATENCIÓN: &cLa versión &f{latest}&c contiene cambios incompatibles. La descarga automática está deshabilitada; se requiere confirmación."
   summary: "&7Resumen de cambios: &f{summary}"
   disabled: "&7La comprobación de actualizaciones está desactivada."
