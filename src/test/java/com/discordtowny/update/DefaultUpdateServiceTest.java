@@ -38,10 +38,12 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
 
+import java.net.http.HttpRequest;
+import org.mockito.ArgumentCaptor;
+
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class DefaultUpdateServiceTest {
 
@@ -1561,9 +1563,13 @@ class DefaultUpdateServiceTest {
         HttpClient mockClient = mock(HttpClient.class);
         when(mockClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
 
+        URI officialUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar");
+
         @SuppressWarnings("unchecked")
         java.net.http.HttpResponse<InputStream> mockResponse = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
         when(mockResponse.statusCode()).thenReturn(302);
+        when(mockResponse.uri()).thenReturn(officialUri);
+        when(mockResponse.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
         HttpHeaders headersEvil = HttpHeaders.of(
                 Map.of("Location", List.of("https://evil.com/malicious.jar")),
                 (k, v) -> true
@@ -1574,12 +1580,11 @@ class DefaultUpdateServiceTest {
         } catch (IOException | InterruptedException ignored) {}
 
         JdkHttpTransport redirectTransport = new JdkHttpTransport(mockClient);
-        URI officialUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar");
 
         IOException redirEx = assertThrows(IOException.class, () ->
                 redirectTransport.executeGet(officialUri, Map.of(), Duration.ofSeconds(1)));
-        assertTrue(redirEx.getMessage().contains("Untrusted destination rejected by official source policy"),
-                "Redirect to untrusted destination must be refused: " + redirEx.getMessage());
+        assertTrue(redirEx.getMessage().contains("Untrusted destination rejected by official source policy: https://evil.com/malicious.jar"),
+                "Redirect to untrusted destination must be refused by Location guard: " + redirEx.getMessage());
 
         // 4. Follow redirect chain: 302 to raw.githubusercontent.com without official provenance
         HttpHeaders headersRaw = HttpHeaders.of(
@@ -1590,8 +1595,25 @@ class DefaultUpdateServiceTest {
 
         IOException redirRawEx = assertThrows(IOException.class, () ->
                 redirectTransport.executeGet(officialUri, Map.of(), Duration.ofSeconds(1)));
-        assertTrue(redirRawEx.getMessage().contains("Untrusted destination rejected by official source policy"),
+        assertTrue(redirRawEx.getMessage().contains("Untrusted destination rejected by official source policy: https://raw.githubusercontent.com/"),
                 "Redirect to raw.githubusercontent without provenance must be refused: " + redirRawEx.getMessage());
+
+        // 5. Follow redirect chain: HTTPS downgrade attempt
+        HttpHeaders headersHttp = HttpHeaders.of(
+                Map.of("Location", List.of("http://release-assets.githubusercontent.com/downgrade.jar")),
+                (k, v) -> true
+        );
+        when(mockResponse.headers()).thenReturn(headersHttp);
+
+        IOException redirHttpEx = assertThrows(IOException.class, () ->
+                redirectTransport.executeGet(officialUri, Map.of(), Duration.ofSeconds(1)));
+        assertTrue(redirHttpEx.getMessage().contains("Untrusted destination rejected by official source policy: http://"),
+                "HTTP downgrade redirect must be refused: " + redirHttpEx.getMessage());
+
+        try {
+            // Verify no request ever reached an untrusted destination
+            verify(mockClient, times(3)).send(argThat(req -> officialUri.equals(req.uri())), any());
+        } catch (Exception ignored) {}
     }
 
     @Test
@@ -2339,28 +2361,62 @@ class DefaultUpdateServiceTest {
         assertDoesNotThrow(() -> UpdateSourcePolicy.validateRedirectDestination(liveRedirectTarget));
         assertDoesNotThrow(() -> UpdateSourcePolicy.validateRedirectDestination(objectsRedirectTarget));
 
+        // Case insensitivity: uppercase host is normalized and accepted on redirect
+        URI uppercaseRedirect = URI.create("https://RELEASE-ASSETS.GITHUBUSERCONTENT.COM/file.jar");
+        assertTrue(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(uppercaseRedirect));
+        assertTrue(UpdateSourcePolicy.isAllowedRedirectDestination(uppercaseRedirect));
+        assertDoesNotThrow(() -> UpdateSourcePolicy.validateRedirectDestination(uppercaseRedirect));
+
+        // Explicit standard HTTPS port 443 is accepted
+        URI port443Redirect = URI.create("https://release-assets.githubusercontent.com:443/file.jar");
+        assertTrue(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(port443Redirect));
+        assertTrue(UpdateSourcePolicy.isAllowedRedirectDestination(port443Redirect));
+        assertDoesNotThrow(() -> UpdateSourcePolicy.validateRedirectDestination(port443Redirect));
+
         // Direct initial requests to delivery hosts without provenance are strictly rejected
         assertFalse(UpdateSourcePolicy.isAllowedInitialUri(liveRedirectTarget));
         assertFalse(UpdateSourcePolicy.isAllowedInitialUri(objectsRedirectTarget));
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateInitialUri(liveRedirectTarget));
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateInitialUri(objectsRedirectTarget));
 
-        // Untrusted hosts and suffix masquerading are strictly rejected
+        // Untrusted hosts, subdomains, suffix masquerading, non-standard ports, trailing dots are strictly rejected
         URI evilHost = URI.create("https://evil-githubusercontent.com/github-production-release-asset/1376593898/file.jar");
         URI suffixAttacker = URI.create("https://release-assets.githubusercontent.com.attacker.net/file.jar");
         URI rawHost = URI.create("https://githubusercontent.com/Dasannn/DiscordxTowny/file.jar");
+        URI rawSubdomain = URI.create("https://raw.githubusercontent.com/file.jar");
+        URI attackerSubdomain = URI.create("https://attacker.githubusercontent.com/file.jar");
+        URI trailingDot = URI.create("https://release-assets.githubusercontent.com./file.jar");
+        URI customPort = URI.create("https://release-assets.githubusercontent.com:8443/file.jar");
         URI httpHop = URI.create("http://release-assets.githubusercontent.com/github-production-release-asset/1376593898/file.jar");
         URI userHop = URI.create("https://user:pass@release-assets.githubusercontent.com/file.jar");
+
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(evilHost));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(suffixAttacker));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(rawHost));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(rawSubdomain));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(attackerSubdomain));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(trailingDot));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(customPort));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(httpHop));
+        assertFalse(UpdateSourcePolicy.isAllowedDeliveryRedirectUri(userHop));
 
         assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(evilHost));
         assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(suffixAttacker));
         assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(rawHost));
+        assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(rawSubdomain));
+        assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(attackerSubdomain));
+        assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(trailingDot));
+        assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(customPort));
         assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(httpHop));
         assertFalse(UpdateSourcePolicy.isAllowedRedirectDestination(userHop));
 
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(evilHost));
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(suffixAttacker));
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(rawHost));
+        assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(rawSubdomain));
+        assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(attackerSubdomain));
+        assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(trailingDot));
+        assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(customPort));
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(httpHop));
         assertThrows(IOException.class, () -> UpdateSourcePolicy.validateRedirectDestination(userHop));
     }
@@ -2368,41 +2424,73 @@ class DefaultUpdateServiceTest {
     @Test
     @DisplayName("JdkHttpTransport follows redirect to release-assets.githubusercontent.com and objects.githubusercontent.com")
     void jdkHttpTransportFollowsRedirectToDeliveryHosts() throws Exception {
-        byte[] payload = "DELIVERED_JAR_BYTES".getBytes(StandardCharsets.UTF_8);
+        byte[] payload1 = "DELIVERED_JAR_BYTES_1".getBytes(StandardCharsets.UTF_8);
+        byte[] payload2 = "DELIVERED_JAR_BYTES_2".getBytes(StandardCharsets.UTF_8);
 
         HttpClient mockClient = mock(HttpClient.class);
         when(mockClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
 
-        URI officialUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar");
-        URI redirectTarget = URI.create("https://release-assets.githubusercontent.com/github-production-release-asset/1376593898/cb094ea3?sp=r&sig=abc");
+        URI officialUri1 = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar");
+        URI releaseAssetsTarget = URI.create("https://release-assets.githubusercontent.com/github-production-release-asset/1376593898/cb094ea3?sp=r&sig=abc");
 
         @SuppressWarnings("unchecked")
-        java.net.http.HttpResponse<InputStream> redirectResponse = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
-        when(redirectResponse.statusCode()).thenReturn(302);
-        when(redirectResponse.uri()).thenReturn(officialUri);
-        HttpHeaders redirectHeaders = HttpHeaders.of(
-                Map.of("Location", List.of(redirectTarget.toString())),
-                (k, v) -> true
-        );
-        when(redirectResponse.headers()).thenReturn(redirectHeaders);
-        when(redirectResponse.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        java.net.http.HttpResponse<InputStream> redirectResponse1 = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(redirectResponse1.statusCode()).thenReturn(302);
+        when(redirectResponse1.uri()).thenReturn(officialUri1);
+        when(redirectResponse1.headers()).thenReturn(HttpHeaders.of(
+                Map.of("Location", List.of(releaseAssetsTarget.toString())), (k, v) -> true));
+        when(redirectResponse1.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
 
         @SuppressWarnings("unchecked")
-        java.net.http.HttpResponse<InputStream> okResponse = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
-        when(okResponse.statusCode()).thenReturn(200);
-        when(okResponse.uri()).thenReturn(redirectTarget);
-        when(okResponse.headers()).thenReturn(HttpHeaders.of(Map.of(), (k, v) -> true));
-        when(okResponse.body()).thenReturn(new ByteArrayInputStream(payload));
+        java.net.http.HttpResponse<InputStream> okResponse1 = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(okResponse1.statusCode()).thenReturn(200);
+        when(okResponse1.uri()).thenReturn(releaseAssetsTarget);
+        when(okResponse1.headers()).thenReturn(HttpHeaders.of(Map.of(), (k, v) -> true));
+        when(okResponse1.body()).thenReturn(new ByteArrayInputStream(payload1));
+
+        URI officialUri2 = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar.sha256");
+        URI objectsTarget = URI.create("https://objects.githubusercontent.com/github-production-repository-file/1376593898/checksum?token=123");
+
+        @SuppressWarnings("unchecked")
+        java.net.http.HttpResponse<InputStream> redirectResponse2 = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(redirectResponse2.statusCode()).thenReturn(302);
+        when(redirectResponse2.uri()).thenReturn(officialUri2);
+        when(redirectResponse2.headers()).thenReturn(HttpHeaders.of(
+                Map.of("Location", List.of(objectsTarget.toString())), (k, v) -> true));
+        when(redirectResponse2.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+
+        @SuppressWarnings("unchecked")
+        java.net.http.HttpResponse<InputStream> okResponse2 = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(okResponse2.statusCode()).thenReturn(200);
+        when(okResponse2.uri()).thenReturn(objectsTarget);
+        when(okResponse2.headers()).thenReturn(HttpHeaders.of(Map.of(), (k, v) -> true));
+        when(okResponse2.body()).thenReturn(new ByteArrayInputStream(payload2));
 
         when(mockClient.<InputStream>send(any(), any()))
-                .thenReturn(redirectResponse)
-                .thenReturn(okResponse);
+                .thenReturn(redirectResponse1)
+                .thenReturn(okResponse1)
+                .thenReturn(redirectResponse2)
+                .thenReturn(okResponse2);
 
         JdkHttpTransport transport = new JdkHttpTransport(mockClient);
-        HttpTransport.HttpResponse res = transport.executeGet(officialUri, Map.of(), Duration.ofSeconds(5));
 
-        assertEquals(200, res.statusCode());
-        assertArrayEquals(payload, res.body().readAllBytes());
+        // Case 1: redirect to release-assets.githubusercontent.com
+        HttpTransport.HttpResponse res1 = transport.executeGet(officialUri1, Map.of(), Duration.ofSeconds(5));
+        assertEquals(200, res1.statusCode());
+        assertArrayEquals(payload1, res1.body().readAllBytes());
+
+        // Case 2: redirect to objects.githubusercontent.com
+        HttpTransport.HttpResponse res2 = transport.executeGet(officialUri2, Map.of(), Duration.ofSeconds(5));
+        assertEquals(200, res2.statusCode());
+        assertArrayEquals(payload2, res2.body().readAllBytes());
+
+        ArgumentCaptor<HttpRequest> captor = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(mockClient, times(4)).send(captor.capture(), any());
+        List<HttpRequest> sent = captor.getAllValues();
+        assertEquals(officialUri1, sent.get(0).uri(), "First request must be to official repository origin");
+        assertEquals(releaseAssetsTarget, sent.get(1).uri(), "Second request must be to release-assets delivery host");
+        assertEquals(officialUri2, sent.get(2).uri(), "Third request must be to official repository origin");
+        assertEquals(objectsTarget, sent.get(3).uri(), "Fourth request must be to objects delivery host");
     }
 
     @Test
@@ -2412,33 +2500,103 @@ class DefaultUpdateServiceTest {
         when(mockClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
 
         URI officialUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar");
-        URI hopTarget = URI.create("https://objects.githubusercontent.com/hop");
+        List<URI> hops = List.of(
+                URI.create("https://objects.githubusercontent.com/hop1"),
+                URI.create("https://objects.githubusercontent.com/hop2"),
+                URI.create("https://objects.githubusercontent.com/hop3"),
+                URI.create("https://objects.githubusercontent.com/hop4"),
+                URI.create("https://objects.githubusercontent.com/hop5"),
+                URI.create("https://objects.githubusercontent.com/hop6")
+        );
 
-        @SuppressWarnings("unchecked")
-        java.net.http.HttpResponse<InputStream> hopResponse = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
-        when(hopResponse.statusCode()).thenReturn(302);
-        when(hopResponse.uri()).thenReturn(hopTarget);
-        when(hopResponse.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(hopTarget.toString())), (k, v) -> true));
-        when(hopResponse.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+        when(mockClient.<InputStream>send(any(), any())).thenAnswer(inv -> {
+            HttpRequest req = inv.getArgument(0);
+            URI uri = req.uri();
 
-        when(mockClient.<InputStream>send(any(), any())).thenReturn(hopResponse);
+            @SuppressWarnings("unchecked")
+            java.net.http.HttpResponse<InputStream> resp = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+            when(resp.statusCode()).thenReturn(302);
+            when(resp.uri()).thenReturn(uri);
+            when(resp.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+
+            if (officialUri.equals(uri)) {
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(hops.get(0).toString())), (k, v) -> true));
+                return resp;
+            }
+            int idx = hops.indexOf(uri);
+            if (idx >= 0 && idx < hops.size() - 1) {
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(hops.get(idx + 1).toString())), (k, v) -> true));
+                return resp;
+            }
+            when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(hops.get(hops.size() - 1).toString())), (k, v) -> true));
+            return resp;
+        });
 
         JdkHttpTransport transport = new JdkHttpTransport(mockClient);
         IOException ex = assertThrows(IOException.class, () ->
                 transport.executeGet(officialUri, Map.of(), Duration.ofSeconds(5)));
         assertTrue(ex.getMessage().contains("Too many redirects"), "Must reject redirect loop exceeding max hops: " + ex.getMessage());
+
+        // Verify exact send count: initial request + 5 redirects = 6 sends
+        ArgumentCaptor<HttpRequest> captor = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(mockClient, times(6)).send(captor.capture(), any());
+        List<URI> sent = captor.getAllValues().stream().map(HttpRequest::uri).toList();
+        assertEquals(officialUri, sent.get(0));
+        assertEquals(hops.get(0), sent.get(1));
+        assertEquals(hops.get(1), sent.get(2));
+        assertEquals(hops.get(2), sent.get(3));
+        assertEquals(hops.get(3), sent.get(4));
+        assertEquals(hops.get(4), sent.get(5));
+
+        // Boundary success test: 5 hops that resolve to 200 OK on hop 5 succeeds
+        HttpClient boundaryClient = mock(HttpClient.class);
+        when(boundaryClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
+        byte[] payload = "SUCCESS_AT_5_HOPS".getBytes(StandardCharsets.UTF_8);
+
+        when(boundaryClient.<InputStream>send(any(), any())).thenAnswer(inv -> {
+            HttpRequest req = inv.getArgument(0);
+            URI uri = req.uri();
+
+            @SuppressWarnings("unchecked")
+            java.net.http.HttpResponse<InputStream> resp = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+            when(resp.uri()).thenReturn(uri);
+
+            if (officialUri.equals(uri)) {
+                when(resp.statusCode()).thenReturn(302);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(hops.get(0).toString())), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+                return resp;
+            }
+            int idx = hops.indexOf(uri);
+            if (idx >= 0 && idx < 4) {
+                when(resp.statusCode()).thenReturn(302);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(hops.get(idx + 1).toString())), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+                return resp;
+            }
+            // Hop 4 -> hop 5 returns 200 OK
+            when(resp.statusCode()).thenReturn(200);
+            when(resp.headers()).thenReturn(HttpHeaders.of(Map.of(), (k, v) -> true));
+            when(resp.body()).thenReturn(new ByteArrayInputStream(payload));
+            return resp;
+        });
+
+        JdkHttpTransport boundaryTransport = new JdkHttpTransport(boundaryClient);
+        HttpTransport.HttpResponse boundaryRes = boundaryTransport.executeGet(officialUri, Map.of(), Duration.ofSeconds(5));
+        assertEquals(200, boundaryRes.statusCode());
+        assertArrayEquals(payload, boundaryRes.body().readAllBytes());
     }
 
     @Test
     @DisplayName("Full download succeeds through redirect to release-assets.githubusercontent.com with valid checksum")
-    void fullDownloadSucceedsThroughReleaseAssetsRedirectWithValidChecksum() throws IOException {
+    void fullDownloadSucceedsThroughReleaseAssetsRedirectWithValidChecksum() throws IOException, InterruptedException {
         byte[] jarBytes = "DISCORD_TOWNY_1_0_0_RELEASE_JAR".getBytes(StandardCharsets.UTF_8);
         String expectedChecksum = sha256Hex(jarBytes);
 
         String releaseJson = """
                 {
                   "tag_name": "v1.0.0",
-                  "body": "SHA-256: %s\\nFix delivery host",
+                  "body": "Fix delivery host without sha in body",
                   "assets": [
                     {
                       "name": "DiscordTowny-1.0.0.jar",
@@ -2450,21 +2608,57 @@ class DefaultUpdateServiceTest {
                     }
                   ]
                 }
-                """.formatted(expectedChecksum);
+                """;
 
         String sha256AssetContent = expectedChecksum + "  DiscordTowny-1.0.0.jar\n";
 
-        HttpTransport transport = (uri, headers, timeout) -> {
-            String url = uri.toString();
-            if (url.contains("releases/latest")) {
-                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
-            } else if (url.contains(".sha256")) {
-                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(sha256AssetContent.getBytes(StandardCharsets.UTF_8)));
-            } else if (url.contains("DiscordTowny-1.0.0.jar")) {
-                return new HttpTransport.HttpResponse(200, Map.of("Content-Length", String.valueOf(jarBytes.length)), new ByteArrayInputStream(jarBytes));
+        HttpClient mockClient = mock(HttpClient.class);
+        when(mockClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
+
+        URI metadataUri = URI.create("https://api.github.com/repos/Dasannn/DiscordxTowny/releases/latest");
+        URI jarOriginUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar");
+        URI jarCdnUri = URI.create("https://release-assets.githubusercontent.com/github-production-release-asset/1376593898/cb094ea3?sp=r&sig=jar");
+        URI checksumOriginUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar.sha256");
+        URI checksumCdnUri = URI.create("https://release-assets.githubusercontent.com/github-production-release-asset/1376593898/cb094ea3?sp=r&sig=sha");
+
+        when(mockClient.<InputStream>send(any(), any())).thenAnswer(inv -> {
+            HttpRequest req = inv.getArgument(0);
+            URI uri = req.uri();
+
+            @SuppressWarnings("unchecked")
+            java.net.http.HttpResponse<InputStream> resp = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+            when(resp.uri()).thenReturn(uri);
+
+            if (metadataUri.equals(uri)) {
+                when(resp.statusCode()).thenReturn(200);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of(), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+                return resp;
+            } else if (checksumOriginUri.equals(uri)) {
+                when(resp.statusCode()).thenReturn(302);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(checksumCdnUri.toString())), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+                return resp;
+            } else if (checksumCdnUri.equals(uri)) {
+                when(resp.statusCode()).thenReturn(200);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of(), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(sha256AssetContent.getBytes(StandardCharsets.UTF_8)));
+                return resp;
+            } else if (jarOriginUri.equals(uri)) {
+                when(resp.statusCode()).thenReturn(302);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(jarCdnUri.toString())), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+                return resp;
+            } else if (jarCdnUri.equals(uri)) {
+                when(resp.statusCode()).thenReturn(200);
+                when(resp.headers()).thenReturn(HttpHeaders.of(Map.of("Content-Length", List.of(String.valueOf(jarBytes.length))), (k, v) -> true));
+                when(resp.body()).thenReturn(new ByteArrayInputStream(jarBytes));
+                return resp;
             }
-            throw new IOException("Unexpected URI: " + uri);
-        };
+            throw new IOException("Unexpected request to " + uri);
+        });
+
+        JdkHttpTransport transport = new JdkHttpTransport(mockClient);
 
         DefaultUpdateService service = new DefaultUpdateService(
                 "0.1.0-SNAPSHOT",
@@ -2499,16 +2693,48 @@ class DefaultUpdateServiceTest {
         assertTrue(service.isUpdatePending());
 
         assertEquals("LIVE_JAR_CURRENT_VERSION_BYTES", Files.readString(activeJar));
+
+        ArgumentCaptor<HttpRequest> captor = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(mockClient, atLeast(5)).send(captor.capture(), any());
+        List<URI> sentUris = captor.getAllValues().stream().map(HttpRequest::uri).toList();
+        assertTrue(sentUris.contains(metadataUri), "Must request release metadata from official API");
+        assertTrue(sentUris.contains(checksumOriginUri), "Must request checksum from official repo origin");
+        assertTrue(sentUris.contains(checksumCdnUri), "Must follow redirect to delivery host CDN for checksum");
+        assertTrue(sentUris.contains(jarOriginUri), "Must request jar from official repo origin");
+        assertTrue(sentUris.contains(jarCdnUri), "Must follow redirect to delivery host CDN for jar bytes");
     }
 
     @Test
     @DisplayName("Checksum mismatch after release-assets.githubusercontent.com delivery discards download and leaves no remnants")
-    void checksumMismatchAfterDeliveryDiscardsDownloadWithoutRemnants() throws IOException {
+    void checksumMismatchAfterDeliveryDiscardsDownloadWithoutRemnants() throws Exception {
         byte[] tamperedJar = "TAMPERED_BYTES_FROM_CDN".getBytes(StandardCharsets.UTF_8);
         String legitimateSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-        HttpTransport transport = (uri, headers, timeout) ->
-                new HttpTransport.HttpResponse(200, Map.of("Content-Length", String.valueOf(tamperedJar.length)), new ByteArrayInputStream(tamperedJar));
+        HttpClient mockClient = mock(HttpClient.class);
+        when(mockClient.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
+
+        URI jarOriginUri = URI.create("https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar");
+        URI jarCdnUri = URI.create("https://release-assets.githubusercontent.com/github-production-release-asset/1376593898/cb094ea3?sp=r&sig=tampered");
+
+        @SuppressWarnings("unchecked")
+        java.net.http.HttpResponse<InputStream> redirResp = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(redirResp.statusCode()).thenReturn(302);
+        when(redirResp.uri()).thenReturn(jarOriginUri);
+        when(redirResp.headers()).thenReturn(HttpHeaders.of(Map.of("Location", List.of(jarCdnUri.toString())), (k, v) -> true));
+        when(redirResp.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+
+        @SuppressWarnings("unchecked")
+        java.net.http.HttpResponse<InputStream> okResp = (java.net.http.HttpResponse<InputStream>) mock(java.net.http.HttpResponse.class);
+        when(okResp.statusCode()).thenReturn(200);
+        when(okResp.uri()).thenReturn(jarCdnUri);
+        when(okResp.headers()).thenReturn(HttpHeaders.of(Map.of("Content-Length", List.of(String.valueOf(tamperedJar.length))), (k, v) -> true));
+        when(okResp.body()).thenReturn(new ByteArrayInputStream(tamperedJar));
+
+        when(mockClient.<InputStream>send(any(), any()))
+                .thenReturn(redirResp)
+                .thenReturn(okResp);
+
+        JdkHttpTransport transport = new JdkHttpTransport(mockClient);
 
         DefaultUpdateService service = new DefaultUpdateService(
                 "0.1.0-SNAPSHOT",
@@ -2528,13 +2754,20 @@ class DefaultUpdateServiceTest {
 
         UpdateService.Release release = new UpdateService.Release(
                 "1.0.0",
-                "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar",
+                jarOriginUri.toString(),
                 legitimateSha,
                 "Release notes"
         );
 
         UpdateService.DownloadResult result = service.download(release).join();
         assertEquals(UpdateService.DownloadResult.CHECKSUM_MISMATCH, result);
+
+        // Verify transport calls occurred and followed redirect to delivery host CDN
+        ArgumentCaptor<HttpRequest> captor = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(mockClient, times(2)).send(captor.capture(), any());
+        List<HttpRequest> sent = captor.getAllValues();
+        assertEquals(jarOriginUri, sent.get(0).uri());
+        assertEquals(jarCdnUri, sent.get(1).uri());
 
         Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
         assertFalse(Files.exists(stagedJar));
@@ -2550,80 +2783,17 @@ class DefaultUpdateServiceTest {
     @Test
     @DisplayName("Failed check marks isLastCheckFailed, silences duplicate warnings, and renders check-failed rather than up-to-date")
     void failedCheckMarksStateAndRendersCheckFailedNeverUpToDate() {
-        HttpTransport failingTransport = (uri, headers, timeout) -> {
-            throw new IOException("Untrusted destination rejected by official source policy: https://release-assets.githubusercontent.com/...");
-        };
-
-        DefaultUpdateService service = new DefaultUpdateService(
-                "0.1.0-SNAPSHOT",
-                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
-                updateFolder,
-                activeJar,
-                "DiscordTowny.jar",
-                failingTransport,
-                testLogger,
-                auditEvents::add,
-                ForkJoinPool.commonPool(),
-                null,
-                false,
-                50 * 1024 * 1024L,
-                Duration.ofSeconds(5)
-        );
-
-        assertEquals(UpdateService.CheckStatus.NOT_CHECKED, service.checkStatus());
-        assertFalse(service.isLastCheckFailed());
-
-        // First check: fails
-        Optional<UpdateService.Release> res1 = service.checkForUpdate().join();
-        assertTrue(res1.isEmpty());
-        assertTrue(service.isLastCheckFailed(), "isLastCheckFailed must be true after network failure");
-        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
-        assertTrue(service.getLastCheckError().isPresent());
-        assertTrue(service.getLastCheckError().get().contains("could not reach GitHub"));
-
-        long warningsCount1 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
-        assertEquals(1, warningsCount1, "First network failure must log a warning");
-
-        // Second check: fails again -> warning must be silenced
-        Optional<UpdateService.Release> res2 = service.checkForUpdate().join();
-        assertTrue(res2.isEmpty());
-        assertTrue(service.isLastCheckFailed());
-        long warningsCount2 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
-        assertEquals(1, warningsCount2, "Consecutive network failure warning must be silenced");
-
-        // Check rendered status messages in English
-        Messages enMessages = EnglishMessages.bundled();
-        List<String> enLines = service.renderStatusMessages(enMessages);
-        assertFalse(enLines.isEmpty());
-        boolean enHasFailed = enLines.stream().anyMatch(l -> l.contains("Could not check for updates"));
-        boolean enHasUpToDate = enLines.stream().anyMatch(l -> l.contains("You are on the latest version"));
-        assertTrue(enHasFailed, "Status must render 'Could not check for updates', got: " + enLines);
-        assertFalse(enHasUpToDate, "Status must NEVER render 'You are on the latest version' when check failed!");
-
-        // Check rendered status messages in Spanish
-        Messages esMessages = loadSpanishMessages();
-        List<String> esLines = service.renderStatusMessages(esMessages);
-        assertFalse(esLines.isEmpty());
-        boolean esHasFailed = esLines.stream().anyMatch(l -> l.contains("No se pudo comprobar si hay actualizaciones"));
-        boolean esHasUpToDate = esLines.stream().anyMatch(l -> l.contains("Estás en la última versión"));
-        assertTrue(esHasFailed, "Status must render 'No se pudo comprobar si hay actualizaciones', got: " + esLines);
-        assertFalse(esHasUpToDate, "Status must NEVER render 'Estás en la última versión' when check failed!");
-    }
-
-    @Test
-    @DisplayName("Recovery after failed check clears error state and renders up-to-date")
-    void recoveryAfterFailedCheckClearsErrorState() {
-        AtomicBoolean fail = new AtomicBoolean(true);
+        AtomicBoolean failing = new AtomicBoolean(true);
         String releaseJson = """
                 {
-                  "tag_name": "v0.1.0-SNAPSHOT",
+                  "tag_name": "v1.0.0",
                   "body": "SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                  "assets": [{"name": "DiscordTowny-0.1.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v0.1.0/DiscordTowny-0.1.0.jar"}]
+                  "assets": [{"name": "DiscordTowny-1.0.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar"}]
                 }
                 """;
 
         HttpTransport transport = (uri, headers, timeout) -> {
-            if (fail.get()) {
+            if (failing.get()) {
                 throw new IOException("Connection refused");
             }
             return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
@@ -2645,12 +2815,133 @@ class DefaultUpdateServiceTest {
                 Duration.ofSeconds(5)
         );
 
-        // Fail first
+        // 1. Initial state: NOT_CHECKED
+        assertEquals(UpdateService.CheckStatus.NOT_CHECKED, service.checkStatus());
+        assertFalse(service.isLastCheckFailed());
+        assertFalse(service.hasCheckedAtLeastOnce());
+
+        Messages enMessages = EnglishMessages.bundled();
+        List<String> initialEnLines = service.renderStatusMessages(enMessages);
+        assertTrue(initialEnLines.stream().anyMatch(l -> l.contains("No update check has been performed yet.")),
+                "Initial status must render 'No update check has been performed yet.', got: " + initialEnLines);
+        assertFalse(initialEnLines.stream().anyMatch(l -> l.contains("You are on the latest version")),
+                "Initial status must NEVER render 'You are on the latest version'!");
+
+        Messages esMessages = loadSpanishMessages();
+        List<String> initialEsLines = service.renderStatusMessages(esMessages);
+        assertTrue(initialEsLines.stream().anyMatch(l -> l.contains("Aún no se ha realizado ninguna comprobación de actualizaciones.")),
+                "Initial Spanish status must render not-checked, got: " + initialEsLines);
+        assertFalse(initialEsLines.stream().anyMatch(l -> l.contains("Estás en la última versión")),
+                "Initial Spanish status must NEVER render 'Estás en la última versión'!");
+
+        // 2. First check: fails
+        Optional<UpdateService.Release> res1 = service.checkForUpdate().join();
+        assertTrue(res1.isEmpty());
+        assertTrue(service.isLastCheckFailed(), "isLastCheckFailed must be true after network failure");
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().contains("could not reach GitHub"));
+
+        long warningsCount1 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
+        assertEquals(1, warningsCount1, "First network failure must log a warning");
+
+        // Second check: fails again -> warning must be silenced
+        Optional<UpdateService.Release> res2 = service.checkForUpdate().join();
+        assertTrue(res2.isEmpty());
+        assertTrue(service.isLastCheckFailed());
+        long warningsCount2 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
+        assertEquals(1, warningsCount2, "Consecutive network failure warning must be silenced");
+
+        // Check rendered status messages in English
+        List<String> enLines = service.renderStatusMessages(enMessages);
+        assertFalse(enLines.isEmpty());
+        boolean enHasFailedIntro = enLines.stream().anyMatch(l -> l.contains("Could not check for updates"));
+        boolean enHasFailedReason = enLines.stream().anyMatch(l -> l.contains("could not reach GitHub"));
+        boolean enHasUpToDate = enLines.stream().anyMatch(l -> l.contains("You are on the latest version"));
+        assertTrue(enHasFailedIntro, "Status must render 'Could not check for updates', got: " + enLines);
+        assertTrue(enHasFailedReason, "Status must render translated reason 'could not reach GitHub', got: " + enLines);
+        assertFalse(enHasUpToDate, "Status must NEVER render 'You are on the latest version' when check failed!");
+
+        // Check rendered status messages in Spanish (fully localized, zero English leakage)
+        List<String> esLines = service.renderStatusMessages(esMessages);
+        assertFalse(esLines.isEmpty());
+        boolean esHasFailedIntro = esLines.stream().anyMatch(l -> l.contains("No se pudo comprobar si hay actualizaciones"));
+        boolean esHasFailedReason = esLines.stream().anyMatch(l -> l.contains("no se pudo conectar con GitHub"));
+        boolean esHasUpToDate = esLines.stream().anyMatch(l -> l.contains("Estás en la última versión"));
+        boolean esHasEnglishLeak = esLines.stream().anyMatch(l -> l.contains("could not reach GitHub"));
+        assertTrue(esHasFailedIntro, "Status must render 'No se pudo comprobar si hay actualizaciones', got: " + esLines);
+        assertTrue(esHasFailedReason, "Status must render Spanish localized reason 'no se pudo conectar con GitHub', got: " + esLines);
+        assertFalse(esHasUpToDate, "Status must NEVER render 'Estás en la última versión' when check failed!");
+        assertFalse(esHasEnglishLeak, "Spanish status must not contain raw English error text!");
+
+        // 3. Failure after cached discovery: reports BOTH cached update and failure
+        // First, allow a check to succeed and cache release
+        failing.set(false);
+        service.checkForUpdate().join();
+        assertFalse(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+
+        // Now subsequent check fails
+        failing.set(true);
+        service.checkForUpdate().join();
+        assertTrue(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        List<String> cachedThenFailedLines = service.renderStatusMessages(enMessages);
+        assertTrue(cachedThenFailedLines.stream().anyMatch(l -> l.contains("There is a new version")),
+                "Must preserve available update info in status, got: " + cachedThenFailedLines);
+        assertTrue(cachedThenFailedLines.stream().anyMatch(l -> l.contains("Could not check for updates")),
+                "Must report check failure even when cached update is present, got: " + cachedThenFailedLines);
+        assertFalse(cachedThenFailedLines.stream().anyMatch(l -> l.contains("You are on the latest version")));
+    }
+
+    @Test
+    @DisplayName("Recovery after failed check clears error state and renders up-to-date")
+    void recoveryAfterFailedCheckClearsErrorState() {
+        AtomicBoolean fail = new AtomicBoolean(true);
+        AtomicInteger status304 = new AtomicInteger(0);
+
+        String releaseJson = """
+                {
+                  "tag_name": "v0.1.0-SNAPSHOT",
+                  "body": "SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "assets": [{"name": "DiscordTowny-0.1.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v0.1.0/DiscordTowny-0.1.0.jar"}]
+                }
+                """;
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (fail.get()) {
+                throw new IOException("Connection refused");
+            }
+            if (status304.get() > 0) {
+                return new HttpTransport.HttpResponse(304, Map.of(), new ByteArrayInputStream(new byte[0]));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "0.1.0-SNAPSHOT",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        // 1. Initial failure
         service.checkForUpdate().join();
         assertTrue(service.isLastCheckFailed());
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+        long warningsCount1 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
+        assertEquals(1, warningsCount1);
 
-        // Recover
+        // 2. Recover via 200 OK
         fail.set(false);
         service.checkForUpdate().join();
         assertFalse(service.isLastCheckFailed(), "isLastCheckFailed must reset to false after successful check");
@@ -2659,5 +2950,331 @@ class DefaultUpdateServiceTest {
 
         List<String> enLines = service.renderStatusMessages(EnglishMessages.bundled());
         assertTrue(enLines.stream().anyMatch(l -> l.contains("You are on the latest version")));
+        assertFalse(enLines.stream().anyMatch(l -> l.contains("Could not check for updates")),
+                "Recovered status must not contain failure line: " + enLines);
+
+        // 3. New outage after recovery: warning suppression must be reset so new failure is logged
+        fail.set(true);
+        service.checkForUpdate().join();
+        assertTrue(service.isLastCheckFailed());
+        long warningsCount2 = logRecords.stream().filter(r -> r.getLevel() == Level.WARNING).count();
+        assertEquals(2, warningsCount2, "Warning suppression must reset after recovery so next failure is logged");
+
+        // 4. Recover via 304 Not Modified
+        fail.set(false);
+        status304.set(1);
+        service.checkForUpdate().join();
+        assertFalse(service.isLastCheckFailed(), "isLastCheckFailed must reset to false after 304 Not Modified");
+        assertTrue(service.getLastCheckError().isEmpty());
+        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, service.checkStatus());
+    }
+
+    @Test
+    @DisplayName("Same line declaration with invalid checksum token refuses release even with valid checksum asset (F2)")
+    void sameLineMultipleChecksumsWithInvalidRefusesReleaseEvenWithValidChecksumAsset() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String sameLineBody = "SHA-256: " + validHex + " SHA-256: invalid";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """.formatted(sameLineBody);
+
+        String validShaAsset = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            String url = uri.toString();
+            if (url.contains(".sha256")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(validShaAsset.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        assertTrue(res.isEmpty(), "Release declaring invalid checksum token on same line must be refused");
+        assertTrue(service.isLastCheckFailed());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("checksum"));
+    }
+
+    @Test
+    @DisplayName("Same line conflicting checksum declarations refuse release even with valid checksum asset (F2)")
+    void sameLineConflictingChecksumsRefusesReleaseEvenWithValidChecksumAsset() {
+        String validHex1 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String validHex2 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+        String sameLineBody = "SHA-256: " + validHex1 + " SHA-256: " + validHex2;
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """.formatted(sameLineBody);
+
+        String validShaAsset = validHex1 + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            String url = uri.toString();
+            if (url.contains(".sha256")) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(validShaAsset.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        assertTrue(res.isEmpty(), "Release declaring conflicting checksum tokens on same line must be refused");
+        assertTrue(service.isLastCheckFailed());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+    }
+
+    @Test
+    @DisplayName("Rate limit response marks check failed even when cached release is returned (F3)")
+    void rateLimitFailureMarksCheckFailedEvenWhenCachedReleaseIsUsed() {
+        AtomicInteger callCount = new AtomicInteger(0);
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "assets": [{"name": "DiscordTowny-1.10.0.jar", "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"}]
+                }
+                """;
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            int call = callCount.incrementAndGet();
+            if (call == 1) {
+                return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+            }
+            // Second call: 429 rate limited
+            return new HttpTransport.HttpResponse(429, Map.of(
+                    "x-ratelimit-remaining", "0",
+                    "x-ratelimit-reset", String.valueOf(Instant.now().getEpochSecond() + 3600)
+            ), new ByteArrayInputStream(new byte[0]));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        // First check succeeds
+        Optional<UpdateService.Release> res1 = service.checkForUpdate().join();
+        assertTrue(res1.isPresent());
+        assertFalse(service.isLastCheckFailed());
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, service.checkStatus());
+
+        // Second check hits 429: cached release is returned, but last check MUST be marked failed
+        Optional<UpdateService.Release> res2 = service.checkForUpdate().join();
+        assertTrue(res2.isPresent(), "Cached release must still be returned for convenience");
+        assertTrue(service.isLastCheckFailed(), "isLastCheckFailed must be true after rate limit");
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("rate limit"));
+
+        // Third check hits rate limit window shortcut before expiration: cached release returned, check failed
+        Optional<UpdateService.Release> res3 = service.checkForUpdate().join();
+        assertTrue(res3.isPresent());
+        assertTrue(service.isLastCheckFailed());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+    }
+
+    @Test
+    @DisplayName("Consecutive different check failures update lastCheckError to the latest reason (F6)")
+    void consecutiveDifferentFailuresUpdatesLastCheckErrorToLatestReason() {
+        AtomicInteger callCount = new AtomicInteger(0);
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            int call = callCount.incrementAndGet();
+            if (call == 1) {
+                throw new IOException("Connection refused");
+            }
+            // Call 2: 200 OK with malformed JSON
+            return new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream("INVALID_JSON".getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        // 1st failure: network error
+        service.checkForUpdate().join();
+        assertTrue(service.isLastCheckFailed());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().contains("could not reach GitHub"));
+
+        // 2nd failure: malformed JSON parse error
+        service.checkForUpdate().join();
+        assertTrue(service.isLastCheckFailed());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertFalse(service.getLastCheckError().get().contains("could not reach GitHub"),
+                "Stale network error must not persist; got: " + service.getLastCheckError().get());
+        assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("parse"));
+    }
+
+    @Test
+    @DisplayName("Release with multiple runnable jars without disambiguation is refused as ambiguous")
+    void releaseWithMultipleRunnableJarsAmbiguityIsRefused() {
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-Other-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-Other-1.10.0.jar"
+                    }
+                  ]
+                }
+                """;
+
+        HttpTransport transport = (uri, headers, timeout) ->
+                new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        assertTrue(res.isEmpty(), "Multiple runnable jars without unique canonical match must be refused");
+        assertTrue(service.isLastCheckFailed());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("ambiguous"));
+    }
+
+    @Test
+    @DisplayName("Release discovery without published checksum in body or asset is refused")
+    void releaseDiscoveryWithoutPublishedChecksumIsRefused() {
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "Release notes with no checksum at all",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """;
+
+        HttpTransport transport = (uri, headers, timeout) ->
+                new HttpTransport.HttpResponse(200, Map.of(), new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        Optional<UpdateService.Release> res = service.checkForUpdate().join();
+        assertTrue(res.isEmpty(), "Release without published checksum must be refused at discovery");
+        assertTrue(service.isLastCheckFailed());
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, service.checkStatus());
+        assertTrue(service.getLastCheckError().isPresent());
+        assertTrue(service.getLastCheckError().get().toLowerCase(Locale.ROOT).contains("no published checksum"));
     }
 }

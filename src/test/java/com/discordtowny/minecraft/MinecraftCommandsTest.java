@@ -54,6 +54,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -1547,6 +1548,8 @@ class MinecraftCommandsTest {
         when(updateService.currentVersion()).thenReturn("1.0.0");
         when(updateService.isUpdatePending()).thenReturn(false);
         when(updateService.getAvailableUpdate()).thenReturn(Optional.empty());
+        when(updateService.checkStatus()).thenReturn(UpdateService.CheckStatus.UP_TO_DATE);
+        when(updateService.isLastCheckFailed()).thenReturn(false);
 
         LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
         Player admin = mock(Player.class);
@@ -1618,6 +1621,136 @@ class MinecraftCommandsTest {
         root.getChild("admin").getChild("update").getCommand().run(ctx);
 
         verify(admin).sendMessage(messages.get("updates.download-failed", Map.of("reason", "error de red")));
+    }
+
+    @Test
+    void adminUpdateStatusReportsNotCheckedWhenNeverChecked() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.empty());
+        when(updateService.checkStatus()).thenReturn(UpdateService.CheckStatus.NOT_CHECKED);
+        when(updateService.isLastCheckFailed()).thenReturn(false);
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.not-checked"));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateStatusReportsCheckFailedWhenLastCheckFailed() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.empty());
+        when(updateService.checkStatus()).thenReturn(UpdateService.CheckStatus.CHECK_FAILED);
+        when(updateService.isLastCheckFailed()).thenReturn(true);
+        when(updateService.getLastCheckError()).thenReturn(Optional.of("could not reach GitHub (ConnectException)"));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateStatusReportsAvailableAndCheckFailedWhenCachedCheckFailed() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        UpdateService.Release release = new UpdateService.Release("2.0.0", "url", "hash", "Notes");
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.of(release));
+        when(updateService.isBreaking(release)).thenReturn(false);
+        when(updateService.checkStatus()).thenReturn(UpdateService.CheckStatus.CHECK_FAILED);
+        when(updateService.isLastCheckFailed()).thenReturn(true);
+        when(updateService.getLastCheckError()).thenReturn(Optional.of("GitHub API rate limit exceeded"));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.available", Map.of("latest", "2.0.0", "current", "1.0.0")));
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateReportsCheckFailedWhenCheckFails() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(updateService.isLastCheckFailed()).thenReturn(true);
+        when(updateService.getLastCheckError()).thenReturn(Optional.of("could not reach GitHub (TimeoutException)"));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateReportsCheckFailedWhenCheckThrowsExceptionally() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        CompletableFuture<Optional<UpdateService.Release>> failed = new CompletableFuture<>();
+        failed.completeExceptionally(new java.io.IOException("Untrusted destination rejected by official source policy"));
+        when(updateService.checkForUpdate()).thenReturn(failed);
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
+    void adminUpdateForConsoleReportsCheckFailedInEnglish() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.checkForUpdate()).thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+        when(updateService.isLastCheckFailed()).thenReturn(true);
+        when(updateService.getLastCheckError()).thenReturn(Optional.of("could not reach GitHub"));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        ConsoleCommandSender console = mock(ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        CommandContext<CommandSourceStack> ctx = createContext(console);
+        root.getChild("admin").getChild("update").getCommand().run(ctx);
+
+        verify(console).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("EN:updates.check-failed")));
+        verify(console, never()).sendMessage(consoleMessages.get("updates.up-to-date"));
     }
 
     @Test

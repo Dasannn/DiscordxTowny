@@ -131,6 +131,16 @@ updates:
   result-network-error: "network error"
   result-too-large: "file too large"
   result-io-error: "I/O error"
+  check-reason-network: "could not reach GitHub"
+  check-reason-rate-limited: "GitHub rate limit exceeded"
+  check-reason-no-jar: "no runnable jar found in release"
+  check-reason-ambiguous-jar: "multiple ambiguous jar assets"
+  check-reason-no-checksum: "no published checksum found"
+  check-reason-invalid-checksum: "invalid or ambiguous checksum"
+  check-reason-timeout: "request timed out"
+  check-reason-interrupted: "update check interrupted"
+  check-reason-parse-error: "could not parse release metadata"
+  not-checked: "&7No update check has been performed yet."
 
 admin:
   list-header: "&b{count} &7registered spaces:"

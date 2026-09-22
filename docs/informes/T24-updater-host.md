@@ -217,3 +217,91 @@ However, `lastCheckError` had captured raw exception text without the standard `
    - It **never** emits `updates.up-to-date` when `lastCheckFailed` is `true`.
    - Network failure log deduplication (`networkErrorLogged`) silences duplicate console warnings after the first failure until successful recovery.
 
+---
+
+## 6. Round 3 — Production Command Wiring and Review Resolutions
+
+### 6.1 Findings and Resolutions
+
+#### F1 (Blocking): Production Command Wiring in `MinecraftCommands.java`
+- **Problem**: Production commands `/dt admin update` and `/dt admin update status` previously treated an empty `Optional<Release>` from `checkForUpdate()` as `updates.up-to-date`. A server unable to reach GitHub was incorrectly told it was on the latest version. Furthermore, `checkStatus()` and `renderStatusMessages()` were unconsumed by production commands.
+- **Resolution**:
+  - The zone was widened to include `/dt admin update` subcommands in `src/main/java/com/discordtowny/minecraft/MinecraftCommands.java` and tests in `src/test/java/com/discordtowny/minecraft/MinecraftCommandsTest.java`.
+  - Bare `/dt admin update` now queries `updateService.isLastCheckFailed()` upon completion of `checkForUpdate()`. When failed, it emits `updates.check-failed` formatted with the localized reason category, never claiming the server is up-to-date. In addition, `exceptionally(...)` completions map directly to `updates.check-failed`.
+  - `/dt admin update status` now explicitly distinguishes all four states:
+    1. **Never checked**: Sends `updates.status-current` followed by `updates.not-checked` (via `checkStatus() == CheckStatus.NOT_CHECKED`), never `updates.up-to-date`.
+    2. **Check failed**: Sends `updates.status-current` followed by `updates.check-failed` with the localized reason, never `updates.up-to-date`.
+    3. **Checked and up to date**: Sends `updates.status-current` followed by `updates.up-to-date`.
+    4. **Update available / downloaded**: Sends `updates.status-current` followed by `updates.available` or `updates.downloaded` (with breaking change warnings and notes summaries).
+    5. **Cached update present with failed latest check**: Sends `updates.status-current`, then reports the cached update, AND reports the check failure via `updates.check-failed`.
+  - Covered by unit tests in `MinecraftCommandsTest`:
+    - `adminUpdateStatusReportsNotCheckedWhenNeverChecked`
+    - `adminUpdateStatusReportsCheckFailedWhenLastCheckFailed`
+    - `adminUpdateStatusReportsAvailableAndCheckFailedWhenCachedCheckFailed`
+    - `adminUpdateReportsCheckFailedWhenCheckFails`
+    - `adminUpdateReportsCheckFailedWhenCheckThrowsExceptionally`
+    - `adminUpdateForConsoleReportsCheckFailedInEnglish`
+
+#### F2 (Blocking): Same-Line Checksum Declaration Scanner
+- **Problem**: `extractSha256FromBody()` used `labelMatcher.find()` which processed only the first match on a line. A body line containing `SHA-256: <valid 64-hex> SHA-256: invalid` or conflicting valid declarations on the same line accepted the first declaration and ignored the second.
+- **Resolution**:
+  - Rewrote line inspection in `DefaultUpdateService.java` to scan every `(?i)(?:sha-?256(?:sum)?[:=\s]+)(\S+)` declaration on the line.
+  - Validates that every extracted token matches `^[a-fA-F0-9]{64}$`. Any invalid token anywhere on the line immediately causes the line to be rejected with `ExtractedSha256.InvalidOrAmbiguous`.
+  - Checks that multiple declarations on the same line declare identical hex digests; conflicting declarations immediately return `ExtractedSha256.InvalidOrAmbiguous`.
+  - Added unit test `sameLineMultipleChecksumsWithInvalidRefusesReleaseEvenWithValidChecksumAsset`: tests a release with `SHA-256: <valid 64-hex> SHA-256: invalid` on one line where the release provides an otherwise valid `.sha256` asset matching the valid hash. The release is refused and does not fall back to the asset.
+  - Added unit test `sameLineConflictingChecksumsRefusesReleaseEvenWithValidChecksumAsset`: tests conflicting hashes on the same line with a valid asset; release is refused.
+
+#### F3 (Important): Status Reporting and Cache State Separation
+- **Problem**: When a release was cached from an earlier check, hitting an HTTP 403/429 rate limit or rate-limit shortcut returned the cached release before recording failure, leaving `isLastCheckFailed()` false and `checkStatus()` as `UPDATE_AVAILABLE`. `renderStatusMessages()` took available/staged branches first and omitted failure. A fresh service rendered `updates.up-to-date` although `checkStatus()` was `NOT_CHECKED`.
+- **Resolution**:
+  - In `DefaultUpdateService.doCheckForUpdate()`, rate limit responses (HTTP 403, 429, and window shortcuts) explicitly mark `lastCheckFailed.set(true)`, record `lastCheckError`, and mark `hasCheckedAtLeastOnce.set(true)` before returning the cached release.
+  - Added `default boolean hasCheckedAtLeastOnce()` to `UpdateService`. On a fresh service where no check has completed, `checkStatus()` returns `CheckStatus.NOT_CHECKED`.
+  - `renderStatusMessages()` now renders `updates.not-checked` on a fresh service. If a cached or staged update is present AND `isLastCheckFailed()` is true, it preserves and outputs the update information AND appends the `updates.check-failed` message with the localized reason.
+  - Covered by unit tests `rateLimitFailureMarksCheckFailedEvenWhenCachedReleaseIsUsed` and `failedCheckMarksStateAndRendersCheckFailedNeverUpToDate`.
+
+#### F4 (Important): Localized Failure Reasons Across Message Catalogs
+- **Problem**: Only the outer sentence `updates.check-failed` was translated; its `{reason}` placeholder received raw English exception text (e.g. `could not reach GitHub (...)`, `Ambiguous jar assets in release`), causing Spanish messages to contain English leakage.
+- **Resolution**:
+  - Added message catalog keys to both `messages_en.yml` and `messages_es.yml`:
+    - `updates.check-reason-network`
+    - `updates.check-reason-rate-limited`
+    - `updates.check-reason-no-jar`
+    - `updates.check-reason-ambiguous-jar`
+    - `updates.check-reason-no-checksum`
+    - `updates.check-reason-invalid-checksum`
+    - `updates.check-reason-timeout`
+    - `updates.check-reason-interrupted`
+    - `updates.check-reason-parse-error`
+    - `updates.not-checked`
+  - Implemented `DefaultUpdateService.formatCheckFailureReason(String rawError, Messages msg)` to map failure diagnostics to the localized message catalog keys.
+  - Technical diagnostic details remain in English Java logs and `getLastCheckError()`.
+  - In `failedCheckMarksStateAndRendersCheckFailedNeverUpToDate`, verified Spanish output renders `no se pudo conectar con GitHub` with zero untranslated English text.
+
+#### F5 (Important): Administrator Join Notifications
+- **Problem**: `notifyAdminOnJoin()` in `DefaultUpdateService` previously omitted notifications when a check failed with no cached/pending release, and was not invoked by `PlayerJoinSyncListener`.
+- **Resolution**:
+  - `notifyAdminOnJoin()` was updated to send `updates.check-failed` with the localized reason when `isLastCheckFailed()` is true and notifications are enabled.
+  - *Zone boundary note*: Per task rules and permissions, `DiscordTownyPlugin.java` and `PlayerJoinSyncListener.java` are strictly outside the assigned zone (which is confined to the updater package, message catalogs, and `/dt admin update` subcommands in `MinecraftCommands.java`). The updater service's internal helper has been made fully correct.
+
+#### F6 (Important): Stale Failure Reason Replacement
+- **Problem**: `compareAndSet(null, ...)` in `doCheckForUpdate()` left an earlier network failure reason untouched if a later check completed with a parse error or missing metadata.
+- **Resolution**:
+  - Replaced `compareAndSet(null, ...)` with direct assignment for completed checks, ensuring each check attempt sets its specific diagnostic reason.
+  - In `parseRelease()`, explicit error strings are recorded for JSON parse failures, missing tag/name, and missing assets.
+  - Added unit test `consecutiveDifferentFailuresUpdatesLastCheckErrorToLatestReason`, verifying a network failure followed by malformed JSON updates `lastCheckError` to the parse error.
+
+---
+
+### 6.2 Test Audit Answers and Coverage Enhancements
+
+| Review Audit Point | Action Taken |
+| --- | --- |
+| **Test 1 (`updateSourcePolicyEnforcesExactDeliveryHostsOnRedirectOnly`)**: Did not test `attacker.githubusercontent.com`, `raw.githubusercontent.com`, ports, case, trailing dot. | Added assertions verifying redirect rejection for `attacker.githubusercontent.com`, `raw.githubusercontent.com`, `release-assets.githubusercontent.com:8443`, and trailing dot `release-assets.githubusercontent.com.`. Verified acceptance of uppercase host normalization and explicit standard port 443. |
+| **Test 2 (`jdkHttpTransportFollowsRedirectToDeliveryHosts`)**: Did not capture outgoing requests or test `objects.githubusercontent.com`. | Used `ArgumentCaptor<HttpRequest>` to prove the first send goes to the official origin and the second send goes to the delivery host CDN. Tested both `release-assets.githubusercontent.com` and `objects.githubusercontent.com`. |
+| **Test 3 (`jdkHttpTransportLimitsRedirectChain`)**: Did not verify send count, modeled first response on CDN rather than origin, lacked boundary success test. | Modeled initial send to official origin redirecting to CDN hops. Verified exact send count of 6 sends before `Too many redirects (limit 5)` is thrown. Added a 5-hop boundary success test that reaches 200 OK and completes without error. |
+| **Test 4 (`fullDownloadSucceedsThroughReleaseAssetsRedirectWithValidChecksum`)**: Injected lambda without 3xx/CDN hops; release body duplicate hash allowed skipping asset retrieval. | Rewired using real `JdkHttpTransport` and mock `HttpClient`. Placed no SHA in the release body to force asset retrieval. Verified metadata fetch (200), checksum redirect (302 -> 200 on CDN), and jar download redirect (302 -> 200 on CDN). Verified full download, digest verification, staging, and active-file preservation. |
+| **Test 5 (`checksumMismatchAfterDeliveryDiscardsDownloadWithoutRemnants`)**: Lambda transport without redirect hops; did not verify transport call. | Rewired using real `JdkHttpTransport`. Verified 302 redirect from official jar download URL to delivery host CDN. Asserted transport calls occurred, verified tampered bytes produce `CHECKSUM_MISMATCH`, and proved update folder is clean with active jar untouched. |
+| **Test 6 (`failedCheckMarksStateAndRendersCheckFailedNeverUpToDate`)**: Did not test `NOT_CHECKED` initial render; did not test failure after cached discovery; checked only fixed prefixes. | Tested initial `NOT_CHECKED` renders `updates.not-checked` and never up-to-date. Tested English and Spanish failure rendering with localized reason placeholder (`no se pudo conectar con GitHub`) and zero English leakage. Tested failure after cached discovery outputs both available update and check failure. |
+| **Test 7 (`recoveryAfterFailedCheckClearsErrorState`)**: Did not verify exclusion of failure line on recovery; did not verify warning suppression resets; lacked 304 recovery test. | Verified recovered output contains up-to-date and contains no failure line. Verified that an outage following recovery logs a new warning (suppression reset). Verified recovery via HTTP 304 Not Modified clears failure state. |
+| **Hostile redirect guard (`jdkHttpTransportRejectsUntrustedRedirect`)**: Did not stub response URI/body; failed before Location header check. | Stubbed `mockResponse.uri(officialUri)` and empty body, ensuring the policy exception triggers at Location header validation. Verified with `verify(mockClient)` that no request ever reached the untrusted host. Added tests for HTTPS downgrade and `raw.githubusercontent.com`. |
+| **Ambiguity & Missing Checksum Fixtures**: Lacked multiple runnable jar fixture and discovery without checksum fixture. | Added unit tests `releaseWithMultipleRunnableJarsAmbiguityIsRefused` and `releaseDiscoveryWithoutPublishedChecksumIsRefused`. |

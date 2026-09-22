@@ -78,6 +78,13 @@ public interface UpdateService {
     }
 
     /**
+     * Returns true if at least one update check has completed (successfully or with failure).
+     */
+    default boolean hasCheckedAtLeastOnce() {
+        return false;
+    }
+
+    /**
      * Returns the current status of update checking.
      */
     default CheckStatus checkStatus() {
@@ -86,6 +93,9 @@ public interface UpdateService {
         }
         if (getAvailableUpdate().isPresent()) {
             return CheckStatus.UPDATE_AVAILABLE;
+        }
+        if (!hasCheckedAtLeastOnce()) {
+            return CheckStatus.NOT_CHECKED;
         }
         return CheckStatus.UP_TO_DATE;
     }

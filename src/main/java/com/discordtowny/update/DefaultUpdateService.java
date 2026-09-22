@@ -405,6 +405,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     }
 
     @Override
+    public boolean hasCheckedAtLeastOnce() {
+        return hasCheckedAtLeastOnce.get();
+    }
+
+    @Override
     public CheckStatus checkStatus() {
         if (lastCheckFailed.get()) {
             return CheckStatus.CHECK_FAILED;
@@ -418,16 +423,54 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return CheckStatus.UP_TO_DATE;
     }
 
+    public static String formatCheckFailureReason(String rawError, Messages msg) {
+        if (rawError == null || rawError.isBlank()) {
+            return msg.label("general.unknown");
+        }
+        String lower = rawError.toLowerCase(Locale.ROOT);
+        if (lower.contains("timed out")) {
+            return msg.label("updates.check-reason-timeout");
+        }
+        if (lower.contains("rate limit")) {
+            return msg.label("updates.check-reason-rate-limited");
+        }
+        if (lower.contains("interrupted")) {
+            return msg.label("updates.check-reason-interrupted");
+        }
+        if (lower.contains("no runnable jar")) {
+            return msg.label("updates.check-reason-no-jar");
+        }
+        if (lower.contains("ambiguous jar")) {
+            return msg.label("updates.check-reason-ambiguous-jar");
+        }
+        if (lower.contains("no published checksum")) {
+            return msg.label("updates.check-reason-no-checksum");
+        }
+        if (lower.contains("checksum")) {
+            return msg.label("updates.check-reason-invalid-checksum");
+        }
+        if (lower.contains("parse") || lower.contains("missing release") || lower.contains("no assets")) {
+            return msg.label("updates.check-reason-parse-error");
+        }
+        if (lower.contains("could not reach github") || lower.contains("connection") || lower.contains("untrusted") || lower.contains("unexpected status")) {
+            return msg.label("updates.check-reason-network");
+        }
+        return msg.label("general.unknown");
+    }
+
     public List<String> renderStatusMessages(Messages msg) {
         List<String> result = new ArrayList<>();
         result.add(msg.plain("updates.status-current", Map.of("current", currentVersion)));
 
+        boolean hasUpdateInfo = false;
         if (isUpdatePending()) {
+            hasUpdateInfo = true;
             String ver = getAvailableUpdate()
                     .map(Release::version)
                     .orElse(currentVersion);
             result.add(msg.plain("updates.downloaded", Map.of("latest", ver)));
         } else if (getAvailableUpdate().isPresent()) {
+            hasUpdateInfo = true;
             Release release = getAvailableUpdate().get();
             result.add(msg.plain("updates.available", Map.of("latest", release.version(), "current", currentVersion)));
             if (isBreaking(release)) {
@@ -437,11 +480,17 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (!summary.isBlank()) {
                 result.add(msg.plain("updates.summary", Map.of("summary", summary)));
             }
-        } else if (isLastCheckFailed()) {
-            String reason = getLastCheckError().orElseGet(() -> msg.label("general.unknown"));
+        }
+
+        if (isLastCheckFailed()) {
+            String reason = formatCheckFailureReason(getLastCheckError().orElse(null), msg);
             result.add(msg.plain("updates.check-failed", Map.of("reason", reason)));
-        } else {
-            result.add(msg.plain("updates.up-to-date", Map.of()));
+        } else if (!hasUpdateInfo) {
+            if (checkStatus() == CheckStatus.NOT_CHECKED) {
+                result.add(msg.plain("updates.not-checked", Map.of()));
+            } else {
+                result.add(msg.plain("updates.up-to-date", Map.of()));
+            }
         }
         return result;
     }
@@ -494,6 +543,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             Release available = latestAvailableUpdate;
             String ver = available != null ? available.version() : "new";
             messageSender.accept(msgs.plain("updates.downloaded", Map.of("latest", ver)));
+            if (isLastCheckFailed()) {
+                String reason = formatCheckFailureReason(getLastCheckError().orElse(null), msgs);
+                messageSender.accept(msgs.plain("updates.check-failed", Map.of("reason", reason)));
+            }
             return;
         }
         Release available = latestAvailableUpdate;
@@ -508,6 +561,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 sb.append("\n").append(msgs.plain("updates.summary", Map.of("summary", summary)));
             }
             messageSender.accept(sb.toString());
+            if (isLastCheckFailed()) {
+                String reason = formatCheckFailureReason(getLastCheckError().orElse(null), msgs);
+                messageSender.accept(msgs.plain("updates.check-failed", Map.of("reason", reason)));
+            }
+        } else if (isLastCheckFailed()) {
+            String reason = formatCheckFailureReason(getLastCheckError().orElse(null), msgs);
+            messageSender.accept(msgs.plain("updates.check-failed", Map.of("reason", reason)));
         }
     }
 
@@ -526,13 +586,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         // Respect rate limits: if rate limit was exceeded, do not query until reset
         Instant resetTime = rateLimitResetTime.get();
         if (resetTime != null && Instant.now().isBefore(resetTime)) {
+            lastCheckFailed.set(true);
+            lastCheckError.set("could not reach GitHub: rate limit exceeded; resets at " + resetTime);
+            hasCheckedAtLeastOnce.set(true);
             Release cached = cachedRelease.get();
             if (cached != null) {
                 return Optional.of(cached);
             }
-            lastCheckFailed.set(true);
-            lastCheckError.set("could not reach GitHub: rate limit exceeded; resets at " + resetTime);
-            hasCheckedAtLeastOnce.set(true);
             return Optional.empty();
         }
 
@@ -590,13 +650,13 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
                 if (status == 403 || status == 429) {
+                    lastCheckFailed.set(true);
+                    lastCheckError.set("could not reach GitHub: rate limit exceeded (HTTP " + status + ")");
+                    hasCheckedAtLeastOnce.set(true);
                     Release cached = cachedRelease.get();
                     if (cached != null) {
                         return Optional.of(cached);
                     }
-                    lastCheckFailed.set(true);
-                    lastCheckError.set("could not reach GitHub: rate limit exceeded (HTTP " + status + ")");
-                    hasCheckedAtLeastOnce.set(true);
                     return Optional.empty();
                 }
 
@@ -627,7 +687,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 if (releaseOpt.isEmpty() || stopped.get()) {
                     if (!stopped.get()) {
                         lastCheckFailed.set(true);
-                        lastCheckError.compareAndSet(null, "could not reach GitHub: could not resolve release jar or published checksum");
+                        if (lastCheckError.get() == null) {
+                            lastCheckError.set("could not reach GitHub: could not resolve release jar or published checksum");
+                        }
                         hasCheckedAtLeastOnce.set(true);
                     }
                     return Optional.empty();
@@ -802,6 +864,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 tag = obj.getString("name");
             }
             if (tag == null || tag.isBlank()) {
+                lastCheckError.set("could not reach GitHub: missing release tag or name");
                 return Optional.empty();
             }
 
@@ -813,6 +876,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
             SimpleJson.JsonArray assets = obj.getArray("assets");
             if (assets == null || assets.isEmpty()) {
+                lastCheckError.set("could not reach GitHub: release has no assets");
                 return Optional.empty();
             }
 
@@ -921,6 +985,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             throw e;
         } catch (Exception e) {
             logger.log(Level.FINE, "Failed to parse release JSON", e);
+            lastCheckError.set("Failed to parse release JSON");
             return Optional.empty();
         }
     }
@@ -1120,41 +1185,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 continue;
             }
 
-            // Check if line refers to SHA-256
-            Matcher keywordMatcher = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
-            if (keywordMatcher.find()) {
-                foundChecksumKeyword = true;
-
-                // Check for label pattern: sha256[:=\s]+<token>
-                Matcher labelMatcher = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)(\\S+)").matcher(line);
-                if (labelMatcher.find()) {
-                    String candidateToken = labelMatcher.group(1);
-
-                    // Check if candidate is valid 64 hex characters
-                    if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
-                        return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
-                    }
-
-                    // Check if this line is bound to a specific file
-                    Matcher jarMatcher = Pattern.compile("(?i)\\b([a-zA-Z0-9_.-]+\\.jar)\\b").matcher(line);
-                    if (jarMatcher.find()) {
-                        String namedJar = jarMatcher.group(1);
-                        if (namedJar.equalsIgnoreCase(targetJarName)) {
-                            boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
-                        } else {
-                            otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
-                        }
-                    } else {
-                        // Unbound label line (e.g. "SHA-256: <hex>")
-                        boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
-                    }
-                    continue;
-                } else {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 declaration in body: " + line);
-                }
-            }
-
-            // Also check BSD format on line: SHA256 (filename) = <token>
+            // 1. BSD format on line: SHA256 (filename) = <token>
             Matcher bsdMatcher = Pattern.compile("(?i)^SHA256\\s*\\((.+)\\)\\s*=\\s*(\\S+)$").matcher(line);
             if (bsdMatcher.matches()) {
                 foundChecksumKeyword = true;
@@ -1173,7 +1204,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 continue;
             }
 
-            // Also check sha256sum format on line: <token>  <file.jar>
+            // 2. sha256sum format on line: <token>  <file.jar>
             Matcher sumMatcher = Pattern.compile("^(\\S+)\\s+[*]?(.+\\.jar)$").matcher(line);
             if (sumMatcher.matches()) {
                 String candidateToken = sumMatcher.group(1);
@@ -1188,6 +1219,60 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                 } else {
                     otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                }
+                continue;
+            }
+
+            // 3. Label pattern(s): sha256[:=\s]+<token> anywhere on line (may be multiple declarations)
+            Matcher keywordMatcher = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
+            if (keywordMatcher.find()) {
+                foundChecksumKeyword = true;
+
+                // Match all declarations on the line
+                Matcher labelMatcher = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)(\\S+)").matcher(line);
+                record Decl(int start, int end, String token) {}
+                List<Decl> decls = new ArrayList<>();
+                while (labelMatcher.find()) {
+                    decls.add(new Decl(labelMatcher.start(), labelMatcher.end(), labelMatcher.group(1)));
+                }
+
+                // Count total keyword occurrences to detect incomplete declarations (e.g. trailing "SHA-256:")
+                Matcher allKeywords = Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b").matcher(line);
+                int totalKeywords = 0;
+                while (allKeywords.find()) {
+                    totalKeywords++;
+                }
+
+                if (decls.isEmpty() || decls.size() < totalKeywords) {
+                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 declaration in body: " + line);
+                }
+
+                for (int i = 0; i < decls.size(); i++) {
+                    Decl decl = decls.get(i);
+                    String candidateToken = decl.token();
+
+                    // Check if candidate is valid 64 hex characters
+                    if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
+                        return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
+                    }
+
+                    // Check jar binding for this specific declaration segment
+                    int segStart = (i == 0) ? 0 : decl.start();
+                    int segEnd = (i == decls.size() - 1) ? line.length() : decls.get(i + 1).start();
+                    String segment = line.substring(segStart, segEnd);
+
+                    Matcher jarMatcher = Pattern.compile("(?i)\\b([a-zA-Z0-9_.-]+\\.jar)\\b").matcher(segment);
+                    if (jarMatcher.find()) {
+                        String namedJar = jarMatcher.group(1);
+                        if (namedJar.equalsIgnoreCase(targetJarName)) {
+                            boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                        } else {
+                            otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                        }
+                    } else {
+                        // Unbound label declaration
+                        boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
+                    }
                 }
             }
         }
