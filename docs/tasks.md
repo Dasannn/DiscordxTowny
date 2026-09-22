@@ -756,8 +756,11 @@ that section. A file with a syntax error is left byte-for-byte unchanged.
 ## T24 — The updater can reach the release it found
 
 - **Branch**: `fix/updater-delivery-host` · **Responsible**: agent · **Status**: pending
-- **Zone**: `src/main/java/com/discordtowny/update/`, its tests, and the
-  `updates:` section of both catalogs.
+- **Zone**: `src/main/java/com/discordtowny/update/`, its tests, the `updates:`
+  section of both catalogs, and the `/dt admin update` subcommands in
+  `MinecraftCommands.java` together with their tests. The command is in the zone
+  because the defect lives there: a service that knows the check failed changes
+  nothing while the command that answers the admin does not ask it.
 
 **Why**
 
