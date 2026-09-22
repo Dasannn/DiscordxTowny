@@ -4347,7 +4347,7 @@ class DefaultUpdateServiceTest {
     }
 
     @Test
-    @DisplayName("Delayed legitimate 304 publishes UP_TO_DATE and clears available release deterministically (F1-A)")
+    @DisplayName("Delayed legitimate 304 from older check cannot erase newer release published by subsequent check (F13)")
     void delayedLegitimate304PublishesUpToDateAndClearsAvailableReleaseDeterministically() {
         String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         String runningVersionJson = """
@@ -4439,18 +4439,21 @@ class DefaultUpdateServiceTest {
         UpdateService.CheckResult resA = futureA.join();
         assertEquals(UpdateService.CheckStatus.UP_TO_DATE, resA.status());
 
-        // 5. Aggregate settled state must be coherent: UP_TO_DATE must not leave availability holding R
-        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, service.checkStatus());
-        assertTrue(service.getAvailableUpdate().isEmpty(),
-                "getAvailableUpdate() must be empty when checkStatus is UP_TO_DATE; cannot retain release from earlier check");
-        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, service.getLastCheckResult().status());
-        assertTrue(service.getLastCheckResult().release().isEmpty());
+        // 5. Stale 304 from older check must not erase newer release published by subsequent check (F13)
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, service.checkStatus(),
+                "checkStatus must retain UPDATE_AVAILABLE from newer check B");
+        assertTrue(service.getAvailableUpdate().isPresent(),
+                "getAvailableUpdate() must retain release 1.10.0 from newer check B; older 304 cannot erase it");
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, service.getLastCheckResult().status());
+        assertTrue(service.getLastCheckResult().release().isPresent());
+        assertEquals("1.10.0", service.getLastCheckResult().release().get().version());
 
         List<String> rendered = service.renderStatusMessages(EnglishMessages.bundled());
-        assertTrue(rendered.stream().anyMatch(l -> l.contains("You are on the latest version")),
-                "Status must render up to date, got: " + rendered);
-        assertFalse(rendered.stream().anyMatch(l -> l.contains("There is a new version")),
-                "Status must never render an available update when up to date, got: " + rendered);
+        assertTrue(rendered.stream().anyMatch(l -> l.contains("There is a new version")),
+                "Status must render available update, got: " + rendered);
+        assertFalse(rendered.stream().anyMatch(l -> l.contains("You are on the latest version")),
+                "Status must never render up to date when update is available, got: " + rendered);
     }
 
     @Test
@@ -4677,6 +4680,68 @@ class DefaultUpdateServiceTest {
         UpdateService.CheckResult result = service.checkForUpdate().join();
         assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status(),
                 "Malformed declaration for another artifact must refuse release; valid asset must not override it");
+        assertTrue(service.isLastCheckFailed());
+        assertTrue(result.error().isPresent());
+        String err = result.error().get().toLowerCase(Locale.ROOT);
+        assertTrue(err.contains("checksum") || err.contains("malformed") || err.contains("invalid"),
+                "Error must indicate checksum failure, got: " + err);
+    }
+
+    @Test
+    @DisplayName("Malformed sum declaration with plus in filename for another artifact refuses release even with valid dedicated asset (F2)")
+    void malformedChecksumWithPlusInFilenameRefusesReleaseEvenWithValidDedicatedAsset() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // 65 hex digits (<H>9) for other artifact (-sources+dev.jar)
+        String malformed65Hex = validHex + "9";
+        String bodyText = malformed65Hex + "  DiscordTowny-1.10.0-sources+dev.jar";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String dedicatedAssetContent = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".sha256")) {
+                return new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(dedicatedAssetContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(),
+                    new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status(),
+                "Malformed declaration with '+' in filename for another artifact must refuse release; valid asset must not override it");
         assertTrue(service.isLastCheckFailed());
         assertTrue(result.error().isPresent());
         String err = result.error().get().toLowerCase(Locale.ROOT);

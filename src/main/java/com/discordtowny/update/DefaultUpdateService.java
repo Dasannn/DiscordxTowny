@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -58,6 +59,99 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private static final Pattern SHA256_LABEL_PATTERN = Pattern.compile("(?i)(?:sha-?256(?:sum)?[:=\\s]+)([a-f0-9]{64})(?![a-f0-9])");
     private static final Pattern STANDALONE_HEX_PATTERN = Pattern.compile("(?i)\\b([a-f0-9]{64})\\b(?![a-f0-9])");
     private static final Pattern STRICT_HEX_64 = Pattern.compile("^[a-fA-F0-9]{64}$");
+
+    private static final Pattern BSD_DECL_PATTERN =
+            Pattern.compile("(?i)\\bSHA-?256\\s*\\(([^)\r\n]+)\\)\\s*=\\s*(\\S+)");
+    private static final Pattern SUM_DECL_PATTERN =
+            Pattern.compile("^(\\S+)(?:[ ]{2,}|[ ]\\*|\\t|\\s+[*]?)(\\S.*)$");
+    private static final Pattern KEYWORD_AUDIT_PATTERN =
+            Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?\\b(?![^\\s/\\\\]*[/\\\\])");
+    private static final Pattern LABELED_DECL_PATTERN =
+            Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?![\\s]*\\()(?![^\\s/\\\\]*[/\\\\])[:=\\s]+(\\S+)");
+    private static final Pattern ABSORBED_DECL_PATTERN =
+            Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)");
+    private static final Pattern JAR_NAME_PATTERN =
+            Pattern.compile("(?i)\\b(\\S+\\.jar)\\b");
+
+    private enum DeclarationFormat {
+        BSD,
+        SUM,
+        LABELED
+    }
+
+    private record ChecksumDeclaration(
+            DeclarationFormat format,
+            String candidateToken,
+            String rawFilename
+    ) {}
+
+    private static String normalizeFilename(String file) {
+        if (file == null || file.isBlank()) {
+            return null;
+        }
+        String normFile = file.replace('\\', '/');
+        try {
+            Path p = Path.of(normFile);
+            return p.getFileName() != null ? p.getFileName().toString() : normFile;
+        } catch (Exception e) {
+            int lastSlash = normFile.lastIndexOf('/');
+            return lastSlash >= 0 ? normFile.substring(lastSlash + 1) : normFile;
+        }
+    }
+
+    private static boolean absorbsChecksumDeclaration(String file) {
+        if (file == null || file.isBlank()) {
+            return false;
+        }
+        return ABSORBED_DECL_PATTERN.matcher(file).find();
+    }
+
+    private static boolean isSupportedSumFilename(String rawFile, String line, String targetJarName) {
+        if (rawFile == null || rawFile.isBlank()) {
+            return false;
+        }
+        String norm = normalizeFilename(rawFile);
+        if (norm == null || norm.isBlank()) {
+            return false;
+        }
+        if (norm.equalsIgnoreCase(targetJarName)) {
+            return true;
+        }
+        if (norm.toLowerCase(Locale.ROOT).endsWith(".jar")) {
+            return true;
+        }
+        if (!rawFile.contains(" ") && (line.contains("  ") || line.contains("\t") || line.contains(" *"))) {
+            return true;
+        }
+        return false;
+    }
+
+    private static ChecksumOutcome validateDeclaration(ChecksumDeclaration decl, String sourceDesc) {
+        if (decl.rawFilename() != null && absorbsChecksumDeclaration(decl.rawFilename())) {
+            if ("checksum file".equals(sourceDesc)) {
+                String desc = decl.format() == DeclarationFormat.BSD
+                        ? "Malformed BSD declaration in checksum file absorbing checksum declaration: "
+                        : "Malformed sha256sum entry in checksum file absorbing checksum declaration: ";
+                return new ChecksumOutcome.InvalidOrAmbiguous(desc + decl.rawFilename());
+            } else {
+                String desc = decl.format() == DeclarationFormat.BSD
+                        ? "Malformed BSD declaration absorbing checksum declaration in filename: "
+                        : (decl.format() == DeclarationFormat.SUM
+                        ? "Malformed sha256sum entry absorbing checksum declaration in filename: "
+                        : "Malformed declaration absorbing checksum declaration in filename: ");
+                return new ChecksumOutcome.InvalidOrAmbiguous(desc + decl.rawFilename());
+            }
+        }
+        if (!isValidSha256(decl.candidateToken())) {
+            if ("checksum file".equals(sourceDesc)) {
+                return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in checksum file: " + decl.candidateToken());
+            } else {
+                String prefix = decl.format() == DeclarationFormat.BSD ? "BSD " : "";
+                return new ChecksumOutcome.InvalidOrAmbiguous("Malformed " + prefix + "SHA-256 token in body: " + decl.candidateToken());
+            }
+        }
+        return null;
+    }
 
     private static final ScheduledExecutorService TIMEOUT_WATCHDOG = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "dt-update-watchdog");
@@ -137,6 +231,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private final AtomicReference<String> lastCheckError = new AtomicReference<>(null);
     private final AtomicBoolean hasCheckedAtLeastOnce = new AtomicBoolean(false);
     private final AtomicReference<CheckResult> lastCheckResult = new AtomicReference<>(CheckResult.notChecked("Not checked yet"));
+
+    // Monotonic check operation sequence tracking (F13)
+    private final AtomicLong checkSequenceGenerator = new AtomicLong(0);
+    private final AtomicLong publishedSequence = new AtomicLong(0);
 
     // Notification deduplication (once per version)
     private final Set<String> consoleNotifiedVersions = ConcurrentHashMap.newKeySet();
@@ -442,22 +540,40 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return result;
     }
 
-    private CheckResult publishCheckResult(CheckResult result) {
-        lastCheckResult.set(result);
-        if (result.status() == CheckStatus.CHECK_FAILED) {
-            lastCheckFailed.set(true);
-            lastCheckError.set(result.error().orElse(null));
-            hasCheckedAtLeastOnce.set(true);
-        } else if (result.status() == CheckStatus.UPDATE_AVAILABLE) {
-            lastCheckFailed.set(false);
-            lastCheckError.set(null);
-            hasCheckedAtLeastOnce.set(true);
-        } else if (result.status() == CheckStatus.UP_TO_DATE) {
-            lastCheckFailed.set(false);
-            lastCheckError.set(null);
-            hasCheckedAtLeastOnce.set(true);
+    private synchronized CheckResult publishCheckResult(long checkSeq, CheckResult result, CachedRelease newCache) {
+        boolean isNewerSeq = checkSeq > publishedSequence.get();
+        boolean availabilityOverAbsence = result.status() == CheckStatus.UPDATE_AVAILABLE
+                && lastCheckResult.get().status() == CheckStatus.UP_TO_DATE;
+
+        if (isNewerSeq || availabilityOverAbsence) {
+            if (checkSeq > publishedSequence.get()) {
+                publishedSequence.set(checkSeq);
+            }
+            lastCheckResult.set(result);
+            if (newCache != null) {
+                cachedRelease.set(newCache);
+            }
+            if (result.status() == CheckStatus.CHECK_FAILED) {
+                lastCheckFailed.set(true);
+                lastCheckError.set(result.error().orElse(null));
+                hasCheckedAtLeastOnce.set(true);
+            } else if (result.status() == CheckStatus.UPDATE_AVAILABLE) {
+                lastCheckFailed.set(false);
+                lastCheckError.set(null);
+                hasCheckedAtLeastOnce.set(true);
+                networkErrorLogged.set(false);
+            } else if (result.status() == CheckStatus.UP_TO_DATE) {
+                lastCheckFailed.set(false);
+                lastCheckError.set(null);
+                hasCheckedAtLeastOnce.set(true);
+                networkErrorLogged.set(false);
+            }
         }
         return result;
+    }
+
+    private CheckResult publishCheckResult(long checkSeq, CheckResult result) {
+        return publishCheckResult(checkSeq, result, null);
     }
 
     public static String formatCheckFailureReason(String rawError, Messages msg) {
@@ -626,6 +742,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         if (stopped.get()) {
             return CheckResult.notChecked("Service stopped");
         }
+        long checkSeq = checkSequenceGenerator.incrementAndGet();
 
         CachedRelease sentCache = cachedRelease.get();
         Release capturedRelease = (sentCache != null) ? sentCache.release() : null;
@@ -636,7 +753,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         Instant resetTime = rateLimitResetTime.get();
         if (resetTime != null && Instant.now().isBefore(resetTime)) {
             String err = "could not reach GitHub: rate limit exceeded; resets at " + resetTime;
-            return publishCheckResult(CheckResult.checkFailed(err, capturedRelease));
+            return publishCheckResult(checkSeq, CheckResult.checkFailed(err, capturedRelease));
         }
 
         Map<String, String> headers = new HashMap<>();
@@ -656,7 +773,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
                 if (!stopped.get()) {
                     String err = "could not reach GitHub (request timed out)";
-                    return publishCheckResult(CheckResult.checkFailed(err));
+                    return publishCheckResult(checkSeq, CheckResult.checkFailed(err));
                 }
                 return CheckResult.notChecked("Service stopped");
             }
@@ -685,27 +802,27 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
                             triggerAutoDownload(release);
                         }
-                        return publishCheckResult(CheckResult.updateAvailable(release));
+                        return publishCheckResult(checkSeq, CheckResult.updateAvailable(release), sentCache);
                     }
                     if (sentCache != null && sentCache.upToDate()) {
-                        return publishCheckResult(CheckResult.upToDate());
+                        return publishCheckResult(checkSeq, CheckResult.upToDate(), sentCache);
                     }
                     // An unsolicited 304 answering a request without validator/representation is an
                     // abnormal upstream response and must never borrow success from another check (F1-A).
                     String err = "could not reach GitHub: unexpected 304 without cached release representation";
-                    return publishCheckResult(CheckResult.checkFailed(err));
+                    return publishCheckResult(checkSeq, CheckResult.checkFailed(err));
                 }
 
                 // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
                 if (status == 403 || status == 429) {
                     String err = "could not reach GitHub: rate limit exceeded (HTTP " + status + ")";
-                    return publishCheckResult(CheckResult.checkFailed(err, capturedRelease));
+                    return publishCheckResult(checkSeq, CheckResult.checkFailed(err, capturedRelease));
                 }
 
                 if (status != 200) {
                     logger.log(Level.FINE, "GitHub releases API returned unexpected status {0}", status);
                     String err = "could not reach GitHub: unexpected status " + status;
-                    return publishCheckResult(CheckResult.checkFailed(err));
+                    return publishCheckResult(checkSeq, CheckResult.checkFailed(err));
                 }
 
                 String newEtag = response.getHeader("ETag");
@@ -714,7 +831,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 if (remaining.isNegative() || remaining.isZero() || stopped.get()) {
                     if (!stopped.get()) {
                         String err = "could not reach GitHub (reading body timed out)";
-                        return publishCheckResult(CheckResult.checkFailed(err));
+                        return publishCheckResult(checkSeq, CheckResult.checkFailed(err));
                     }
                     return CheckResult.notChecked("Service stopped");
                 }
@@ -728,7 +845,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         String err = parseResult.error() != null
                                 ? parseResult.error()
                                 : "could not reach GitHub: could not resolve release jar or published checksum";
-                        return publishCheckResult(CheckResult.checkFailed(err));
+                        return publishCheckResult(checkSeq, CheckResult.checkFailed(err));
                     }
                     return CheckResult.notChecked("Service stopped");
                 }
@@ -739,9 +856,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 if (!latestSemVer.isNewerThan(currentSemVer)) {
                     // Not newer: running current or newer version
-                    cachedRelease.set(new CachedRelease(newEtag, null, true));
-                    networkErrorLogged.set(false);
-                    return publishCheckResult(CheckResult.upToDate());
+                    CachedRelease newCache = new CachedRelease(newEtag, null, true);
+                    return publishCheckResult(checkSeq, CheckResult.upToDate(), newCache);
                 }
 
                 // Genuinely successful check: clear outage suppression (F8, F9, F1-A)
@@ -792,27 +908,27 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     triggerAutoDownload(release);
                 }
 
-                cachedRelease.set(new CachedRelease(newEtag, release, false));
-                return publishCheckResult(CheckResult.updateAvailable(release));
+                CachedRelease newCache = new CachedRelease(newEtag, release, false);
+                return publishCheckResult(checkSeq, CheckResult.updateAvailable(release), newCache);
             }
         } catch (IOException e) {
             String errorMsg = e.getMessage() != null && !e.getMessage().isBlank()
                     ? "could not reach GitHub (" + e.getMessage() + ")"
                     : "could not reach GitHub";
             handleNetworkFailure(e);
-            return publishCheckResult(CheckResult.checkFailed(errorMsg));
+            return publishCheckResult(checkSeq, CheckResult.checkFailed(errorMsg));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             String errorMsg = "could not reach GitHub (Update check interrupted)";
             handleNetworkFailure(new IOException("Update check interrupted", e));
-            return publishCheckResult(CheckResult.checkFailed(errorMsg));
+            return publishCheckResult(checkSeq, CheckResult.checkFailed(errorMsg));
         } catch (Exception e) {
             // Malformed JSON or parsing errors do not throw out of service
             String errorMsg = e.getMessage() != null && !e.getMessage().isBlank()
                     ? "could not reach GitHub (" + e.getMessage() + ")"
                     : "could not reach GitHub (Failed to parse update release)";
             logger.log(Level.FINE, "Failed to parse update release", e);
-            return publishCheckResult(CheckResult.checkFailed(errorMsg));
+            return publishCheckResult(checkSeq, CheckResult.checkFailed(errorMsg));
         } finally {
             activeTransfers.remove(activeOp);
         }
@@ -1134,26 +1250,17 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             // Pattern 1: BSD style: "SHA256 (filename) = <hex>"
-            Matcher mBsd = Pattern.compile("(?i)^SHA-?256\\s*\\(([^)\r\n]+)\\)\\s*=\\s*(\\S+)$").matcher(line);
-            if (mBsd.matches()) {
+            Matcher mBsd = BSD_DECL_PATTERN.matcher(line);
+            if (mBsd.find()) {
                 String file = mBsd.group(1).trim();
                 String candidateHex = mBsd.group(2).trim();
-                if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD declaration in checksum file absorbing checksum declaration: " + file);
+                ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.BSD, candidateHex, file);
+                ChecksumOutcome validation = validateDeclaration(decl, "checksum file");
+                if (validation != null) {
+                    return validation;
                 }
-                if (!isValidSha256(candidateHex)) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in checksum file: " + candidateHex);
-                }
-                String filename;
-                try {
-                    String normFile = file.replace('\\', '/');
-                    Path p = Path.of(normFile);
-                    filename = p.getFileName() != null ? p.getFileName().toString() : normFile;
-                } catch (Exception e) {
-                    int lastSlash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
-                    filename = lastSlash >= 0 ? file.substring(lastSlash + 1) : file;
-                }
-                if (filename.equalsIgnoreCase(targetJarName)) {
+                String filename = normalizeFilename(file);
+                if (filename != null && filename.equalsIgnoreCase(targetJarName)) {
                     if (matchedSha != null && !matchedSha.equalsIgnoreCase(candidateHex)) {
                         hasConflict = true;
                     }
@@ -1163,26 +1270,17 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             // Pattern 2: standard sha256sum: "<hex> [* ]<filename>"
-            Matcher mSum = Pattern.compile("^(\\S+)\\s+[*]?(.*)$").matcher(line);
+            Matcher mSum = SUM_DECL_PATTERN.matcher(line);
             if (mSum.matches()) {
-                String candidateHex = mSum.group(1);
+                String candidateHex = mSum.group(1).trim();
                 String file = mSum.group(2).trim();
-                if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum entry in checksum file absorbing checksum declaration: " + file);
+                ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.SUM, candidateHex, file);
+                ChecksumOutcome validation = validateDeclaration(decl, "checksum file");
+                if (validation != null) {
+                    return validation;
                 }
-                if (!isValidSha256(candidateHex)) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in checksum file: " + candidateHex);
-                }
-                String filename;
-                try {
-                    String normFile = file.replace('\\', '/');
-                    Path p = Path.of(normFile);
-                    filename = p.getFileName() != null ? p.getFileName().toString() : normFile;
-                } catch (Exception e) {
-                    int lastSlash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
-                    filename = lastSlash >= 0 ? file.substring(lastSlash + 1) : file;
-                }
-                if (filename.equalsIgnoreCase(targetJarName)) {
+                String filename = normalizeFilename(file);
+                if (filename != null && filename.equalsIgnoreCase(targetJarName)) {
                     if (matchedSha != null && !matchedSha.equalsIgnoreCase(candidateHex)) {
                         hasConflict = true;
                     }
@@ -1235,32 +1333,21 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             // 1. BSD format declarations on the line: SHA256 (filename) = <token>
-            Matcher bsdMatcher = Pattern.compile("(?i)\\bSHA-?256\\s*\\(([^)\r\n]+)\\)\\s*=\\s*(\\S+)").matcher(line);
+            Matcher bsdMatcher = BSD_DECL_PATTERN.matcher(line);
             int bsdCount = 0;
             while (bsdMatcher.find()) {
                 bsdCount++;
                 String file = bsdMatcher.group(1).trim();
                 String candidateToken = bsdMatcher.group(2).trim();
 
-                // Filename must not absorb another checksum declaration
-                if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD declaration absorbing checksum declaration in filename: " + file);
+                ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.BSD, candidateToken, file);
+                ChecksumOutcome validation = validateDeclaration(decl, "body");
+                if (validation != null) {
+                    return validation;
                 }
 
-                if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
-                    return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD SHA-256 token in body: " + candidateToken);
-                }
-
-                String filename;
-                try {
-                    String normFile = file.replace('\\', '/');
-                    Path p = Path.of(normFile);
-                    filename = p.getFileName() != null ? p.getFileName().toString() : normFile;
-                } catch (Exception e) {
-                    int lastSlash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
-                    filename = lastSlash >= 0 ? file.substring(lastSlash + 1) : file;
-                }
-                if (filename.equalsIgnoreCase(targetJarName)) {
+                String filename = normalizeFilename(file);
+                if (filename != null && filename.equalsIgnoreCase(targetJarName)) {
                     boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                 } else {
                     otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
@@ -1268,7 +1355,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             // 2. sha256sum format declaration on the line: <token> [*]<file>
-            Matcher sumMatcher = Pattern.compile("^(\\S+)\\s+[*]?((\\S.*))$").matcher(line);
+            Matcher sumMatcher = SUM_DECL_PATTERN.matcher(line);
             boolean sumMatchedOnLine = false;
             String sumConsumedFile = null;
             if (sumMatcher.matches()) {
@@ -1277,31 +1364,15 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 // If candidateToken is a checksum label keyword (e.g. SHA-256:, SHA-256=<H>), this is a labeled line, not a sha256sum line
                 if (!candidateToken.matches("(?i)^sha-?256(?:sum)?(?:[:=].*)?$")) {
-                    String filename;
-                    try {
-                        String normFile = file.replace('\\', '/');
-                        Path p = Path.of(normFile);
-                        filename = p.getFileName() != null ? p.getFileName().toString() : normFile;
-                    } catch (Exception e) {
-                        int lastSlash = Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\'));
-                        filename = lastSlash >= 0 ? file.substring(lastSlash + 1) : file;
-                    }
-
-                    boolean isArtifact = filename.equalsIgnoreCase(targetJarName)
-                            || filename.matches("(?i)^[a-zA-Z0-9_.-]+\\.jar$");
-
-                    if (isArtifact) {
-                        // Filename must not absorb a checksum declaration
-                        if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
-                            return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum entry absorbing checksum declaration in filename: " + file);
+                    if (isSupportedSumFilename(file, line, targetJarName)) {
+                        ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.SUM, candidateToken, file);
+                        ChecksumOutcome validation = validateDeclaration(decl, "body");
+                        if (validation != null) {
+                            return validation;
                         }
 
-                        // Validate recognized declaration before deciding whether it binds to our jar (F2)
-                        if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
-                            return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
-                        }
-
-                        if (filename.equalsIgnoreCase(targetJarName)) {
+                        String filename = normalizeFilename(file);
+                        if (filename != null && filename.equalsIgnoreCase(targetJarName)) {
                             boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                         } else {
                             otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
@@ -1315,7 +1386,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             // 3. Labeled declarations and remaining keyword audit
             // If BSD declarations were found on this line, mask them out before checking for labeled declarations
             String lineToCheck = bsdCount > 0
-                    ? line.replaceAll("(?i)\\bSHA-?256\\s*\\(([^)\r\n]+)\\)\\s*=\\s*(\\S+)", " ")
+                    ? BSD_DECL_PATTERN.matcher(line).replaceAll(" ")
                     : line;
             // Audit other declarations without reinterpreting consumed sum filenames as declarations (F12)
             if (sumMatchedOnLine && sumConsumedFile != null) {
@@ -1323,7 +1394,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             }
 
             // Count total keyword occurrences on lineToCheck, excluding directory paths like sha256/ or sha256.txt/
-            Matcher allKeywords = Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?\\b(?![^\\s/\\\\]*[/\\\\])").matcher(lineToCheck);
+            Matcher allKeywords = KEYWORD_AUDIT_PATTERN.matcher(lineToCheck);
             int totalKeywords = 0;
             while (allKeywords.find()) {
                 totalKeywords++;
@@ -1334,7 +1405,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
             if (totalKeywords > 0) {
                 // Find all labeled declarations on the line (excluding BSD which is followed by '(' and paths with slashes)
-                Matcher labelMatcher = Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?![\\s]*\\()(?![^\\s/\\\\]*[/\\\\])[:=\\s]+(\\S+)").matcher(lineToCheck);
+                Matcher labelMatcher = LABELED_DECL_PATTERN.matcher(lineToCheck);
                 record Decl(int start, int end, String token) {}
                 List<Decl> decls = new ArrayList<>();
                 while (labelMatcher.find()) {
@@ -1349,18 +1420,22 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     Decl decl = decls.get(i);
                     String candidateToken = decl.token();
 
-                    if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
-                        return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
-                    }
-
                     int segStart = (i == 0) ? 0 : decl.start();
                     int segEnd = (i == decls.size() - 1) ? lineToCheck.length() : decls.get(i + 1).start();
                     String segment = lineToCheck.substring(segStart, segEnd);
 
-                    Matcher jarMatcher = Pattern.compile("(?i)\\b([a-zA-Z0-9_.-]+\\.jar)\\b").matcher(segment);
-                    if (jarMatcher.find()) {
-                        String namedJar = jarMatcher.group(1);
-                        if (namedJar.equalsIgnoreCase(targetJarName)) {
+                    Matcher jarMatcher = JAR_NAME_PATTERN.matcher(segment);
+                    String namedJar = jarMatcher.find() ? jarMatcher.group(1) : null;
+
+                    ChecksumDeclaration checksumDecl = new ChecksumDeclaration(DeclarationFormat.LABELED, candidateToken, namedJar);
+                    ChecksumOutcome validation = validateDeclaration(checksumDecl, "body");
+                    if (validation != null) {
+                        return validation;
+                    }
+
+                    if (namedJar != null) {
+                        String filename = normalizeFilename(namedJar);
+                        if (filename != null && filename.equalsIgnoreCase(targetJarName)) {
                             boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
                         } else {
                             otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));

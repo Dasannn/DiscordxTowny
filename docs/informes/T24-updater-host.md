@@ -849,3 +849,120 @@ This inadvertently broke the rate-limiting contract established in review R3 (F3
 | F1-A Single Publication & Unsolicited 304 Refusal Tests | Passed | Atomic publication and abnormal 304 rejection stand unchanged. | **Maintained** |
 | Round 9 Parser Tests (9 valid releases, 4 malformed/legitimate fixtures) | Passed | All declaration recognition and validation-before-bind logic stands unchanged. | **Maintained** |
 
+---
+
+## 13. Round 11 — One Recognizer, One Validator, and Monotonic Non-Regressive Check Sequence
+
+### 13.1 Problem Diagnosis & Reviewer Findings (Review R6)
+
+The sixth review (`docs/revisiones/T24-updater-host-r6.md`) identified two remaining production defects:
+
+1. **F2: Declaration Boundary Drift and Curated Filename Alphabet**:
+   - Round 9's body-sum branch introduced an `isArtifact` filename heuristic relying on a private character class: `filename.matches("(?i)^[a-zA-Z0-9_.-]+\\.jar$")`.
+   - When presented with a declaration naming an artifact containing legal jar filename characters outside that hand-picked alphabet—specifically `+`:
+     ```text
+     <H>9  DiscordTowny-1.10.0-sources+dev.jar
+     ```
+     where `<H>9` is 65 hexadecimal characters, `isArtifact` evaluated to `false`.
+   - The line was dismissed as non-declarative prose without reaching candidate token validation. No malformed declaration was recorded, the body yielded `ChecksumOutcome.None()`, and an accompanying valid dedicated asset admitted the release.
+   - Furthermore, five separate branches (Body BSD, Body Sum, Body Labeled, Checksum-file BSD, and Checksum-file Sum) duplicated declaration recognition patterns and validation logic with inline regular expressions.
+
+2. **F13: Stale Check Erasing Newer Release (Freshness Inversion)**:
+   - While Round 8 unified `CheckResult` into an atomic record, publication remained unconditional last-completer-wins.
+   - If Check A began with a cached absence `(E0, no release, upToDate=true)` and sent `If-None-Match: E0`, GitHub prepared a 304 response that was delayed in transport.
+   - Check B began *after* a new release R was published, validated R, and published `UPDATE_AVAILABLE(R)`.
+   - Check A's delayed 304 response then arrived and published `UP_TO_DATE`, discarding release R and restoring an up-to-date state while an update was available.
+   - The aggregate state was internally consistent, but newer knowledge was erased by an older check.
+
+---
+
+### 13.2 Technical Resolution
+
+#### 1. F2: Consolidated Declaration Recognition and Token Validation
+
+The declaration boundary was consolidated into a single unified recognition and validation model across all five branches:
+
+- **Shared Grammar Patterns & Data Model**:
+  - `BSD_DECL_PATTERN`: `(?i)\bSHA-?256\s*\(([^)\r\n]+)\)\s*=\s*(\S+)`
+  - `SUM_DECL_PATTERN`: `^(\S+)(?:[ ]{2,}|[ ]\*|\t+|\s+[*]?)(\S.*)$`
+  - `LABELED_DECL_PATTERN`: `(?<![/\\\\])(?i)\bsha-?256(?:sum)?(?![\\s]*\()(?![^\\s/\\\\]*[/\\\\])[:=\s]+(\S+)`
+  - `ABSORBED_DECL_PATTERN`: `(?<![/\\\\])(?i)\bsha-?256(?:sum)?(?:\s*[:=\(]|\s+\S+)`
+  - `JAR_NAME_PATTERN`: `(?i)\b(\S+\.jar)\b`
+  - `ChecksumDeclaration(DeclarationFormat format, String candidateToken, String rawFilename)` record representing parsed declarations uniformly.
+
+- **Universal Filename Handling**:
+  - A filename is whatever non-whitespace text sits where a filename goes (`\S+`), without any curated character class. Basename extraction (`normalizeFilename`) strips directory prefixes (`/` and `\`) without restricting the legal character alphabet, admitting `+`, parentheses, and symbols.
+  - In `isSupportedSumFilename`:
+    1. Basename equals `targetJarName` (case-insensitive) -> recognized.
+    2. Basename ends with `.jar` (case-insensitive) -> recognized.
+    3. File contains no spaces and line uses standard sha256sum delimiter (`  `, `\t`, ` *`) -> recognized.
+    4. Ordinary multi-word prose without `.jar` (e.g., `"Normal notes"`, `"Release notes without hash"`) is rejected as non-declarative.
+
+- **Strict Validate-Before-Bind**:
+  - `validateDeclaration(decl, sourceDesc)` runs immediately upon recognizing a declaration.
+  - Verifies that `rawFilename` does not absorb another declaration keyword (`absorbsChecksumDeclaration`).
+  - Verifies that `candidateToken` strictly conforms to 64 hexadecimal characters (`STRICT_HEX_64`).
+  - If invalid, returns `ChecksumOutcome.InvalidOrAmbiguous` immediately, refusing the release ("whoever it names") before binding can occur and preventing fallback to dedicated assets.
+
+#### 2. Consolidation Mapping of All Five Branches
+
+| Branch | Declaration Format | Source | Recognizer & Validator Sharing | Private Branches / Curated Alphabets |
+|---|---|---|---|---|
+| **1. Checksum-file BSD** | BSD (`SHA256 (file) = hex`) | Checksum asset (`checksums.txt`) | **Shares** `BSD_DECL_PATTERN`, `ChecksumDeclaration`, `validateDeclaration`, `normalizeFilename`. | **None.** No private regex, no curated alphabet. |
+| **2. Checksum-file Sum** | Sum (`hex [* ]file`) | Checksum asset (`checksums.txt`) | **Shares** `SUM_DECL_PATTERN`, `ChecksumDeclaration`, `validateDeclaration`, `normalizeFilename`. | **None.** No private regex, no curated alphabet. |
+| **3. Body BSD** | BSD (`SHA256 (file) = hex`) | Release Body (`body`) | **Shares** `BSD_DECL_PATTERN`, `ChecksumDeclaration`, `validateDeclaration`, `normalizeFilename`. | **None.** No private regex, no curated alphabet. |
+| **4. Body Sum** | Sum (`hex [* ]file`) | Release Body (`body`) | **Shares** `SUM_DECL_PATTERN`, `isSupportedSumFilename`, `ChecksumDeclaration`, `validateDeclaration`, `normalizeFilename`. | **None.** No curated alphabet (`+`, parentheses admitted). |
+| **5. Body Labeled** | Labeled (`SHA-256: hex [file]`) | Release Body (`body`) | **Shares** `LABELED_DECL_PATTERN`, `JAR_NAME_PATTERN`, `ChecksumDeclaration`, `validateDeclaration`, `normalizeFilename`. | **None.** `\S+\.jar` replaces old `[a-zA-Z0-9_.-]+`. |
+
+All five branches now share the exact same recognizer patterns, representation, and validation rule. Zero branches use private validators or curated character classes.
+
+#### 3. F13: Monotonic Check Sequence & Freshness Protection
+
+- **Monotonic Operation Sequence**:
+  - `DefaultUpdateService` maintains `AtomicLong checkSequenceGenerator` and `AtomicLong publishedSequence`.
+  - When `doCheckForUpdate()` starts, it captures a strictly increasing sequence:
+    ```java
+    long checkSeq = checkSequenceGenerator.incrementAndGet();
+    ```
+- **Guarded Publication**:
+  - `publishCheckResult(long checkSeq, CheckResult result, CachedRelease newCache)` enforces:
+    ```java
+    boolean isNewerSeq = checkSeq > publishedSequence.get();
+    boolean availabilityOverAbsence = result.status() == CheckStatus.UPDATE_AVAILABLE
+            && lastCheckResult.get().status() == CheckStatus.UP_TO_DATE;
+
+    if (isNewerSeq || availabilityOverAbsence) {
+        if (checkSeq > publishedSequence.get()) {
+            publishedSequence.set(checkSeq);
+        }
+        lastCheckResult.set(result);
+        if (newCache != null) {
+            cachedRelease.set(newCache);
+        }
+        ...
+    }
+    ```
+  - An older operation (`checkSeq <= publishedSequence.get()`) cannot overwrite newer public state with an absence (`UP_TO_DATE` from delayed 304 or 200 non-newer response).
+  - The check operation's returned future receives its own execution result, but service state (`checkStatus()`, `getAvailableUpdate()`, `getLastCheckResult()`, `cachedRelease`) retains the newer release.
+
+---
+
+### 13.3 Test Verification
+
+1. **Updated Stale-304 Test (Deterministic Concurrency, Zero Sleeps)**:
+   - `delayedLegitimate304PublishesUpToDateAndClearsAvailableReleaseDeterministically`:
+     - Initial check caches `(E0, null, true)`.
+     - Check A starts (seq 1), captures E0, and suspends in transport.
+     - Check B starts (seq 2), validates release 1.10.0 (200 OK), and publishes `UPDATE_AVAILABLE`.
+     - Check A's delayed 304 arrives and completes as `UP_TO_DATE` on its own future.
+     - Verifies `service.checkStatus()` remains `UPDATE_AVAILABLE`, `service.getAvailableUpdate()` retains `1.10.0`, and status messages render `"There is a new version"`. Check A's stale absence cannot erase Check B's release.
+
+2. **New `+` Filename Test (F2)**:
+   - `malformedChecksumWithPlusInFilenameRefusesReleaseEvenWithValidDedicatedAsset`:
+     - Release body contains `<H>9  DiscordTowny-1.10.0-sources+dev.jar` (65 hex digits, filename with `+`).
+     - Release provides valid dedicated asset for `DiscordTowny-1.10.0.jar`.
+     - Verifies `checkForUpdate()` fails with `CHECK_FAILED`, confirming the declaration is recognized and validated before binding, refusing the release without fallback to the dedicated asset.
+
+3. **Entire Suite**: All tests pass deterministically without weakening any assertions.
+
+
