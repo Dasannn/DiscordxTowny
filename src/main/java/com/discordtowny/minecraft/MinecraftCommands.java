@@ -1179,7 +1179,10 @@ public final class MinecraftCommands {
                     updateService.download(release).thenAccept(result -> {
                         scheduler.accept(() -> {
                             switch (result) {
-                                case SUCCESS -> sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", release.version())));
+                                case SUCCESS -> {
+                                    sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", release.version())));
+                                    discloseFailedCheckIfAny(updateService, msg, sender);
+                                }
                                 case CHECKSUM_MISMATCH -> sender.sendMessage(msg.get("updates.checksum-mismatch"));
                                 default -> sender.sendMessage(msg.get("updates.download-failed", Map.of("reason", formatDownloadResult(result, msg))));
                             }

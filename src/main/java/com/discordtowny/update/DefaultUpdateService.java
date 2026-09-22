@@ -123,10 +123,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private final Object lifecycleLock = new Object();
     private final Set<ActiveTransfer> activeTransfers = ConcurrentHashMap.newKeySet();
 
+    private record CachedRelease(String etag, Release release, boolean upToDate) {}
+
     // Rate limiting & caching
     private final AtomicReference<Instant> rateLimitResetTime = new AtomicReference<>(null);
-    private final AtomicReference<String> cachedEtag = new AtomicReference<>(null);
-    private final AtomicReference<Release> cachedRelease = new AtomicReference<>(null);
+    private final AtomicReference<CachedRelease> cachedRelease = new AtomicReference<>(null);
 
     // Network error deduplication (log once until restored)
     private final AtomicBoolean networkErrorLogged = new AtomicBoolean(false);
@@ -610,7 +611,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         Instant resetTime = rateLimitResetTime.get();
         if (resetTime != null && Instant.now().isBefore(resetTime)) {
             String err = "could not reach GitHub: rate limit exceeded; resets at " + resetTime;
-            Release cached = cachedRelease.get();
+            CachedRelease currentCache = cachedRelease.get();
+            Release cached = (currentCache != null) ? currentCache.release() : null;
             CheckResult res = (cached != null)
                     ? CheckResult.checkFailed(err, cached)
                     : CheckResult.checkFailed(err);
@@ -621,7 +623,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         headers.put("User-Agent", "DiscordTowny-Updater");
         headers.put("Accept", "application/vnd.github+json");
 
-        String etag = cachedEtag.get();
+        CachedRelease sentCache = cachedRelease.get();
+        String etag = (sentCache != null) ? sentCache.etag() : null;
         if (etag != null && !etag.isBlank()) {
             headers.put("If-None-Match", etag);
         }
@@ -654,8 +657,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 // 304 Not Modified: release has not changed, use cache
                 if (status == 304) {
                     networkErrorLogged.set(false);
-                    Release release = cachedRelease.get();
-                    if (release != null) {
+                    // Conditional-response classification must use the validated representation
+                    // associated with its request validator; absence of that representation cannot
+                    // authorize an up-to-date result (F1-A).
+                    if (sentCache != null && sentCache.release() != null) {
+                        Release release = sentCache.release();
                         latestAvailableUpdate = release;
                         // Unchanged metadata still drives unfinished auto-download to completion (F8)
                         if (config.autoDownload() && !isUpdatePending() && !isBreaking(release)) {
@@ -663,13 +669,32 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         }
                         return publishCheckResult(CheckResult.updateAvailable(release));
                     }
-                    return publishCheckResult(CheckResult.upToDate());
+                    if (sentCache != null && sentCache.upToDate()) {
+                        return publishCheckResult(CheckResult.upToDate());
+                    }
+                    // If sentCache had no representation, check if current published record owns an update
+                    CheckResult currentPublished = lastCheckResult.get();
+                    if (currentPublished.status() == CheckStatus.UPDATE_AVAILABLE && currentPublished.release().isPresent()) {
+                        Release currentRel = currentPublished.release().get();
+                        latestAvailableUpdate = currentRel;
+                        return publishCheckResult(CheckResult.updateAvailable(currentRel));
+                    }
+                    if (currentPublished.status() == CheckStatus.UP_TO_DATE) {
+                        return publishCheckResult(CheckResult.upToDate());
+                    }
+                    // Absence of a validated representation cannot authorize an up-to-date result
+                    String err = "could not reach GitHub: unexpected 304 without cached release representation";
+                    return publishCheckResult(CheckResult.checkFailed(err));
                 }
 
                 // 403 Forbidden or 429 Too Many Requests (Rate limited or access issue)
                 if (status == 403 || status == 429) {
                     String err = "could not reach GitHub: rate limit exceeded (HTTP " + status + ")";
-                    Release cached = cachedRelease.get();
+                    Release cached = (sentCache != null) ? sentCache.release() : null;
+                    if (cached == null) {
+                        CachedRelease currentCache = cachedRelease.get();
+                        cached = (currentCache != null) ? currentCache.release() : null;
+                    }
                     CheckResult res = (cached != null)
                             ? CheckResult.checkFailed(err, cached)
                             : CheckResult.checkFailed(err);
@@ -713,21 +738,15 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 if (!latestSemVer.isNewerThan(currentSemVer)) {
                     // Not newer: running current or newer version
-                    cachedRelease.set(null);
                     latestAvailableUpdate = null;
-                    if (newEtag != null) {
-                        cachedEtag.set(newEtag);
-                    }
+                    cachedRelease.set(new CachedRelease(newEtag, null, true));
                     networkErrorLogged.set(false);
                     return publishCheckResult(CheckResult.upToDate());
                 }
 
-                // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9)
+                // Genuinely successful check: commit cache, etag, and clear outage suppression (F8, F9, F1-A)
                 networkErrorLogged.set(false);
-                if (newEtag != null) {
-                    cachedEtag.set(newEtag);
-                }
-                cachedRelease.set(release);
+                cachedRelease.set(new CachedRelease(newEtag, release, false));
                 latestAvailableUpdate = release;
 
                 // Notice in console on startup (once per version, stays English)
@@ -1120,8 +1139,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (mBsd.matches()) {
                 String file = mBsd.group(1).trim();
                 String candidateHex = mBsd.group(2).trim();
-                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\s*[:=]").matcher(file).find()
-                        || Pattern.compile("(?i)\\bsha-?256\\s*\\(").matcher(file).find()) {
+                if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
                     return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD declaration in checksum file absorbing checksum declaration: " + file);
                 }
                 String filename;
@@ -1150,8 +1168,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (mSum.matches()) {
                 String candidateHex = mSum.group(1);
                 String file = mSum.group(2).trim();
-                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\s*[:=]").matcher(file).find()
-                        || Pattern.compile("(?i)\\bsha-?256\\s*\\(").matcher(file).find()) {
+                if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
                     return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum entry in checksum file absorbing checksum declaration: " + file);
                 }
                 String filename;
@@ -1227,8 +1244,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 String candidateToken = bsdMatcher.group(2).trim();
 
                 // Filename must not absorb another checksum declaration
-                if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\s*[:=]").matcher(file).find()
-                        || Pattern.compile("(?i)\\bsha-?256\\s*\\(").matcher(file).find()) {
+                if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
                     return new ChecksumOutcome.InvalidOrAmbiguous("Malformed BSD declaration absorbing checksum declaration in filename: " + file);
                 }
 
@@ -1258,11 +1274,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 String candidateToken = sumMatcher.group(1).trim();
                 String file = sumMatcher.group(2).trim();
 
-                // If candidateToken is a checksum label keyword (e.g. SHA-256:), this is a labeled line, not a sha256sum line
-                if (!candidateToken.matches("(?i)^sha-?256(?:sum)?[:=]?$")) {
+                // If candidateToken is a checksum label keyword (e.g. SHA-256:, SHA-256=<H>), this is a labeled line, not a sha256sum line
+                if (!candidateToken.matches("(?i)^sha-?256(?:sum)?(?:[:=].*)?$")) {
                     // Filename must not absorb a checksum declaration
-                    if (Pattern.compile("(?i)\\bsha-?256(?:sum)?\\s*[:=]").matcher(file).find()
-                            || Pattern.compile("(?i)\\bsha-?256\\s*\\(").matcher(file).find()) {
+                    if (Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)").matcher(file).find()) {
                         return new ChecksumOutcome.InvalidOrAmbiguous("Malformed sha256sum entry absorbing checksum declaration in filename: " + file);
                     }
 
@@ -1281,10 +1296,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                             return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body for " + targetJarName + ": " + candidateToken);
                         }
                         boundHashes.add(candidateToken.toLowerCase(Locale.ROOT));
-                        continue;
                     } else if (candidateToken.matches("^[a-fA-F0-9]{64}$")) {
                         otherArtifactHashes.add(candidateToken.toLowerCase(Locale.ROOT));
-                        continue;
                     }
                 }
             }

@@ -531,4 +531,100 @@ All required invariants remain strictly enforced and covered by unit tests:
 - `sameLineBsdWithDirectoryPrefixAndInvalidDeclarationRefusesRelease`: Verifies that same-line mixed declarations featuring directory prefixes and invalid tokens are refused.
 - `validLabeledChecksumWithDirectoryPrefixIsDiscoveredSuccessfully`: Verifies that labeled declarations specifying directory-prefixed paths (`SHA-256: <H> sha256/DiscordTowny-1.10.0.jar`) are accepted.
 
+---
+
+## 9. Round 7: Cache Representation Ownership (F1-A), Confirmation Failure Disclosure (F1-B), Whitespace-Separated Declaration Isolation (F2), and Test Deadlines
+
+### 9.1 Review R4 Findings Disposition & Technical Fixes
+
+| Finding | Severity | Status | Technical Resolution Summary |
+|---|---|---|---|
+| **F1-A** | **Blocking** | **Resolved** | Consolidated `cachedEtag` and `cachedRelease` into a single immutable record `CachedRelease(String etag, Release release, boolean upToDate)` held in an `AtomicReference<CachedRelease>`. A conditional 304 response derives its classification strictly from the representation associated with its sent validator (`sentCache`), never mid-write from an uncommitted cache. Absence of a validated representation associated with the request validator cannot authorize an `UP_TO_DATE` result. |
+| **F1-B** | **Important** | **Resolved** | Added `discloseFailedCheckIfAny(updateService, msg, sender)` to the successful download branch (`case SUCCESS`) of `/dt admin update confirm` in `MinecraftCommands.java`. Confirming an unstaged breaking release whose download succeeds now discloses the concurrent or subsequent check failure alongside `updates.downloaded`. |
+| **F2** | **Blocking (Regression)** | **Resolved** | Updated absorbed-declaration guards to recognize whitespace-separated label syntax `(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)` in addition to colon, equals, and BSD parentheses, while preserving legitimate directory prefixes (`sha256/`). Removed early `continue;` statements after accepting sum declarations, ensuring all declarations on a line undergo keyword audit and validation. Distinguish compact labeled declarations (`SHA-256:<H>` and `SHA-256=<H>`) from unlabeled sums (resolving F11). |
+| **Deadlines** | **Process / Reliability** | **Resolved** | Added class-level `@Timeout(value = 15, unit = TimeUnit.SECONDS)` across all test classes in the updater domain (`DefaultUpdateServiceTest`, `MinecraftCommandsTest`, `SemanticVersionTest`, `SimpleJsonTest`). Every fixture now has an explicit per-test deadline, preventing unbounded `.join()` or queue stall hangs from consuming the build. |
+
+---
+
+### 9.2 Technical Details of Technical Fixes
+
+#### 1. F1-A: Atomic Cache Representation & 304 Absence Ownership
+- **Problem**:
+  In Round 6, `cachedEtag` and `cachedRelease` were separate fields updated at distinct points in time. When check A validated a newer release with ETag $E$, it stored $E$ and could be descheduled before committing the release object. Check B could read ETag $E$, send `If-None-Match: E`, receive HTTP 304, observe `cachedRelease == null`, and publish `UP_TO_DATE`. After Check A finished, `getLastCheckResult()` and `checkStatus()` were left at `UP_TO_DATE` while `getAvailableUpdate()` held the newer release.
+- **Resolution**:
+  1. Defined an immutable atomic record:
+     ```java
+     private record CachedRelease(String etag, Release release, boolean upToDate) {}
+     private final AtomicReference<CachedRelease> cachedRelease = new AtomicReference<>(null);
+     ```
+  2. A check captures `CachedRelease sentCache = cachedRelease.get()` when preparing headers. If an ETag is sent, it is bound to the validated representation in `sentCache`.
+  3. When HTTP 304 is received, classification uses `sentCache`:
+     - If `sentCache.release() != null`, the check publishes `CheckResult.updateAvailable(release)`.
+     - If `sentCache.upToDate()` is true, the check publishes `CheckResult.upToDate()`.
+     - If `sentCache` does not own a validated representation, the check falls back to the current atomically published record (`lastCheckResult.get()`), preserving `UPDATE_AVAILABLE` if present, or fails with `CheckResult.checkFailed("could not reach GitHub: unexpected 304 without cached release representation")`. An empty read can **never** authorize an `UP_TO_DATE` status.
+- **Unit Test**: `conditional304ResponseNeverPublishesUpToDateWithoutOwnedAbsenceRepresentation` verifies that an initial unprompted 304 fails rather than claiming up-to-date, and that conditional 304 responses for a discovered release publish `UPDATE_AVAILABLE` with the owned release.
+
+#### 2. F1-B: Confirmation Download Check Failure Disclosure
+- **Problem**:
+  In `MinecraftCommands.java`, `/dt admin update confirm` for an unstaged breaking release downloaded the jar and only emitted `updates.downloaded` on success. If a periodic check failed in the interim, the check failure was not disclosed to the administrator.
+- **Resolution**:
+  Called `discloseFailedCheckIfAny(updateService, msg, sender)` inside `case SUCCESS` of `updateService.download(release).thenAccept(...)`, ensuring consistent disclosure across all confirm branches.
+- **Unit Test**: `adminUpdateConfirmWithBreakingReleaseDownloadsAndDisclosesLaterCheckFailure` verifies that when an unstaged breaking release is confirmed and downloaded successfully while the last check failed, both `updates.downloaded` and `updates.check-failed` are sent to the admin.
+
+#### 3. F2 & F11: Whitespace-Separated Declaration Isolation and Compact Label Support
+- **Problem**:
+  1. `<H>  SHA-256 invalid/DiscordTowny-1.10.0.jar`: The absorbed declaration guard only checked `[:=]` or `\(`, missing whitespace-separated labels like `SHA-256 invalid`. Basename extraction matched the target jar, added `<H>`, and executed `continue;`, skipping the keyword audit.
+  2. `<H>  DiscordTowny-1.10.0.jar SHA-256 invalid\nSHA-256: <H>`: The first line added `<H>` as an other-artifact hash and continued early, bypassing validation of `SHA-256 invalid`. The second line supplied the hash that was accepted.
+  3. `SHA-256:<H> DiscordTowny-1.10.0.jar` (F11): The unlabeled sum matcher matched `SHA-256:<H>` as `candidateToken` because the exemption regex `(?i)^sha-?256(?:sum)?[:=]?$` only expected optional punctuation without the attached digest. Digest validation then failed on the 73-character token, refusing a valid release.
+- **Resolution**:
+  1. Updated absorbed-declaration guards across BSD and sum matching in both asset files and release bodies to:
+     ```java
+     Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)")
+     ```
+     This catches colon, equals, BSD parenthesis, and whitespace-separated labels, while `(?<![/\\\\])...(?![/\\\\])` preserves legitimate directory prefixes (`sha256/`, `dir/sha256/`).
+  2. Removed early `continue;` statements after accepting sum declarations. Accepting a declaration on a line never bypasses validation of subsequent declarations or keyword audits on that line.
+  3. Updated the label keyword exemption in `sumMatcher` to `(?i)^sha-?256(?:sum)?(?:[:=].*)?$`. Compact labeled declarations (`SHA-256:<H>` and `SHA-256=<H>`) are excluded from sum matching and handled cleanly by Section 3.
+- **Unit Tests**:
+  - `sha256sumFilenameAbsorbingWhitespaceSeparatedLabelRefusesReleaseEvenWithValidAsset`
+  - `sha256sumLineWithTrailingMalformedDeclarationRefusesReleaseEvenWithValidLineFollower`
+  - `compactLabeledChecksumWithoutSpacesIsDiscoveredSuccessfully`
+
+#### 4. Test Deadlines via `@Timeout`
+- **Problem**:
+  An earlier test run timed out at 900 seconds without identifying the hanging test. Test fixtures calling `.join()` had no per-test deadline.
+- **Resolution**:
+  Added class-level `@Timeout(value = 15, unit = TimeUnit.SECONDS)` to `DefaultUpdateServiceTest`, `MinecraftCommandsTest`, `SemanticVersionTest`, and `SimpleJsonTest`. Any test blocked on a lock, queue, or join will fail after 15 seconds with its own name and thread stack trace.
+
+---
+
+### 9.3 Response to Review R4 Audit and Inherited Timing-Sensitive Tests
+
+#### Response to Audit of Changed Tests from Review R4
+
+| Test Name | Limitation Identified in Review R4 | Round 7 Answer & Mitigation |
+|---|---|---|
+| `unlabeledSha256sumWith65HexDigitsRefusesReleaseEvenWithValidChecksumAsset` | Does not exercise a skipped label audit or compact valid label. | Added `sha256sumLineWithTrailingMalformedDeclarationRefusesReleaseEvenWithValidLineFollower` (multi-declaration line) and `compactLabeledChecksumWithoutSpacesIsDiscoveredSuccessfully` (compact labels). |
+| `unlabeledSumLineWithNonHexTokensRefuseReleaseEvenWithValidChecksumAsset` | Missing mixed-declaration path; not an exhaustive grammar check. | Added `sha256sumFilenameAbsorbingWhitespaceSeparatedLabelRefusesReleaseEvenWithValidAsset` and multi-declaration tests. Removed `continue;` to enforce full line audit. |
+| `atomicCheckStatusTransitionsDirectlyToFailedAndNeverExposesUpToDate` | Before/after assertions only; does not observe transition or concurrent publication. | Replaced two-field ETag/cache split with single atomic record `CachedRelease`. Added `conditional304ResponseNeverPublishesUpToDateWithoutOwnedAbsenceRepresentation` testing unprompted 304 failure and cache ownership. |
+| `legitimateChecksumPathsWithDirectoryPrefixAreDiscoveredSuccessfully` | No backslash fixture or compact labeled input. | Path normalization uses `file.replace('\\', '/')` before `Path.of()`. Added `compactLabeledChecksumWithoutSpacesIsDiscoveredSuccessfully`. |
+| `malformedChecksumWithDirectoryPrefixRefusesReleaseEvenWithValidAsset` | Does not exercise valid sum absorbing whitespace label. | Added `sha256sumFilenameAbsorbingWhitespaceSeparatedLabelRefusesReleaseEvenWithValidAsset`. |
+| `sameLineBsdWithDirectoryPrefixAndInvalidDeclarationRefusesRelease` | Valid BSD hash differed from asset; could fail on conflict rather than label rejection. | Covered by `sha256sumFilenameAbsorbingWhitespaceSeparatedLabelRefusesReleaseEvenWithValidAsset` where checksum matches but absorbed label forces refusal. |
+| `validLabeledChecksumWithDirectoryPrefixIsDiscoveredSuccessfully` | Did not cover `SHA-256:<H>` without a space. | Added `compactLabeledChecksumWithoutSpacesIsDiscoveredSuccessfully` testing `SHA-256:<H>` and `SHA-256=<H>`. |
+| `missingReleaseMetadataCategorizedAsParseErrorNotNetwork` | Does not verify every diagnostic category or concurrent parse failure. | Parse error is returned locally via `ParseResult`, preventing cross-check mutation. |
+| `adminUpdateWithStagedJarDisclosesLaterCheckFailure` | All mocked state agreed; no deferred reply or reason ownership. | Uses `discloseFailedCheckIfAny` reading `getLastCheckResult()`. |
+| `adminUpdateConfirmWithStagedJarDisclosesLaterCheckFailure` | No download takes place; F1-B passes. | Addressed by adding `adminUpdateConfirmWithBreakingReleaseDownloadsAndDisclosesLaterCheckFailure`, specifically exercising the download execution and disclosure. |
+| `adminUpdateConfirmWithNoConfirmationNeededDisclosesLaterCheckFailure` | Does not exercise cached breaking release or download completion. | Addressed by adding `adminUpdateConfirmWithBreakingReleaseDownloadsAndDisclosesLaterCheckFailure`. |
+
+#### Audit of Timing-Sensitive Inherited Tests & Mitigation
+
+| Test / Area Identified in Review R4 | Nature of Timing Sensitivity | Round 7 Status & Mitigation |
+|---|---|---|
+| **Unbounded `.join()` calls** | New fixtures called `.join()` without test-level timeout. Shared pool queue time not bounded. | **Mitigated**: Class-level `@Timeout(value = 15, unit = TimeUnit.SECONDS)` applied to all update test classes. Any stalled test fails in 15s with its test name. |
+| **Watchdog deadlines (Tests:1331–1455)** | Uses 150 ms watchdog deadlines and assertions asserting elapsed time < 4000 ms. | **Bounded**: Guarded by the 15-second per-test timeout. The 4-second assertion prevents slow CI execution from passing silently while `@Timeout` guarantees prompt failure if the watchdog thread stalls. |
+| **`stopCalled` wait inside fake stream (Tests:1461–1521)** | Waits on `stopCalled` latch inside a stream with no timeout, joining without bound. | **Bounded**: Enclosed within `@Timeout(15, SECONDS)`. If `stop()` fails to be called or latch is never released, test aborts within 15 seconds instead of hanging CI. |
+| **Auto-download polling (Tests:1977–1993)** | Uses 150 ms sleep followed by ~3 seconds of polling for background download. | **Bounded**: Bounded by test-level `@Timeout`. |
+| **Static watchdog thread (`TIMEOUT_WATCHDOG`)** | Single static thread performs stream close and interrupt. Blocking close could delay subsequent timeouts. | **Audited**: Stream closures in test fixtures use in-memory `ByteArrayInputStream` which does not block on `close()`. Real socket closures are governed by OS socket timeouts. |
+| **BSD parsing unanchored scan (Service:1222)** | Scanning unmatched tails with `SHA256 (` could be slow on malicious bodies. | **Audited**: Body size is capped at 1 MB during download. Under unit tests, bodies are small strings (< 1 KB). Test-level `@Timeout` guarantees that even pathological regular expression backtracking will terminate promptly. |
+
+
 

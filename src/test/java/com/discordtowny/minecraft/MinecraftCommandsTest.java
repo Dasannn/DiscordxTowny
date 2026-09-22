@@ -30,6 +30,7 @@ import org.bukkit.entity.Player;
 import org.yaml.snakeyaml.Yaml;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.ArgumentCaptor;
 
 import java.io.InputStream;
@@ -71,6 +72,7 @@ import static org.mockito.Mockito.*;
  *   <li>Filtering of /dt help based on executor status</li>
  * </ul>
  */
+@Timeout(value = 15, unit = TimeUnit.SECONDS)
 class MinecraftCommandsTest {
 
     private LinkService linkService;
@@ -1876,6 +1878,36 @@ class MinecraftCommandsTest {
         // Check failure is disclosed alongside
         verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
         verify(updateService, never()).download(any());
+    }
+
+    @Test
+    void adminUpdateConfirmWithBreakingReleaseDownloadsAndDisclosesLaterCheckFailure() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.isUpdatePending()).thenReturn(false);
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        UpdateService.Release breakingRelease = new UpdateService.Release("2.0.0", "url", "hash", "breaking changes");
+        when(updateService.getAvailableUpdate()).thenReturn(Optional.of(breakingRelease));
+        when(updateService.isBreaking(breakingRelease)).thenReturn(true);
+        when(updateService.download(breakingRelease)).thenReturn(CompletableFuture.completedFuture(UpdateService.DownloadResult.SUCCESS));
+        UpdateService.CheckResult failedResult = UpdateService.CheckResult.checkFailed("could not reach GitHub (ConnectException)");
+        when(updateService.getLastCheckResult()).thenReturn(failedResult);
+        when(updateService.checkStatus()).thenReturn(UpdateService.CheckStatus.CHECK_FAILED);
+        when(updateService.isLastCheckFailed()).thenReturn(true);
+        when(updateService.getLastCheckError()).thenReturn(Optional.of("could not reach GitHub (ConnectException)"));
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("confirm").getCommand().run(ctx);
+
+        // Download succeeds and informs admin
+        verify(updateService).download(breakingRelease);
+        verify(admin).sendMessage(messages.get("updates.downloaded", Map.of("latest", "2.0.0")));
+        // Check failure is also disclosed alongside (F1-B)
+        verify(admin).sendMessage(argThat((Component cmp) -> cmp != null && cmp.toString().contains("updates.check-failed")));
     }
 
     @Test
