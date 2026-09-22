@@ -626,5 +626,226 @@ All required invariants remain strictly enforced and covered by unit tests:
 | **Static watchdog thread (`TIMEOUT_WATCHDOG`)** | Single static thread performs stream close and interrupt. Blocking close could delay subsequent timeouts. | **Audited**: Stream closures in test fixtures use in-memory `ByteArrayInputStream` which does not block on `close()`. Real socket closures are governed by OS socket timeouts. |
 | **BSD parsing unanchored scan (Service:1222)** | Scanning unmatched tails with `SHA256 (` could be slow on malicious bodies. | **Audited**: Body size is capped at 1 MB during download. Under unit tests, bodies are small strings (< 1 KB). Test-level `@Timeout` guarantees that even pathological regular expression backtracking will terminate promptly. |
 
+---
 
+## 10. Round 8 — Unified Atomic State Publication, Universal Validate-Before-Bind, and Consumed Filename Audit Isolation
+
+### 10.1 Review R5 Findings Disposition & Technical Fixes
+
+| Finding | Severity | Status | Technical Resolution Summary |
+|---|---|---|---|
+| **F1-A** | **Blocking** | **Resolved** | Eliminated the independent `latestAvailableUpdate` field. Published check status and availability are unified into a single immutable `CheckResult` held in `AtomicReference<CheckResult> lastCheckResult`. Every reader (`checkStatus()`, `getAvailableUpdate()`, `isAwaitingConfirmation()`, `renderStatusMessages()`) reads from that single atomic snapshot. Settled result/availability contradictions are permanently impossible. The unsolicited 304 branch at `:675-684` that borrowed another check's classification from `lastCheckResult` was completely removed; missing request-owned validator/representation unconditionally fails the check. |
+| **F2** | **Blocking (Regression)** | **Resolved** | Re-ordered parsing logic to enforce universal **validate-before-bind**: a recognized declaration is validated against 64-hex digest requirements before evaluating whether its filename binds to the selected jar. Malformed tokens declaring non-target artifacts (e.g. `<H>9  DiscordTowny-1.10.0-sources.jar`) immediately return `InvalidOrAmbiguous`, refusing the release without permitting fallback to valid dedicated assets. Applied across body sum parsing and asset file checksum parsing. |
+| **F12** | **Important** | **Resolved** | Isolated consumed filenames from line-level keyword audits: when a sum declaration consumes a directory-prefixed filename (e.g. `sha256.txt/DiscordTowny-1.10.0.jar`), that consumed filename is masked out from `lineToCheck` prior to Section 3. Updated keyword regex lookaheads to recognize directory path components ending in slashes, preventing legitimate directory names from being counted as declaration keywords. |
+
+---
+
+### 10.2 Technical Details of Technical Fixes
+
+#### 1. F1-A: Unified Atomic State Publication & Unsolicited 304 Evidence Ownership
+- **Problem**:
+  1. *Settled Inconsistency 1*: Check B obtained newer release R (200 OK) and set `latestAvailableUpdate = R`. A delayed Check A processed a legitimate 304 for the running version and published `UP_TO_DATE` without modifying `latestAvailableUpdate`. After all checks finished, `checkStatus()` was `UP_TO_DATE` while `getAvailableUpdate()` returned R.
+  2. *Settled Inconsistency 2*: Check A validated newer release R and wrote `latestAvailableUpdate = R` at `:750`, then paused during notification/auto-download before publishing at `:797`. Check B completed a 200 check for a non-newer version, set `latestAvailableUpdate = null`, and published `UP_TO_DATE`. Check A resumed and published `UPDATE_AVAILABLE(R)` without resetting `latestAvailableUpdate`. After all checks finished, `lastCheckResult` named R while `getAvailableUpdate()` was empty, losing the update offer.
+  3. *Unsolicited 304 Borrowing Success*: When a check sent no validator (fresh service) and received an abnormal 304, lines 675–684 inspected `lastCheckResult` and returned another check's successful classification (`UPDATE_AVAILABLE` or `UP_TO_DATE`).
+- **Resolution**:
+  1. *Unified Atomic State*: Removed the separate `private volatile Release latestAvailableUpdate` field entirely. `DefaultUpdateService` now maintains a single atomic source of truth: `AtomicReference<CheckResult> lastCheckResult`.
+     - `getAvailableUpdate()` returns `lastCheckResult.get().release()`.
+     - `checkStatus()` returns `lastCheckResult.get().status()`.
+     - `isLastCheckFailed()` returns `lastCheckResult.get().status() == CheckStatus.CHECK_FAILED`.
+     - `getLastCheckError()` returns `lastCheckResult.get().error()`.
+     - `hasCheckedAtLeastOnce()` returns `lastCheckResult.get().status() != CheckStatus.NOT_CHECKED`.
+     - `isAwaitingConfirmation()` evaluates `getAvailableUpdate().orElse(null)`.
+     Because classification and availability are fields of the same immutable record (`CheckResult`), a completed check publishes both as a single value via `publishCheckResult(CheckResult)`. Settled disagreements between `checkStatus()` and `getAvailableUpdate()` are architecturally impossible.
+  2. *Single-Snapshot Readers*:
+     - `renderStatusMessages(Messages msg)` captures a single snapshot `CheckResult lastResult = getLastCheckResult()` and derives both `availableOpt = lastResult.release()` and `status = lastResult.status()` from it.
+     - `MinecraftCommands.java:1102–1145` (`handleUpdateStatus`) captures `CheckResult lastResult = updateService.getLastCheckResult()` and derives availability and status in one read, eliminating `isPresent()` followed by empty `get()`.
+     - `MinecraftCommands.java:1395–1407` (`discloseFailedCheckIfAny`) inspects `lastResult.status()` and `lastResult.error()` from the snapshot, eliminating torn reads across concurrent updates.
+  3. *Unsolicited 304 Refusal*: Removed lines 675–684. If `sentCache` does not own a validated representation (`sentCache.release() == null && !sentCache.upToDate()`), a 304 response unconditionally publishes `CheckResult.checkFailed("could not reach GitHub: unexpected 304 without cached release representation")`. An abnormal response can never borrow another check's success.
+
+#### 2. F2: Universal Validate-Before-Bind
+- **Problem**:
+  In `extractSha256FromBody`, `sumMatcher` group 1 matched `<H>9` (65 hex digits) and group 2 matched `DiscordTowny-1.10.0-sources.jar`. Because `filename.equalsIgnoreCase(targetJarName)` failed, execution reached `else if (candidateToken.matches("^[a-fA-F0-9]{64}$"))`, which also failed on 65 hex digits. The malformed token was silently dropped without recording invalid evidence. With 0 keywords on the line, the body outcome was `None`, allowing a valid dedicated asset to admit the release.
+- **Resolution**:
+  1. Re-ordered declaration processing in `extractSha256FromBody`:
+     ```java
+     // Validate recognized declaration before deciding whether it binds to our jar (F2)
+     if (!candidateToken.matches("^[a-fA-F0-9]{64}$")) {
+         return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body: " + candidateToken);
+     }
+     ```
+     This check precedes `filename.equalsIgnoreCase(targetJarName)`. Any recognized declaration with an invalid digest token immediately returns `InvalidOrAmbiguous`, regardless of the artifact name.
+  2. Applied the same validate-before-bind rule to `parseChecksumFileContent` for both BSD declarations (`mBsd`) and standard sum declarations (`mSum`). Checksum asset files containing malformed digests for other artifacts are immediately refused without binding.
+
+#### 3. F12: Consumed Filename Audit Isolation
+- **Problem**:
+  `<H>  sha256.txt/DiscordTowny-1.10.0.jar`
+  `sha256.txt` is a legitimate directory name. Basename extraction resolved `DiscordTowny-1.10.0.jar` and bound `<H>`. However, because `continue;` had been removed to audit the line, Section 3's keyword audit evaluated `line`. `\bsha-?256\b` matched `sha256` in `sha256.txt` because the period `.` is a word boundary and was not the excluded slash. With `totalKeywords == 1` and `decls.size() == 0`, Section 3 refused the release as a malformed declaration.
+- **Resolution**:
+  1. *Consumed Filename Masking*: When Section 2 recognizes a valid sum declaration, its consumed filename operand (`file`) is masked out in `lineToCheck` (`lineToCheck = lineToCheck.replace(sumConsumedFile, " ")`), matching the masking behavior already used for BSD declarations. Section 3 audits only *other* unconsumed declarations on the line.
+  2. *Path-Aware Lookahead*: Updated the keyword audit pattern to `(?<![/\\\\])(?i)\\bsha-?256(?:sum)?\\b(?![^\\s/\\\\]*[/\\\\])`. Checksum keywords followed by non-whitespace path characters leading to a directory slash (`/` or `\`) are recognized as path components and excluded from declaration keyword counts.
+
+---
+
+### 10.3 Analysis of "The Shape of All Three" Across the Codebase
+
+The review identified two recurring structural pitfalls:
+1. **Validate after bind** (a check placed after the decision it needed to precede).
+2. **State written in two steps** (split publication where dependent representations can disagree).
+
+An exhaustive audit of the updater codebase was conducted to identify any other occurrences of either shape:
+
+#### Audit Item 1: Validation Precedence in Checksum Parsers
+- `extractSha256FromBody`:
+  - BSD format: `candidateToken` was already validated before binding. (Correct)
+  - Labeled format: `candidateToken` was already validated before binding. (Correct)
+  - sha256sum format: `candidateToken` validation was previously nested *inside* `if (filename.equalsIgnoreCase(targetJarName))`. **Fixed in Round 8**: moved before filename binding.
+- `parseChecksumFileContent`:
+  - BSD format (`mBsd`): previously checked `isValidSha256(candidateHex)` after `if (filename.equalsIgnoreCase(targetJarName))`. **Fixed in Round 8**: moved before filename binding.
+  - Standard sum format (`mSum`): previously checked `isValidSha256(candidateHex)` after `if (filename.equalsIgnoreCase(targetJarName))`. **Fixed in Round 8**: moved before filename binding.
+- `parseRelease`:
+  - Validates all asset checksums and body checksums before selecting and binding the final SHA-256. Conflicting evidence or malformed evidence in either source refuses the release before any staging or download can occur.
+
+#### Audit Item 2: Dependent Public State Publication & Snapshot Reads
+- `DefaultUpdateService`:
+  - Previously, `latestAvailableUpdate` was written separately from `lastCheckResult`. **Fixed in Round 8**: `latestAvailableUpdate` field eliminated. All state queries (`checkStatus()`, `getAvailableUpdate()`, `getLastCheckResult()`, `isLastCheckFailed()`, `getLastCheckError()`, `hasCheckedAtLeastOnce()`, `isAwaitingConfirmation()`) read directly from `lastCheckResult.get()`.
+  - Cache commit (`cachedRelease.set(...)`) is now synchronized with `publishCheckResult(...)` at completion.
+- `MinecraftCommands`:
+  - `handleUpdateStatus`: Previously took independent calls to `isUpdatePending()`, `getAvailableUpdate().isPresent()`, `getAvailableUpdate().get()`, and `getLastCheckResult()`. If availability cleared concurrently, `get()` could throw `NoSuchElementException`. **Fixed in Round 8**: single snapshot taken via `updateService.getLastCheckResult()`.
+  - `discloseFailedCheckIfAny`: Previously read `getLastCheckResult()`, then evaluated `checkStatus() == CHECK_FAILED`, then read `getLastCheckError()`. A transient failure could result in reading an outdated error. **Fixed in Round 8**: status and error are read from `lastResult` atomically.
+
+---
+
+### 10.4 Deterministic Concurrency Verification (Zero Sleeps)
+
+Eight new unit tests were added to verify these fixes without sleeps or arbitrary timing dependencies:
+
+| Test Name | File | Defect Targeted | Verification Mechanism |
+|---|---|---|---|
+| `delayedLegitimate304PublishesUpToDateAndClearsAvailableReleaseDeterministically` | `DefaultUpdateServiceTest` | Settled Contradiction 1 (F1-A) | Caches `(E0, null, true)`. Check A captures E0 and suspends in transport. Check B runs and completes with newer release R (200 OK), publishing `UPDATE_AVAILABLE`. Check A's 304 response is released, publishing `UP_TO_DATE`. Verifies aggregate settled state: `checkStatus() == UP_TO_DATE` and `getAvailableUpdate().isEmpty()`. Failed under previous code where `getAvailableUpdate()` retained R. |
+| `overlapping200ChecksNeverLeavePublishedUpdateWithEmptyAvailabilityDeterministically` | `DefaultUpdateServiceTest` | Settled Contradiction 2 (F1-A) | Check A validates newer release R (200 OK). During notification hook (`auditLogger`), Check B executes a 200 check for current version (not newer) and publishes `UP_TO_DATE`. Check A resumes and publishes `UPDATE_AVAILABLE(R)`. Verifies aggregate settled state: `checkStatus() == UPDATE_AVAILABLE` and `getAvailableUpdate().isPresent()`. Failed under previous code where `getAvailableUpdate()` was left empty. |
+| `unsolicited304WithoutRequestOwnedValidatorFailsCheckAndNeverBorrowsSuccess` | `DefaultUpdateServiceTest` | Unsolicited 304 borrowing success (F1-A) | Fresh service with no cache. Check A starts without validator and suspends. Check B completes 200 OK with newer release. Check A receives unsolicited 304. Verifies Check A fails with `CHECK_FAILED` and error `"unexpected 304 without cached release representation"`, never borrowing Check B's `UPDATE_AVAILABLE`. |
+| `malformedChecksumForOtherArtifactRefusesReleaseEvenWithValidDedicatedAsset` | `DefaultUpdateServiceTest` | Dropping malformed token for other artifact (F2) | Body contains `<H>9  DiscordTowny-1.10.0-sources.jar` (65 hex digits). Release provides valid dedicated asset `<H>` for `DiscordTowny-1.10.0.jar`. Verifies check fails with `CHECK_FAILED` and is refused without falling back to the dedicated asset. |
+| `sha256sumWithDirectoryPrefixedFilenameContainingSha256InDirectoryNameIsAccepted` | `DefaultUpdateServiceTest` | Legitimate filename read as label (F12) | Body contains `<H>  sha256.txt/DiscordTowny-1.10.0.jar`. Verifies release is discovered successfully with `UPDATE_AVAILABLE`, confirming `sha256.txt` is not counted as a declaration keyword. |
+| `labeledDeclarationWithDirectoryPrefixContainingSha256InDirectoryNameIsAccepted` | `DefaultUpdateServiceTest` | Labeled path prefix with `sha256` (F12) | Body contains `SHA-256: <H> sha256.txt/DiscordTowny-1.10.0.jar`. Verifies release is discovered successfully with `UPDATE_AVAILABLE`. |
+| `checksumAssetWithMalformedDeclarationForOtherArtifactRefusesRelease` | `DefaultUpdateServiceTest` | Asset file malformed token for other artifact (F2) | Checksum asset `checksums.txt` contains `<H>9  DiscordTowny-1.10.0-sources.jar` alongside valid hash for target jar. Verifies release is refused with `CHECK_FAILED`. |
+| `adminUpdateStatusDerivesFromSingleLastResultSnapshot` | `MinecraftCommandsTest` | Command torn read prevention (F1-A) | Mocks `getLastCheckResult()` returning `UPDATE_AVAILABLE`. Verifies `/dt admin update status` renders status and available release from single snapshot without split-read exceptions. |
+
+---
+
+## 11. Round 9 — Disentangling Declaration Recognition from Validation-Before-Bind and Restoring Check Result Semantics
+
+### 11.1 Problem Diagnosis & Root Cause Analysis
+
+Following Round 8's implementation of universal validate-before-bind (F2), nine existing test cases failed during release discovery:
+```
+691 tests completed, 9 failed
+```
+
+Investigation revealed two root causes:
+
+1. **Declaration Recognition vs. Validation Conflation in Body Parser**:
+   - In Round 8, `extractSha256FromBody` moved candidate token format verification (`!candidateToken.matches("^[a-fA-F0-9]{64}$")`) ahead of filename binding.
+   - However, the regex used to identify sha256sum lines (`^(\S+)\s+[*]?((\S.*))$`) matches any line containing two or more whitespace-separated tokens.
+   - As a result, standard English prose in release notes (e.g., `"Release notes without hash"`, `"Normal notes"`, `"[breaking] Migrate..."`, `"Release notes with no checksum at all"`) was captured by the matcher. The first word (`"Release"`, `"Normal"`) was evaluated as a candidate digest. Because ordinary words fail the 64-hex requirement, the parser treated ordinary prose as a malformed declaration and returned `ChecksumOutcome.InvalidOrAmbiguous`.
+   - Consequently, eight valid releases with prose release notes were immediately aborted with `CHECK_FAILED`. In the case of releases with no checksums at all, absence and malformation were conflated: instead of returning `ChecksumOutcome.None()` (which leads to refusal due to `"no published checksum"`), the check failed with `"malformed checksum declaration in release body"`.
+
+2. **Check Execution Outcome vs. Background Update Offer Conflation**:
+   - In test 340 (`No network: normal operation, one log line, and the second check does not log again`), a fourth check encountered an `IOException`.
+   - In Round 8, `doCheckForUpdate()` passed the cached release into `CheckResult.checkFailed(errorMsg, cached)` across network error handlers.
+   - Because the test asserted `assertTrue(fourthCheck.isEmpty())` on `service.checkForUpdate().join().release()`, returning the cached release directly from the failed check future caused an assertion failure. The return value of `checkForUpdate()` represents the outcome of *that specific check execution* (which yielded no new release), whereas persistent service availability (`getAvailableUpdate()`) represents the update offer retained across transient failures.
+
+---
+
+### 11.2 Technical Resolution
+
+#### 1. Disentangling Recognition from Validation in `extractSha256FromBody`
+- **Recognition Step**: In sha256sum syntax, the line must declare a checksum for an artifact jar. The parser extracts the normalized file basename and evaluates:
+  ```java
+  boolean isArtifact = filename.equalsIgnoreCase(targetJarName)
+          || filename.matches("(?i)^[a-zA-Z0-9_.-]+\\.jar$");
+  ```
+  Only if `isArtifact` is `true` is the line recognized as a sha256sum declaration. Non-artifact lines (markdown headings, prose sentences, bullet points) are ignored by the sum matcher, allowing Section 3 keyword audits to evaluate them. If no keywords are present, the body cleanly returns `ChecksumOutcome.None()`.
+- **Universal Validate-Before-Bind**: Once recognized as an artifact declaration, the candidate digest is verified against `^[a-fA-F0-9]{64}$` *before* checking whether `filename.equalsIgnoreCase(targetJarName)`. Any recognized declaration with an invalid digest token (e.g., `<H>9  DiscordTowny-1.10.0-sources.jar`) immediately returns `ChecksumOutcome.InvalidOrAmbiguous`, refusing the release without permitting fallback to dedicated assets.
+
+#### 2. Clean Separation of Check Execution Outcome from Background Availability
+- **Check Execution Result**: When an update check fails (e.g. due to `IOException`, rate limiting, or malformed payloads), `doCheckForUpdate()` publishes `CheckResult.checkFailed(errorMsg)` where `release = Optional.empty()`. Therefore, `service.checkForUpdate().join().release()` accurately reports an empty release for that check.
+- **Service Availability Queries**:
+  - `getAvailableUpdate()` checks if `lastCheckResult` is `UPDATE_AVAILABLE` (returns `result.release()`) or `CHECK_FAILED` (returns `cachedRelease.get().release()` if present), returning `Optional.empty()` if `UP_TO_DATE` or `NOT_CHECKED`.
+  - `getLastCheckResult()` synthesizes `CheckResult.checkFailed(error, cachedRelease)` if `CHECK_FAILED` and a cached release exists.
+  - This preserves atomic snapshot consistency for command readers (`/dt admin update status`) across transient outages while ensuring failed check execution futures report no new release.
+
+---
+
+### 11.3 Verification of Required Closed Invariants
+
+All four required invariants remain strictly enforced:
+
+| Invariant / Case | Input Example | Parsing Behavior | Outcome |
+|---|---|---|---|
+| **Malformed hash for other artifact** | `<H>9  DiscordTowny-1.10.0-sources.jar` | Recognized as artifact (`.jar`). Candidate token is 65 hex characters. Validated before binding: fails 64-hex check. | Refused (`CHECK_FAILED`) |
+| **Absorbed declaration in path** | `<H>  SHA-256 invalid/DiscordTowny-1.10.0.jar` | Recognized as artifact (`.jar`). Filename absorbs checksum declaration keyword. | Refused (`CHECK_FAILED`) |
+| **Legitimate directory prefix** | `<H>  sha256.txt/DiscordTowny-1.10.0.jar` | Recognized as artifact (`.jar`). Resolves `DiscordTowny-1.10.0.jar`. Token is valid 64-hex. Consumed file masked; path excluded from keyword audit. | Accepted (`UPDATE_AVAILABLE`) |
+| **Labeled declaration** | `SHA-256: <H> DiscordTowny-1.10.0.jar` | Token is label keyword; sum matcher skips. Section 3 parses labeled declaration and binds to target jar. | Accepted (`UPDATE_AVAILABLE`) |
+| **Prose release notes** | `Release notes without hash` | First token `"Release"`, file `"notes without hash"`. `isArtifact` is false. Sum matcher skips. No keywords in Section 3. | Clean `None()`, assets checked |
+| **Release without published checksum** | `Release notes with no checksum at all` | Sum matcher skips. Section 3 finds no keywords. Returns `None()`. No asset checksum found. | Refused (`CHECK_FAILED` with `"no published checksum"`) |
+
+---
+
+## 12. Round 10 — Preserving Captured Cached Release across Rate-Limited Checks
+
+### 12.1 Problem Diagnosis & Root Cause Analysis
+
+Following Round 9's parser fixes, 689 of 691 tests passed with exactly two failures:
+```
+Rate limit 403 or 429 respects reset header and uses cached release
+  Cached release should be returned when rate-limited ==> expected: <true> but was: <false>
+
+Rate limit response marks check failed even when cached release is returned (F3)
+  Cached release must still be returned for convenience ==> expected: <true> but was: <false>
+```
+
+#### Root Cause
+In Round 9, during the effort to separate check execution results from background service availability (to satisfy test 340's assertion that a failed network check future reports an empty release), `doCheckForUpdate()` was modified to publish `CheckResult.checkFailed(err)` with an empty release (`release = Optional.empty()`) across all failure branches.
+
+This inadvertently broke the rate-limiting contract established in review R3 (F3):
+- While transient network transport failures (e.g. `IOException: Connection refused` in test 340) report an empty release on `service.checkForUpdate().join().release()`, GitHub API rate-limited checks (both the rate-limit window shortcut and HTTP 403/429 responses) operate under a distinct requirement: **a check that could not complete due to rate limiting must still carry the cached release it already knew about**.
+- This enables callers and administrators to continue observing the update discovered earlier while simultaneously being informed that this check failed (`CHECK_FAILED`).
+- `CheckResult` provides the static factory `checkFailed(error, cachedRelease)` precisely to represent these dual semantics in a single immutable record. In Round 9, rate-limited exits failed to pass the check's captured release into this factory, returning `Optional.empty()` on `.release()` and failing the two tests.
+
+---
+
+### 12.2 Technical Resolution
+
+#### 1. Capturing and Carrying the Cache across Rate-Limited Exits
+- In `DefaultUpdateService.doCheckForUpdate()`, the cache representation is captured upfront before query execution:
+  ```java
+  CachedRelease sentCache = cachedRelease.get();
+  Release capturedRelease = (sentCache != null) ? sentCache.release() : null;
+  ```
+- **Rate-Limit Window Shortcut**: When an active rate-limit window suppresses outbound network calls (`Instant.now().isBefore(resetTime)`), the service publishes:
+  ```java
+  return publishCheckResult(CheckResult.checkFailed(err, capturedRelease));
+  ```
+- **HTTP 403 and 429 Responses**: When GitHub returns HTTP 403 or 429, the service records the updated rate limit headers and publishes:
+  ```java
+  return publishCheckResult(CheckResult.checkFailed(err, capturedRelease));
+  ```
+
+#### 2. Unified Atomic State Publication
+- **Coherent State**: The published `CheckResult` carries both `status == CHECK_FAILED` and `release == Optional.of(capturedRelease)` simultaneously as one immutable atomic snapshot in `lastCheckResult`.
+- **Reader Prioritization**: `getAvailableUpdate()` and `getLastCheckResult()` inspect `result.release()` from the atomically published `lastCheckResult` snapshot first. When a check carries a captured release, readers consume it directly without synthesizing or reading separate mutable state.
+- **Contract Boundary**: F1-A's single publication model, the unsolicited-304 refusal guard, and the Round 9 declaration parser remain completely unchanged. Network error handlers (`IOException`) continue to publish empty check releases, ensuring test 340 and the other 689 tests remain fully passing.
+
+---
+
+### 12.3 Verification Matrix
+
+| Test Name | Pre-Round 10 State | Post-Round 10 Behavior | Status |
+|---|---|---|---|
+| `Rate limit 403 or 429 respects reset header and uses cached release` | Failed: second and third check returned empty release (`expected: <true> but was: <false>`) | Check 2 (HTTP 403) and Check 3 (window shortcut) both return `CheckResult.checkFailed(err, capturedRelease)`. `release().isPresent()` is `true` and matches `"1.10.0"`. | **Resolved** |
+| `Rate limit response marks check failed even when cached release is returned (F3)` | Failed: second check returned empty release (`expected: <true> but was: <false>`) | Check 2 (HTTP 429) and Check 3 (window shortcut) return cached release while marking `isLastCheckFailed() == true` and `checkStatus() == CHECK_FAILED`. | **Resolved** |
+| `No network: normal operation, one log line, and the second check does not log again` (Test 340) | Passed | `IOException` exits publish `CheckResult.checkFailed(errorMsg)` with empty release. Fourth check returns empty release as expected. | **Maintained** |
+| `Failure after cached discovery: reports BOTH cached update and failure` (Test 2882) | Passed | `getAvailableUpdate()` and `renderStatusMessages()` report both available cached update and check failure reason. | **Maintained** |
+| F1-A Single Publication & Unsolicited 304 Refusal Tests | Passed | Atomic publication and abnormal 304 rejection stand unchanged. | **Maintained** |
+| Round 9 Parser Tests (9 valid releases, 4 malformed/legitimate fixtures) | Passed | All declaration recognition and validation-before-bind logic stands unchanged. | **Maintained** |
 

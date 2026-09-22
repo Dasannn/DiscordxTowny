@@ -1911,6 +1911,28 @@ class MinecraftCommandsTest {
     }
 
     @Test
+    void adminUpdateStatusDerivesFromSingleLastResultSnapshot() throws Exception {
+        UpdateService updateService = mock(UpdateService.class);
+        when(updateService.currentVersion()).thenReturn("1.0.0");
+        when(updateService.isUpdatePending()).thenReturn(false);
+        UpdateService.Release release = new UpdateService.Release("1.10.0", "url", "hash", "some notes");
+        UpdateService.CheckResult lastResult = UpdateService.CheckResult.updateAvailable(release);
+        when(updateService.getLastCheckResult()).thenReturn(lastResult);
+
+        LiteralCommandNode<CommandSourceStack> root = createRoot(updateService);
+        Player admin = mock(Player.class);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("update").getChild("status").getCommand().run(ctx);
+
+        verify(admin).sendMessage(messages.get("updates.status-current", Map.of("current", "1.0.0")));
+        verify(admin).sendMessage(messages.get("updates.available", Map.of("latest", "1.10.0", "current", "1.0.0")));
+        verify(admin, never()).sendMessage(messages.get("updates.up-to-date"));
+    }
+
+    @Test
     void adminListWithMissingRoleCountUsesLocalizedNotApplicable() throws Exception {
         LiteralCommandNode<CommandSourceStack> root = createRoot();
         Player admin = mock(Player.class);

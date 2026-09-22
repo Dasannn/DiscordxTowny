@@ -1102,16 +1102,24 @@ public final class MinecraftCommands {
                     String current = updateService.currentVersion();
                     sender.sendMessage(msg.get("updates.status-current", Map.of("current", current)));
 
+                    UpdateService.CheckResult lastResult = updateService.getLastCheckResult();
+                    UpdateService.CheckStatus status = (lastResult != null)
+                            ? lastResult.status()
+                            : updateService.checkStatus();
+                    Optional<UpdateService.Release> availableOpt = (lastResult != null && lastResult.release().isPresent())
+                            ? lastResult.release()
+                            : updateService.getAvailableUpdate();
+
                     boolean hasUpdateInfo = false;
                     if (updateService.isUpdatePending()) {
                         hasUpdateInfo = true;
-                        String ver = updateService.getAvailableUpdate()
+                        String ver = availableOpt
                                 .map(UpdateService.Release::version)
                                 .orElse(current);
                         sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", ver)));
-                    } else if (updateService.getAvailableUpdate().isPresent()) {
+                    } else if (availableOpt.isPresent()) {
                         hasUpdateInfo = true;
-                        UpdateService.Release release = updateService.getAvailableUpdate().get();
+                        UpdateService.Release release = availableOpt.get();
                         sender.sendMessage(msg.get("updates.available", Map.of("latest", release.version(), "current", current)));
                         if (updateService.isBreaking(release)) {
                             sender.sendMessage(msg.get("updates.breaking", Map.of("latest", release.version())));
@@ -1122,10 +1130,6 @@ public final class MinecraftCommands {
                         }
                     }
 
-                    UpdateService.CheckResult lastResult = updateService.getLastCheckResult();
-                    UpdateService.CheckStatus status = (lastResult != null)
-                            ? lastResult.status()
-                            : updateService.checkStatus();
                     if (status == UpdateService.CheckStatus.CHECK_FAILED) {
                         String rawError = (lastResult != null && lastResult.error().isPresent())
                                 ? lastResult.error().get()
@@ -1394,13 +1398,12 @@ public final class MinecraftCommands {
     private static void discloseFailedCheckIfAny(UpdateService updateService, Messages msg, CommandSender sender) {
         if (updateService == null) return;
         UpdateService.CheckResult lastResult = updateService.getLastCheckResult();
-        boolean failed = (lastResult != null && lastResult.status() == UpdateService.CheckStatus.CHECK_FAILED)
-                || updateService.checkStatus() == UpdateService.CheckStatus.CHECK_FAILED
-                || updateService.isLastCheckFailed();
-        if (failed) {
-            String rawError = (lastResult != null && lastResult.error().isPresent())
-                    ? lastResult.error().get()
-                    : updateService.getLastCheckError().orElse(null);
+        if (lastResult != null && lastResult.status() == UpdateService.CheckStatus.CHECK_FAILED) {
+            String rawError = lastResult.error().orElse(null);
+            String reason = DefaultUpdateService.formatCheckFailureReason(rawError, msg);
+            sender.sendMessage(msg.get("updates.check-failed", Map.of("reason", reason)));
+        } else if (lastResult == null && (updateService.checkStatus() == UpdateService.CheckStatus.CHECK_FAILED || updateService.isLastCheckFailed())) {
+            String rawError = updateService.getLastCheckError().orElse(null);
             String reason = DefaultUpdateService.formatCheckFailureReason(rawError, msg);
             sender.sendMessage(msg.get("updates.check-failed", Map.of("reason", reason)));
         }

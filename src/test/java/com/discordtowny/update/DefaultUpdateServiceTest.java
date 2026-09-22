@@ -26,12 +26,14 @@ import java.time.Instant;
 import java.util.*;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Handler;
@@ -4342,5 +4344,494 @@ class DefaultUpdateServiceTest {
             assertEquals(validHex, result.release().get().sha256());
             assertFalse(service.isLastCheckFailed());
         }
+    }
+
+    @Test
+    @DisplayName("Delayed legitimate 304 publishes UP_TO_DATE and clears available release deterministically (F1-A)")
+    void delayedLegitimate304PublishesUpToDateAndClearsAvailableReleaseDeterministically() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String runningVersionJson = """
+                {
+                  "tag_name": "v1.0.0",
+                  "body": "SHA-256: %s DiscordTowny-1.0.0.jar",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.0.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(validHex);
+
+        String newerReleaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: %s DiscordTowny-1.10.0.jar",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(validHex);
+
+        CompletableFuture<Void> checkAStarted = new CompletableFuture<>();
+        CompletableFuture<HttpTransport.HttpResponse> checkAResponseReady = new CompletableFuture<>();
+        AtomicInteger step = new AtomicInteger(0);
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            int currentStep = step.incrementAndGet();
+            if (currentStep == 1) {
+                // Step 1: Initial check of running version: 200 OK with E0, not newer
+                return new HttpTransport.HttpResponse(200, Map.of("ETag", "\"E0\""),
+                        new ByteArrayInputStream(runningVersionJson.getBytes(StandardCharsets.UTF_8)));
+            } else if (currentStep == 2) {
+                // Step 2: Check A arrives with If-None-Match: "E0". Intercept and suspend.
+                checkAStarted.complete(null);
+                try {
+                    return checkAResponseReady.join();
+                } catch (Exception e) {
+                    throw new IOException("Check A response interrupted", e);
+                }
+            } else {
+                // Step 3: Check B arrives and gets 200 OK with newer release R (ETag "E1")
+                return new HttpTransport.HttpResponse(200, Map.of("ETag", "\"E1\""),
+                        new ByteArrayInputStream(newerReleaseJson.getBytes(StandardCharsets.UTF_8)));
+            }
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false), // auto-download disabled
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        // 1. Initial check: caches (E0, null, true)
+        UpdateService.CheckResult resInitial = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, resInitial.status());
+        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, service.checkStatus());
+        assertTrue(service.getAvailableUpdate().isEmpty());
+
+        // 2. Launch Check A asynchronously: sends If-None-Match: E0 and pauses in transport
+        CompletableFuture<UpdateService.CheckResult> futureA = service.checkForUpdate();
+        checkAStarted.join();
+
+        // 3. Launch and complete Check B while Check A is suspended
+        UpdateService.CheckResult resB = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, resB.status());
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, service.checkStatus());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+
+        // 4. Release Check A's legitimate 304 response answering its request with validator E0
+        checkAResponseReady.complete(new HttpTransport.HttpResponse(304, Map.of(), new ByteArrayInputStream(new byte[0])));
+        UpdateService.CheckResult resA = futureA.join();
+        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, resA.status());
+
+        // 5. Aggregate settled state must be coherent: UP_TO_DATE must not leave availability holding R
+        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, service.checkStatus());
+        assertTrue(service.getAvailableUpdate().isEmpty(),
+                "getAvailableUpdate() must be empty when checkStatus is UP_TO_DATE; cannot retain release from earlier check");
+        assertEquals(UpdateService.CheckStatus.UP_TO_DATE, service.getLastCheckResult().status());
+        assertTrue(service.getLastCheckResult().release().isEmpty());
+
+        List<String> rendered = service.renderStatusMessages(EnglishMessages.bundled());
+        assertTrue(rendered.stream().anyMatch(l -> l.contains("You are on the latest version")),
+                "Status must render up to date, got: " + rendered);
+        assertFalse(rendered.stream().anyMatch(l -> l.contains("There is a new version")),
+                "Status must never render an available update when up to date, got: " + rendered);
+    }
+
+    @Test
+    @DisplayName("Overlapping 200 checks never leave published update with empty availability deterministically (F1-A)")
+    void overlapping200ChecksNeverLeavePublishedUpdateWithEmptyAvailabilityDeterministically() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String newerReleaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: %s DiscordTowny-1.10.0.jar",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(validHex);
+
+        String currentVersionJson = """
+                {
+                  "tag_name": "v1.0.0",
+                  "body": "SHA-256: %s DiscordTowny-1.0.0.jar",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.0.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(validHex);
+
+        AtomicInteger callCount = new AtomicInteger(0);
+        HttpTransport transport = (uri, headers, timeout) -> {
+            int call = callCount.incrementAndGet();
+            if (call == 1) {
+                // Check A gets newer release 1.10.0
+                return new HttpTransport.HttpResponse(200, Map.of("ETag", "\"E-A\""),
+                        new ByteArrayInputStream(newerReleaseJson.getBytes(StandardCharsets.UTF_8)));
+            } else {
+                // Check B gets non-newer running version 1.0.0
+                return new HttpTransport.HttpResponse(200, Map.of("ETag", "\"E-B\""),
+                        new ByteArrayInputStream(currentVersionJson.getBytes(StandardCharsets.UTF_8)));
+            }
+        };
+
+        AtomicReference<DefaultUpdateService> serviceRef = new AtomicReference<>();
+        AtomicBoolean checkBExecuted = new AtomicBoolean(false);
+
+        // When Check A processes newer release, auditLogger is called before publishing result
+        Consumer<AuditEvent> testAuditLogger = event -> {
+            if ("update_available".equals(event.action()) && checkBExecuted.compareAndSet(false, true)) {
+                // Interleave Check B synchronously on another check while Check A is pausing before publishing
+                DefaultUpdateService svc = serviceRef.get();
+                if (svc != null) {
+                    UpdateService.CheckResult resB = svc.checkForUpdate().join();
+                    assertEquals(UpdateService.CheckStatus.UP_TO_DATE, resB.status());
+                }
+            }
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false), // auto-download disabled
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                testAuditLogger,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+        serviceRef.set(service);
+
+        // Check A runs and its auditLogger hook triggers Check B before A publishes
+        UpdateService.CheckResult resA = service.checkForUpdate().join();
+        assertTrue(checkBExecuted.get(), "Check B must have executed during Check A's pause");
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, resA.status());
+
+        // Aggregate settled state: UPDATE_AVAILABLE must have available release intact, never empty
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, service.checkStatus());
+        assertTrue(service.getAvailableUpdate().isPresent(),
+                "getAvailableUpdate() must not be empty after Check A published UPDATE_AVAILABLE");
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+        assertEquals(service.getLastCheckResult().release(), service.getAvailableUpdate());
+
+        List<String> rendered = service.renderStatusMessages(EnglishMessages.bundled());
+        assertTrue(rendered.stream().anyMatch(l -> l.contains("There is a new version")),
+                "Status must report available update offer, got: " + rendered);
+        assertFalse(rendered.stream().anyMatch(l -> l.contains("You are on the latest version")),
+                "Status must not claim up to date when update is available, got: " + rendered);
+    }
+
+    @Test
+    @DisplayName("Unsolicited 304 without request-owned validator fails check and never borrows success (F1-A)")
+    void unsolicited304WithoutRequestOwnedValidatorFailsCheckAndNeverBorrowsSuccess() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String newerReleaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "SHA-256: %s DiscordTowny-1.10.0.jar",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(validHex);
+
+        CompletableFuture<Void> checkAStarted = new CompletableFuture<>();
+        CompletableFuture<HttpTransport.HttpResponse> checkAResponseReady = new CompletableFuture<>();
+        AtomicInteger callCount = new AtomicInteger(0);
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            int call = callCount.incrementAndGet();
+            if (call == 1) {
+                // Check A starts on fresh service (no If-None-Match header)
+                assertNull(headers.get("If-None-Match"), "Check A must send no validator on fresh service");
+                checkAStarted.complete(null);
+                try {
+                    return checkAResponseReady.join();
+                } catch (Exception e) {
+                    throw new IOException("Check A response interrupted", e);
+                }
+            } else {
+                // Check B receives 200 with newer release
+                return new HttpTransport.HttpResponse(200, Map.of("ETag", "\"E-B\""),
+                        new ByteArrayInputStream(newerReleaseJson.getBytes(StandardCharsets.UTF_8)));
+            }
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        // Check A starts without cache and pauses in transport
+        CompletableFuture<UpdateService.CheckResult> futureA = service.checkForUpdate();
+        checkAStarted.join();
+
+        // Check B completes valid 200 check, publishing UPDATE_AVAILABLE
+        UpdateService.CheckResult resB = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, resB.status());
+
+        // Check A receives unsolicited 304 response
+        checkAResponseReady.complete(new HttpTransport.HttpResponse(304, Map.of(), new ByteArrayInputStream(new byte[0])));
+        UpdateService.CheckResult resA = futureA.join();
+
+        // Check A must fail explicitly and NOT borrow Check B's classification
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, resA.status(),
+                "Check A must fail on unsolicited 304 without validator, not borrow Check B's status");
+        assertTrue(resA.error().isPresent());
+        assertTrue(resA.error().get().contains("unexpected 304 without cached release representation"));
+    }
+
+    @Test
+    @DisplayName("Malformed sum declaration for another artifact refuses release even with valid dedicated asset (F2)")
+    void malformedChecksumForOtherArtifactRefusesReleaseEvenWithValidDedicatedAsset() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // 65 hex digits for other artifact (-sources.jar)
+        String malformed65Hex = validHex + "9";
+        String bodyText = malformed65Hex + "  DiscordTowny-1.10.0-sources.jar";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String dedicatedAssetContent = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".sha256")) {
+                return new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(dedicatedAssetContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(),
+                    new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status(),
+                "Malformed declaration for another artifact must refuse release; valid asset must not override it");
+        assertTrue(service.isLastCheckFailed());
+        assertTrue(result.error().isPresent());
+        String err = result.error().get().toLowerCase(Locale.ROOT);
+        assertTrue(err.contains("checksum") || err.contains("malformed") || err.contains("invalid"),
+                "Error must indicate checksum failure, got: " + err);
+    }
+
+    @Test
+    @DisplayName("Legitimate directory-prefixed filename sha256.txt is accepted and not reinterpreted as label (F12)")
+    void sha256sumWithDirectoryPrefixedFilenameContainingSha256InDirectoryNameIsAccepted() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String bodyText = validHex + "  sha256.txt/DiscordTowny-1.10.0.jar";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        HttpTransport transport = (uri, headers, timeout) ->
+                new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, result.status(),
+                "sha256.txt/ prefix must not be reinterpreted as a declaration keyword");
+        assertFalse(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+        assertEquals(validHex.toLowerCase(Locale.ROOT), service.getAvailableUpdate().get().sha256().toLowerCase(Locale.ROOT));
+    }
+
+    @Test
+    @DisplayName("Labeled declaration with directory-prefixed filename sha256.txt is accepted (F12)")
+    void labeledDeclarationWithDirectoryPrefixContainingSha256InDirectoryNameIsAccepted() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String bodyText = "SHA-256: " + validHex + " sha256.txt/DiscordTowny-1.10.0.jar";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        HttpTransport transport = (uri, headers, timeout) ->
+                new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, result.status());
+        assertFalse(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+    }
+
+    @Test
+    @DisplayName("Checksum asset file declaring malformed sum for another artifact is refused (F2)")
+    void checksumAssetWithMalformedDeclarationForOtherArtifactRefusesRelease() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String malformed65Hex = validHex + "9";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "Release v1.10.0 notes",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "checksums.txt",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/checksums.txt"
+                    }
+                  ]
+                }
+                """;
+
+        String checksumAssetContent = malformed65Hex + "  DiscordTowny-1.10.0-sources.jar\n"
+                + validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith("checksums.txt")) {
+                return new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(checksumAssetContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(),
+                    new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.CHECK_FAILED, result.status(),
+                "Malformed declaration for another artifact in checksum file must refuse release");
+        assertTrue(service.isLastCheckFailed());
     }
 }
