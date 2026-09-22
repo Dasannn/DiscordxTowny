@@ -752,3 +752,69 @@ comments and a custom key of the owner's, comes back with the missing keys added
 in their proper sections, every edited value intact, every comment intact, and
 the custom key still present. Deleting a section entirely and restarting restores
 that section. A file with a syntax error is left byte-for-byte unchanged.
+
+## T24 — The updater can reach the release it found
+
+- **Branch**: `fix/updater-delivery-host` · **Responsible**: agent · **Status**: pending
+- **Zone**: `src/main/java/com/discordtowny/update/`, its tests, and the
+  `updates:` section of both catalogs.
+
+**Why**
+
+Version 1.0.0 is published, with its jar and its checksum, and a server running
+an older build never sees it. The live test on 2026-09-22 produced this, in the
+server log and nowhere else:
+
+```
+Unable to check for updates: could not reach GitHub (Untrusted destination
+rejected by official source policy:
+https://release-assets.githubusercontent.com/github-production-release-asset/1376593898/...)
+```
+
+`UpdateSourcePolicy.isAllowedDeliveryRedirectUri` requires the path of the
+redirect target to name `Dasannn/DiscordxTowny`. GitHub's release asset delivery
+does not work that way any more: it redirects to
+`release-assets.githubusercontent.com`, where the repository appears as a numeric
+id and the path carries a signed token. The host matches the pattern; the path
+cannot match, ever. So fetching the `.sha256` asset is rejected, the whole check
+is abandoned, and the update is never offered.
+
+The second half is worse. `/dt admin update status` answered `Estás en la última
+versión` — the same sentence it uses when there genuinely is nothing new. The
+failure existed only as a console warning. A server that cannot reach GitHub
+stays silently out of date while telling its admin the opposite.
+
+**What has to be true**
+
+- A release published by the official repository is reachable: the check
+  completes, the update is offered, and `confirm` downloads it.
+- The path of a delivery redirect is no longer required to name the repository,
+  because it cannot. What must be required instead: the redirect chain **starts**
+  at an allowed URL on `api.github.com` or `github.com` for the official
+  repository, every hop is HTTPS, and the final host is one of the known GitHub
+  delivery hosts, matched exactly rather than by a loose suffix.
+- The published SHA-256 remains what authorizes installing a jar. It always was
+  the real defence; the path never was. A delivered file that does not match is
+  still discarded, and a release with no published checksum is still refused.
+- **A check that could not run is never reported as up to date.** The admin who
+  runs the command is told the check failed and why, in their language. The
+  existing "further network errors will be silenced" behaviour stays: the point
+  is not to repeat the warning, it is not to claim success.
+
+**Constraints that decide whether this is correct**
+
+- Do not widen the policy into "any githubusercontent.com host". A suffix match
+  on an attacker-controlled subdomain is how this kind of allowlist is defeated.
+  Name the hosts.
+- Do not follow a redirect that leaves HTTPS, and do not follow an unbounded
+  chain.
+- A release whose assets are ambiguous, or whose body declares a checksum that
+  is not a valid 64-hex token, is still refused outright. That rule is not
+  relaxed by this task.
+
+**Acceptance**: with 1.0.0 published and the plugin running an older version,
+`/dt admin update` followed by `/dt admin update status` offers 1.0.0 and warns
+that it is a breaking change; `confirm` leaves a jar in the update folder whose
+SHA-256 equals the published one, with the running jar untouched. With the
+network unreachable, `status` says the check failed and never says the server is
+up to date.
