@@ -333,7 +333,7 @@ class YamlConfigLoaderTest {
     }
 
     @Test
-    void missingKeyInSpanishFileFallsBackToEnglishAndWarnsOnce() throws Exception {
+    void keyDeletedFromTheSpanishFileComesBackInSpanishRatherThanEnglish() throws Exception {
         yaml.set("language", "es");
         save();
         // Remove a key from messages_es.yml on disk
@@ -345,16 +345,27 @@ class YamlConfigLoaderTest {
         loader.load();
         Messages messages = loader.messages();
 
-        // First call: falls back to bundled English text and warns once naming key and file
-        String text1 = messages.plain("space.created", Map.of("town", "Roma"));
-        assertTrue(text1.contains("Roma"));
-        assertTrue(text1.contains("ready on Discord"));
-        assertEquals(1, warnings.stream().filter(w -> w.contains("messages_es.yml") && w.contains("space.created")).count());
+        // Under the amended spec 9.1 the key is added back from the bundled SPANISH
+        // catalog, so a Spanish server never sees this text in English. The English
+        // fallback is not gone: it still covers a key no catalog can supply, and
+        // YamlMessagesTest exercises it directly.
+        String text = messages.plain("space.created", Map.of("town", "Roma"));
+        assertEquals("[DiscordTowny] El espacio de Roma está listo en Discord.", text,
+                "The restored Spanish text is the one in force");
 
-        // Second call: does not warn again
-        String text2 = messages.plain("space.created", Map.of("town", "Roma"));
-        assertEquals(text1, text2);
-        assertEquals(1, warnings.stream().filter(w -> w.contains("messages_es.yml") && w.contains("space.created")).count());
+        // The restored key is written into the owner's file on disk, not only held in memory.
+        YamlConfiguration diskEs = new YamlConfiguration();
+        diskEs.load(folder.resolve("messages_es.yml").toFile());
+        String restoredOnDisk = diskEs.getString("space.created");
+        assertNotNull(restoredOnDisk, "space.created must be present in messages_es.yml on disk");
+
+        YamlConfiguration bundledEs = new YamlConfiguration();
+        try (var in = getClass().getResourceAsStream("/messages_es.yml")) {
+            assertNotNull(in);
+            bundledEs.load(new InputStreamReader(in, StandardCharsets.UTF_8));
+        }
+        assertEquals(bundledEs.getString("space.created"), restoredOnDisk,
+                "The restored disk entry must match bundled Spanish exactly");
     }
 
     @Test
@@ -436,7 +447,7 @@ class YamlConfigLoaderTest {
     }
 
     @Test
-    void firstRunWritesBothFilesAndNeverOverwritesAfterwards(@TempDir Path freshFolder) throws Exception {
+    void firstRunWritesBothFilesAndNeverOverwritesAnOwnerEdit(@TempDir Path freshFolder) throws Exception {
         Files.copy(folder.resolve("config.yml"), freshFolder.resolve("config.yml"));
         assertFalse(Files.exists(freshFolder.resolve("messages_en.yml")));
         assertFalse(Files.exists(freshFolder.resolve("messages_es.yml")));
@@ -447,14 +458,38 @@ class YamlConfigLoaderTest {
         assertTrue(Files.exists(freshFolder.resolve("messages_en.yml")));
         assertTrue(Files.exists(freshFolder.resolve("messages_es.yml")));
 
+        // Verify fresh files are complete copies of bundled catalogs
+        YamlConfiguration initialEn = new YamlConfiguration();
+        initialEn.load(freshFolder.resolve("messages_en.yml").toFile());
+        YamlConfiguration initialEs = new YamlConfiguration();
+        initialEs.load(freshFolder.resolve("messages_es.yml").toFile());
+        assertNotNull(initialEn.getString("general.resident-not-found"));
+        assertNotNull(initialEs.getString("general.resident-not-found"));
+        assertNotNull(initialEn.getString("help.cmd-help"));
+        assertNotNull(initialEs.getString("help.cmd-help"));
+
         // Server owner modifies file
         Files.writeString(freshFolder.resolve("messages_en.yml"), "prefix: '[custom] '\n");
         freshLoader.load();
 
-        // Ensure owner edit was not overwritten
-        // The file still holds exactly what the owner wrote, byte for byte.
-        assertEquals("prefix: '[custom] '\n",
-                Files.readString(freshFolder.resolve("messages_en.yml")));
+        // Spec 9.1 was amended: the keys this file now lacks are added back, because
+        // leaving them out sends English to a translated server until the owner
+        // deletes the file and loses every edit. What must never happen is the part
+        // this test still guards: a text the owner wrote is not touched.
+        String merged = Files.readString(freshFolder.resolve("messages_en.yml"));
+        assertTrue(merged.contains("prefix: '[custom] '"),
+                "The owner's own text must survive the merge unchanged");
+        assertTrue(freshLoader.messages().plain("general.unknown", java.util.Map.of())
+                        .startsWith("[custom] "),
+                "The owner's value must be the one in force, not the bundled one");
+
+        YamlConfiguration parsedMerged = new YamlConfiguration();
+        parsedMerged.loadFromString(merged);
+        assertEquals("[custom] ", parsedMerged.getString("prefix"));
+        assertNotNull(parsedMerged.getString("general.resident-not-found"),
+                "A key the file lacks must be added back rather than falling back to English");
+        assertNotNull(parsedMerged.getString("help.cmd-help"),
+                "Sections the file lacks must be restored");
     }
 
     @Test
