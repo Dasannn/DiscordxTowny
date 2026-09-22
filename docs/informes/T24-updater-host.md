@@ -414,3 +414,121 @@ This round addresses the four findings from `docs/revisiones/T24-updater-host-r2
 | Valid labeled format broken by broad sum matcher (F7) | Missing positive fixture for valid labeled format with jar name. | Added `validLabeledChecksumWithJarNameIsDiscoveredSuccessfully` testing `SHA-256: <H> DiscordTowny-1.10.0.jar`. |
 | Checksum asset HTTP outage classification (F8) | HTTP 500/403/429 fetching `.sha256` asset categorized as invalid checksum. | Added `checksumAssetHttp500RendersNetworkFailureReasonNotInvalidChecksum` and `checksumAssetHttp403RateLimitRendersRateLimitReasonNotInvalidChecksum`. |
 
+---
+
+## 8. Round 5: Atomic Classification Publication, Digest Line Two-Phase Validation, Missing Metadata Parse Categorization, and Legitimate Path Support
+
+### 8.1 Review R3 Findings Disposition & Technical Fixes
+
+| Finding | Severity / Category | Status | Technical Resolution Summary |
+|---|---|---|---|
+| **F2** | **Blocking (Regression)** | **Resolved** | Separated file-bound sum declaration recognition from digest validation. Lines matching `^(\S+)\s+[*]?((\S.*))$` (excluding label keywords) are recognized as file-bound declarations for the target jar. If the digest token is invalid (65-hex, `<H>Hg`, `invalid`), it is refused with `ChecksumOutcome.InvalidOrAmbiguous`, prohibiting fallback to valid `.sha256` assets. F7 labeled lines bypass sumMatcher and remain accepted. |
+| **F1** | **Blocking** | **Resolved** | Published check status as a coherent, immutable `CheckResult` swapped atomically via `AtomicReference<CheckResult> lastCheckResult`. Eliminated torn reads in `checkStatus()` straddling background checks. Refactored `parseRelease()` to return `ParseResult` with operation-local error strings, eliminating cross-check error overwrite. Added `discloseFailedCheckIfAny` across all silent branches in `MinecraftCommands.java` (bare update with staged jar, confirm with staged jar, confirm with no confirmation needed). |
+| **F9** | **Important (Regression)** | **Resolved** | Corrected failure reasons for missing release metadata (`{}` missing tag/name, `{"tag_name":"v1.10.0"}` missing assets) from misleading network error messages to explicit parse error messages. Ensured parse checks precede network checks in `formatCheckFailureReason()`, properly localizing as `updates.check-reason-parse-error` in English and Spanish. |
+| **F10** | **Important (Regression)** | **Resolved** | Distinguish legitimate path components containing keyword strings (e.g. `sha256/DiscordTowny-1.10.0.jar`) from declarations absorbed into filenames. Only reject filenames matching declaration syntax `[:=]` or `\(`. Base filename extraction recognizes the target jar while accepting the directory path. |
+| **F7** | **Closed in R3** | **Maintained** | `SHA-256: <H> DiscordTowny-1.10.0.jar` remains accepted and tested. |
+| **F8** | **Closed in R3** | **Maintained** | HTTP 500 reports network failure; HTTP 403/429 reports rate limit. Maintained alongside F9. |
+
+#### F2 (Blocking, Regression): Separating Declaration Recognition from Digest Validation
+- **Problem & Root Cause**:
+  In Round 4, `sumMatcher` required `^([a-fA-F0-9]{64})\s+...`. When a release body contained an unlabeled file-bound declaration with a 65-character hex token (e.g. `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef9  DiscordTowny-1.10.0.jar`) or a non-hex token (`<H>Hg  DiscordTowny-1.10.0.jar`, `invalid  DiscordTowny-1.10.0.jar`), `sumMatcher` failed to match at all. Because no keyword was present on the line, `foundChecksumKeyword` remained false, and the body outcome was `None`. A valid `.sha256` asset then authorized the release, violating the fundamental rule: a malformed file-bound checksum declaration in the body is a refusal, not an absence, and must never be overridden by a valid checksum asset.
+- **Resolution**:
+  1. Decoupled recognizing a file-bound sum declaration from validating its digest.
+  2. Candidate sum lines match `^(\S+)\s+[*]?((\\S.*))$`. If `candidateToken` matches a label keyword `(?i)^sha-?256(?:sum)?[:=]?$`, it is skipped from sum matching so Section 3 can parse labeled declarations like `SHA-256: <H> DiscordTowny-1.10.0.jar` (preserving F7).
+  3. The filename is checked to ensure it does not absorb declaration syntax `[:=]` or `\(`.
+  4. If the extracted filename matches `targetJarName`:
+     - If `!candidateToken.matches("^[a-fA-F0-9]{64}$")`, return `ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 token in body for " + targetJarName + ": " + candidateToken)`.
+     - If valid 64-hex, add to `boundHashes` and continue.
+  5. If `extractSha256FromBody` returns `InvalidOrAmbiguous`, `parseRelease()` immediately returns `ParseResult.failure(...)`, ensuring a valid asset never authorizes a release with a malformed declaration.
+- **Unit Tests**:
+  - `unlabeledSha256sumWith65HexDigitsRefusesReleaseEvenWithValidChecksumAsset`: Proves that a 65-hex digest bound to the target jar refuses the release and fails the check even when a matching valid `.sha256` asset is present.
+  - `unlabeledSumLineWithNonHexTokensRefuseReleaseEvenWithValidChecksumAsset`: Tests that `<H>9`, `<H>Hg`, and `invalid` file-bound lines with a valid `.sha256` asset are refused without fallback.
+
+#### F1 (Blocking): Coherent Status Publication, Error Ownership, and Silent Branches
+- **Problem & Root Cause**:
+  1. *Assembled Status Reads*: `checkStatus()` derived its enum by observing `lastCheckFailed`, `latestAvailableUpdate`, and `hasCheckedAtLeastOnce` separately. A caller reading status straddling a background check could observe `lastCheckFailed == false` before the check failed, and then observe `hasCheckedAtLeastOnce == true` and no release after the check failed, incorrectly returning `UP_TO_DATE`.
+  2. *Error Ownership*: `parseRelease()` wrote errors directly to the shared field `lastCheckError`. Check A could set an invalid checksum reason, check B could overwrite it with a network outage reason, and Check A would return a record carrying Check B's error.
+  3. *Silent Branches in Commands*: When a staged jar was present, bare `/dt admin update` only emitted `updates.downloaded` (Commands:1020-1025). `/dt admin update confirm` only emitted `updates.downloaded` (Commands:1159-1165) or `updates.no-confirmation-needed` (Commands:1168-1173). Neither branch disclosed a subsequent failed check, concealing update check failures from administrators.
+- **Resolution**:
+  1. *Coherent Status Publication*: `DefaultUpdateService` maintains an `AtomicReference<CheckResult> lastCheckResult`, initialized to `CheckResult.notChecked("Not checked yet")`. All exit paths in `doCheckForUpdate()` publish the completion result via `publishCheckResult(CheckResult)`, atomically swapping the reference. `checkStatus()`, `getLastCheckResult()`, `isLastCheckFailed()`, and `getLastCheckError()` all read directly from this atomic snapshot.
+  2. *Error Ownership*: Refactored `parseRelease()` to return a private record `ParseResult(Release release, String error)`. Parse failures return operation-local error messages directly to the caller, preventing cross-check state pollution.
+  3. *Silent Branches Disclosure*: Added `discloseFailedCheckIfAny(updateService, msg, sender)` to `MinecraftCommands.java`. Bare `/dt admin update` with a staged jar, `/dt admin update confirm` with a staged jar, and `/dt admin update confirm` with no confirmation needed now disclose `updates.check-failed` with the formatted localized reason alongside the staged or confirmation status.
+- **Unit Tests**:
+  - `atomicCheckStatusTransitionsDirectlyToFailedAndNeverExposesUpToDate`: Verifies that a check failure transitions directly to `CHECK_FAILED` and never returns `UP_TO_DATE`.
+  - `adminUpdateWithStagedJarDisclosesLaterCheckFailure`: Verifies that bare `/dt admin update` with a staged jar and a failed check prints both `updates.downloaded` and `updates.check-failed`.
+  - `adminUpdateConfirmWithStagedJarDisclosesLaterCheckFailure`: Verifies that `/dt admin update confirm` with a staged jar and a failed check prints both `updates.downloaded` and `updates.check-failed`.
+  - `adminUpdateConfirmWithNoConfirmationNeededDisclosesLaterCheckFailure`: Verifies that `/dt admin update confirm` with no confirmation needed and a failed check prints both `updates.no-confirmation-needed` and `updates.check-failed`.
+
+#### F9 (Important, Regression): Missing Metadata Mislabeled as Network Outage
+- **Problem & Root Cause**:
+  In Round 4, `parseRelease()` returned `"could not reach GitHub: missing release tag or name"` and `"could not reach GitHub: release has no assets"`. In `formatCheckFailureReason()`, network checks checked for `"could not reach github"`, incorrectly classifying HTTP 200 responses with `{}` or `{"tag_name": "v1.10.0"}` without assets as network outages instead of metadata parse errors.
+- **Resolution**:
+  1. Changed error strings to `"Missing release tag or name in release metadata"` and `"Release metadata has no assets"`.
+  2. Evaluated parse and metadata error checks (`missing release`, `no assets`, `parse`) before network error checks in `formatCheckFailureReason()`, returning `updates.check-reason-parse-error`.
+  3. Both `messages_en.yml` and `messages_es.yml` localize this as `"could not parse release metadata"` and `"no se pudo interpretar la información de la versión"`.
+- **Unit Test**:
+  - `missingReleaseMetadataCategorizedAsParseErrorNotNetwork`: Tests empty JSON `{}`, empty tag `{"tag_name": ""}`, missing assets `{"tag_name": "v1.10.0"}`, and empty assets array `{"tag_name": "v1.10.0", "assets": []}`, verifying all report parse error in both English and Spanish, and never report network failure.
+
+#### F10 (Important, Regression): Legitimate Checksum Paths with Directory Prefix
+- **Problem & Root Cause**:
+  In Round 4, any path containing the word `sha256` was rejected as an absorbed checksum declaration. A legitimate entry such as `<H>  sha256/DiscordTowny-1.10.0.jar` or `SHA256 (sha256/DiscordTowny-1.10.0.jar) = <H>` was falsely rejected.
+- **Resolution**:
+  1. Updated the absorbed declaration check in `parseChecksumFileContent()` and `extractSha256FromBody()`: instead of matching `\bsha-?256`, it strictly matches declaration syntax: `(?i)\bsha-?256(?:sum)?\s*[:=]` or `(?i)\bsha-?256\s*\(`.
+  2. Directory path prefixes like `sha256/` do not match declaration syntax, allowing `Path.of(file).getFileName()` to resolve `DiscordTowny-1.10.0.jar` and accept the checksum.
+- **Unit Test**:
+  - `legitimateChecksumPathsWithDirectoryPrefixAreDiscoveredSuccessfully`: Tests sha256sum and BSD formats in both asset files and release bodies containing directory prefix paths `sha256/DiscordTowny-1.10.0.jar`.
+
+---
+
+### 8.2 Response to Review R3 Audit & Coverage Inquiries
+
+| Review R3 Audit / Gap Question | Technical Resolution & Verification |
+|---|---|
+| **F2: 65-digit, `<H>Hg`, and `invalid` unlabeled sums with valid asset** | Added `unlabeledSha256sumWith65HexDigitsRefusesReleaseEvenWithValidChecksumAsset` and `unlabeledSumLineWithNonHexTokensRefuseReleaseEvenWithValidChecksumAsset`. Each tests a release body containing a malformed unlabeled sum and a valid `.sha256` asset. Verifies that the check fails and the asset never authorizes the release. |
+| **F1: Coherent status transitions and torn reads** | Replaced mutable three-field derivation with atomic publication via `AtomicReference<CheckResult> lastCheckResult`. Added `atomicCheckStatusTransitionsDirectlyToFailedAndNeverExposesUpToDate` verifying that `checkStatus()` transitions directly from `NOT_CHECKED` to `CHECK_FAILED` without exposing `UP_TO_DATE`. |
+| **F1: Silent branches in update commands** | Added unit tests `adminUpdateWithStagedJarDisclosesLaterCheckFailure`, `adminUpdateConfirmWithStagedJarDisclosesLaterCheckFailure`, and `adminUpdateConfirmWithNoConfirmationNeededDisclosesLaterCheckFailure` in `MinecraftCommandsTest.java`. Each verifies that staged/confirmation messages are retained while the check failure is disclosed alongside. |
+| **F1: Error ownership across concurrent checks** | `parseRelease()` now returns `ParseResult` carrying operation-local error messages. Checks do not read or write shared error state during parsing. `CheckResult` carries its own immutable error. |
+| **F9: Localized missing metadata classification** | Added `missingReleaseMetadataCategorizedAsParseErrorNotNetwork` testing `{}`, missing tag, and missing assets in English and Spanish, verifying they are classified as `updates.check-reason-parse-error` and never as network outages. |
+| **F10: Checksum entries with directory prefixes** | Added `legitimateChecksumPathsWithDirectoryPrefixAreDiscoveredSuccessfully` verifying `<H>  sha256/DiscordTowny-1.10.0.jar` and `SHA256 (sha256/DiscordTowny-1.10.0.jar) = <H>` in both asset and body. |
+| **F7: Preservation of labeled sum format** | Maintained and verified with `labeledSha256WithTargetJarIsAcceptedAndPreserved` and existing `validLabeledChecksumWithJarNameIsDiscoveredSuccessfully`. |
+| **F8: Checksum asset HTTP 500 / 403 / 429 classification** | Maintained and verified with existing `checksumAssetHttp500RendersNetworkFailureReasonNotInvalidChecksum` and `checksumAssetHttp403RateLimitRendersRateLimitReasonNotInvalidChecksum`. |
+
+---
+
+### 8.3 Round 6 — F10 & F2 Alignment: Legitimate Directory Prefixes and Declaration Isolation
+
+#### 1. Architectural Decision and Rationale
+A checksum declaration whose filename carries a directory prefix that resolves to our target jar (e.g. `<hash>  sha256/DiscordTowny-1.10.0.jar` or `SHA256 (sha256/DiscordTowny-1.10.0.jar) = <hash>`) **is legitimate and must be accepted**.
+- **Rationale**: Build pipelines and release packaging scripts routinely execute checksum utilities from parent directories or output folders (e.g. `sha256sum sha256/*` or `cd target && sha256sum dist/*`). Resolving the base filename via `Path.of(file).getFileName()` (and normalizing directory slashes) was the established behavior and correctly identifies that the declaration targets our artifact.
+- **Distinction from Malformed Declarations**: A legitimate directory prefix is a path component (e.g. `sha256/`, `./`, `target/`), not a declaration keyword. A greedy filename capture absorbing a second declaration (e.g. `SHA256 (DiscordTowny-1.10.0.jar) = invalid SHA256 (./DiscordTowny-1.10.0.jar) = <H>` or `<H>  SHA-256=invalid/DiscordTowny-1.10.0.jar`) contains assignment syntax (`=`, `:`) or opening parentheses (`(`). Legitimate directory prefixes must be supported without compromising F2 protections.
+
+#### 2. Root Cause Analysis of Round 5 Failures
+In Round 5, two distinct defects caused the failure in `legitimateChecksumPathsWithDirectoryPrefixAreDiscoveredSuccessfully`:
+1. **Asset File BSD Shadowing (`parseChecksumFileContent`)**:
+   In Round 5, `m1` (`^(\S+)\s+[*]?(.*)$`) was placed before `m2` (the BSD pattern) to detect candidate sum lines with malformed digests. However, because `m1` matched any line with two or more whitespace-separated tokens, BSD lines in checksum assets (`SHA256 (sha256/DiscordTowny-1.10.0.jar) = <hash>`) were captured by `m1` with `candidateHex = "SHA256"` and `file = "(sha256/DiscordTowny-1.10.0.jar) = <hash>"`. The filename failed to match `targetJarName`, and `m1` executed `continue;`, permanently shadowing the BSD pattern `m2`. Consequently, BSD declarations in asset files (Scenario 2) were never evaluated and returned `None`, failing the check.
+2. **Body Line-Level Keyword Collision (`extractSha256FromBody`)**:
+   The line-level keyword audit used `Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b")` across `line`. Because `/` is a non-word boundary character, occurrences of `sha256/` in directory paths were counted as declaration keywords. For a BSD line like `SHA256 (sha256/DiscordTowny-1.10.0.jar) = <hash>` (Scenario 4), `totalKeywords` was 2 (`SHA256` and `sha256/`) while `bsdCount` was 1. `nonBsdKeywords` evaluated to 1, but no labeled declaration existed (`decls.size() == 0 < 1`), causing the parser to falsely reject legitimate BSD body lines as malformed.
+
+#### 3. Technical Fixes
+1. **Pattern Precedence in `parseChecksumFileContent`**:
+   Evaluated BSD pattern `mBsd` (`(?i)^SHA-?256\s*\(([^)\r\n]+)\)\s*=\s*(\S+)$`) before `mSum` (`^(\S+)\s+[*]?(.*)$`). BSD declarations in asset files are matched immediately without interference.
+2. **BSD Declaration Masking in `extractSha256FromBody`**:
+   When BSD declarations are found on a line, their matched spans are masked out (`replaceAll(...)`) before checking for labeled declarations, preventing already-validated BSD declarations from having their filenames scanned for phantom declarations.
+3. **Directory Path Exclusion in Keyword Audit**:
+   Updated the keyword audit pattern to `(?<![/\\\\])(?i)\\bsha-?256(?:sum)?\\b(?![/\\\\])`. Checksum keywords followed or preceded by directory slashes (`/` or `\`) are recognized as path components, not declaration keywords.
+4. **Cross-Platform Path Normalization**:
+   Applied `file.replace('\\', '/')` prior to `Path.of(normFile).getFileName()`, ensuring directory prefixes with either Unix or Windows slashes are stripped cleanly across all operating systems.
+
+#### 4. Non-Regression Verification
+All required invariants remain strictly enforced and covered by unit tests:
+- **F7 Preserved**: `SHA-256: <H> DiscordTowny-1.10.0.jar`, `SHA-256: <H> sha256/DiscordTowny-1.10.0.jar`, and `SHA-256: <H>` remain valid and accepted (`UPDATE_AVAILABLE`).
+- **F2 Preserved**: Malformed declarations (65-character tokens like `<H>9  DiscordTowny-1.10.0.jar`, non-hex tokens like `<H>Hg`, `invalid`, and their directory-prefixed variants `<H>9  sha256/DiscordTowny-1.10.0.jar`) are recognized as malformed declarations for the target jar and strictly refuse the release (`CHECK_FAILED`), prohibiting fallback to valid checksum assets.
+- **Same-Line Refusal**: One valid and one invalid declaration on the same line is refused across all formats (BSD+BSD, labeled+labeled, BSD+labeled, sha256sum+absorbed).
+- **Absorbed Declaration Detection**: Filenames containing declaration syntax (e.g. `<H>  SHA-256=invalid/DiscordTowny-1.10.0.jar`) remain strictly refused without fallback.
+
+#### 5. Added Unit Tests
+- `malformedChecksumWithDirectoryPrefixRefusesReleaseEvenWithValidAsset`: Verifies that 65-hex, non-hex, and malformed BSD declarations with directory prefixes in the release body refuse the release even when a valid `.sha256` asset is published.
+- `sameLineBsdWithDirectoryPrefixAndInvalidDeclarationRefusesRelease`: Verifies that same-line mixed declarations featuring directory prefixes and invalid tokens are refused.
+- `validLabeledChecksumWithDirectoryPrefixIsDiscoveredSuccessfully`: Verifies that labeled declarations specifying directory-prefixed paths (`SHA-256: <H> sha256/DiscordTowny-1.10.0.jar`) are accepted.
+
+

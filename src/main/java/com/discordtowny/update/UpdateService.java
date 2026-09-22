@@ -89,19 +89,26 @@ public interface UpdateService {
     }
 
     /**
+     * Returns the outcome of the most recent update check as a coherent immutable record.
+     */
+    default CheckResult getLastCheckResult() {
+        if (isLastCheckFailed()) {
+            return CheckResult.checkFailed(getLastCheckError().orElse(null), getAvailableUpdate().orElse(null));
+        }
+        if (getAvailableUpdate().isPresent()) {
+            return CheckResult.updateAvailable(getAvailableUpdate().get());
+        }
+        if (!hasCheckedAtLeastOnce()) {
+            return CheckResult.notChecked(null);
+        }
+        return CheckResult.upToDate();
+    }
+
+    /**
      * Returns the current status of update checking.
      */
     default CheckStatus checkStatus() {
-        if (isLastCheckFailed()) {
-            return CheckStatus.CHECK_FAILED;
-        }
-        if (getAvailableUpdate().isPresent()) {
-            return CheckStatus.UPDATE_AVAILABLE;
-        }
-        if (!hasCheckedAtLeastOnce()) {
-            return CheckStatus.NOT_CHECKED;
-        }
-        return CheckStatus.UP_TO_DATE;
+        return getLastCheckResult().status();
     }
 
     /**

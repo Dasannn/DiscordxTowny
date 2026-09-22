@@ -1022,6 +1022,7 @@ public final class MinecraftCommands {
                         .map(UpdateService.Release::version)
                         .orElse(updateService.currentVersion());
                 sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", ver)));
+                discloseFailedCheckIfAny(updateService, msg, sender);
                 return 1;
             }
 
@@ -1121,10 +1122,15 @@ public final class MinecraftCommands {
                         }
                     }
 
-                    UpdateService.CheckStatus status = updateService.checkStatus();
+                    UpdateService.CheckResult lastResult = updateService.getLastCheckResult();
+                    UpdateService.CheckStatus status = (lastResult != null)
+                            ? lastResult.status()
+                            : updateService.checkStatus();
                     if (status == UpdateService.CheckStatus.CHECK_FAILED) {
-                        String reason = DefaultUpdateService.formatCheckFailureReason(
-                                updateService.getLastCheckError().orElse(null), msg);
+                        String rawError = (lastResult != null && lastResult.error().isPresent())
+                                ? lastResult.error().get()
+                                : updateService.getLastCheckError().orElse(null);
+                        String reason = DefaultUpdateService.formatCheckFailureReason(rawError, msg);
                         sender.sendMessage(msg.get("updates.check-failed", Map.of("reason", reason)));
                     } else if (!hasUpdateInfo) {
                         if (status == UpdateService.CheckStatus.NOT_CHECKED) {
@@ -1155,12 +1161,14 @@ public final class MinecraftCommands {
                                 .map(UpdateService.Release::version)
                                 .orElse(updateService.currentVersion());
                         sender.sendMessage(msg.get("updates.downloaded", Map.of("latest", ver)));
+                        discloseFailedCheckIfAny(updateService, msg, sender);
                         return 1;
                     }
 
                     Optional<UpdateService.Release> opt = updateService.getAvailableUpdate();
                     if (opt.isEmpty() || !updateService.isBreaking(opt.get())) {
                         sender.sendMessage(msg.get("updates.no-confirmation-needed"));
+                        discloseFailedCheckIfAny(updateService, msg, sender);
                         return 1;
                     }
 
@@ -1378,6 +1386,21 @@ public final class MinecraftCommands {
             case IO_ERROR -> msg.label("updates.result-io-error");
             case SUCCESS -> msg.label("updates.downloaded");
         };
+    }
+
+    private static void discloseFailedCheckIfAny(UpdateService updateService, Messages msg, CommandSender sender) {
+        if (updateService == null) return;
+        UpdateService.CheckResult lastResult = updateService.getLastCheckResult();
+        boolean failed = (lastResult != null && lastResult.status() == UpdateService.CheckStatus.CHECK_FAILED)
+                || updateService.checkStatus() == UpdateService.CheckStatus.CHECK_FAILED
+                || updateService.isLastCheckFailed();
+        if (failed) {
+            String rawError = (lastResult != null && lastResult.error().isPresent())
+                    ? lastResult.error().get()
+                    : updateService.getLastCheckError().orElse(null);
+            String reason = DefaultUpdateService.formatCheckFailureReason(rawError, msg);
+            sender.sendMessage(msg.get("updates.check-failed", Map.of("reason", reason)));
+        }
     }
 
     static void updateHelpDescription(Supplier<Messages> messagesSupplier) {
