@@ -295,16 +295,15 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         }
         TownSpace space = opt.get();
 
-        // Verify required channels exist before archiving (F5)
+        List<String> missing = new ArrayList<>();
+
+        // If channels or roles were already deleted by hand, that part of the work is done (T27).
         TextChannel textCh = null;
         if (space.textChannelId().isPresent()) {
             String chId = space.textChannelId().get();
             textCh = guild.getTextChannelById(chId);
             if (textCh == null) {
-                OperationOutcome outcome = OperationOutcome.permanentFailure(
-                        "Required text channel " + chId + " not found in Discord for town " + op.townUuid());
-                onOperationFailed(op, outcome);
-                return outcome;
+                missing.add("text channel " + chId);
             }
         }
 
@@ -313,10 +312,14 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
             String chId = space.voiceChannelId().get();
             voiceCh = guild.getVoiceChannelById(chId);
             if (voiceCh == null) {
-                OperationOutcome outcome = OperationOutcome.permanentFailure(
-                        "Required voice channel " + chId + " not found in Discord for town " + op.townUuid());
-                onOperationFailed(op, outcome);
-                return outcome;
+                missing.add("voice channel " + chId);
+            }
+        }
+
+        if (space.categoryId().isPresent()) {
+            String catId = space.categoryId().get();
+            if (guild.getCategoryById(catId) == null) {
+                missing.add("category " + catId);
             }
         }
 
@@ -324,41 +327,65 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         space.roleId().ifPresent(roleId -> {
             Role role = guild.getRoleById(roleId);
             if (role != null) {
-                role.delete().complete();
+                try {
+                    role.delete().complete();
+                } catch (ErrorResponseException e) {
+                    if (e.getErrorResponse() != ErrorResponse.UNKNOWN_ROLE) {
+                        throw e;
+                    }
+                    missing.add("role " + roleId);
+                }
+            } else {
+                missing.add("role " + roleId);
             }
         });
 
         // 2. Move channels to archive category and set to read-only for administrators
-        int channelsNeeded = (space.textChannelId().isPresent() ? 1 : 0)
-                + (space.voiceChannelId().isPresent() ? 1 : 0);
-        Category archive = ensureCategoryWithCapacity(config.structure().archiveCategoryName(), channelsNeeded);
+        int channelsNeeded = (textCh != null ? 1 : 0) + (voiceCh != null ? 1 : 0);
+        if (channelsNeeded > 0) {
+            Category archive = ensureCategoryWithCapacity(config.structure().archiveCategoryName(), channelsNeeded);
 
-        if (textCh != null) {
-            textCh.getManager().setParent(archive).complete();
-            // Visible only for administrators in read-only: @everyone cannot see the channel
-            var p1 = textCh.upsertPermissionOverride(guild.getPublicRole());
-            if (p1 != null) {
-                p1.deny(Permission.MESSAGE_SEND, Permission.VIEW_CHANNEL).complete();
-            }
-            if (guild.getSelfMember() != null) {
-                var p2 = textCh.upsertPermissionOverride(guild.getSelfMember());
-                if (p2 != null) {
-                    p2.grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL).complete();
+            if (textCh != null && archive != null) {
+                try {
+                    textCh.getManager().setParent(archive).complete();
+                    // Visible only for administrators in read-only: @everyone cannot see the channel
+                    var p1 = textCh.upsertPermissionOverride(guild.getPublicRole());
+                    if (p1 != null) {
+                        p1.deny(Permission.MESSAGE_SEND, Permission.VIEW_CHANNEL).complete();
+                    }
+                    if (guild.getSelfMember() != null) {
+                        var p2 = textCh.upsertPermissionOverride(guild.getSelfMember());
+                        if (p2 != null) {
+                            p2.grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL).complete();
+                        }
+                    }
+                } catch (ErrorResponseException e) {
+                    if (e.getErrorResponse() != ErrorResponse.UNKNOWN_CHANNEL) {
+                        throw e;
+                    }
+                    missing.add("text channel " + space.textChannelId().orElse(""));
                 }
             }
-        }
 
-        if (voiceCh != null) {
-            voiceCh.getManager().setParent(archive).complete();
-            // Visible only for administrators in read-only: @everyone cannot see the channel
-            var p1 = voiceCh.upsertPermissionOverride(guild.getPublicRole());
-            if (p1 != null) {
-                p1.deny(Permission.VOICE_CONNECT, Permission.VIEW_CHANNEL).complete();
-            }
-            if (guild.getSelfMember() != null) {
-                var p2 = voiceCh.upsertPermissionOverride(guild.getSelfMember());
-                if (p2 != null) {
-                    p2.grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL).complete();
+            if (voiceCh != null && archive != null) {
+                try {
+                    voiceCh.getManager().setParent(archive).complete();
+                    // Visible only for administrators in read-only: @everyone cannot see the channel
+                    var p1 = voiceCh.upsertPermissionOverride(guild.getPublicRole());
+                    if (p1 != null) {
+                        p1.deny(Permission.VOICE_CONNECT, Permission.VIEW_CHANNEL).complete();
+                    }
+                    if (guild.getSelfMember() != null) {
+                        var p2 = voiceCh.upsertPermissionOverride(guild.getSelfMember());
+                        if (p2 != null) {
+                            p2.grant(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL).complete();
+                        }
+                    }
+                } catch (ErrorResponseException e) {
+                    if (e.getErrorResponse() != ErrorResponse.UNKNOWN_CHANNEL) {
+                        throw e;
+                    }
+                    missing.add("voice channel " + space.voiceChannelId().orElse(""));
                 }
             }
         }
@@ -371,8 +398,14 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                 space.createdAt(), Optional.of(Instant.now()), space.lastActivityAt());
         spaces.save(archived);
 
-        logger.info("[Executor] Space archived for town '" + op.townName() + "'");
-        return OperationOutcome.success();
+        if (missing.isEmpty()) {
+            logger.info("[Executor] Space archived for town '" + op.townName() + "'");
+            return OperationOutcome.success();
+        } else {
+            String note = "already missing in Discord: " + String.join(", ", missing);
+            logger.info("[Executor] Space archived for town '" + op.townName() + "' (" + note + ")");
+            return new OperationOutcome(OperationOutcome.Status.SUCCESS, Optional.of(note));
+        }
     }
 
     // -- RestoreSpace --
@@ -1002,7 +1035,8 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         String context = operation.describe();
         return switch (response) {
             case UNKNOWN_CHANNEL, UNKNOWN_ROLE -> {
-                if (operation instanceof GuildOperation.DeleteSpace) {
+                if (operation instanceof GuildOperation.DeleteSpace
+                        || operation instanceof GuildOperation.ArchiveSpace) {
                     yield OperationOutcome.success();
                 }
                 yield OperationOutcome.permanentFailure(

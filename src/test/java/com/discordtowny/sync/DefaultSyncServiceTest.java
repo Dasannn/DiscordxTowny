@@ -1538,6 +1538,57 @@ class DefaultSyncServiceTest {
     }
 
     @Test
+    @DisplayName("T27: Periodic sync does not enqueue archive again once space is ARCHIVED for ruined town")
+    void periodicSyncDoesNotEnqueueArchiveAgainOnceSpaceIsArchivedForRuinedTown() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "RuinedArchivedTown",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.empty(),
+                Optional.empty(), SpaceState.ARCHIVED,
+                clock.instant(), Optional.of(clock.instant()), Optional.empty());
+        spaceRepository.save(space);
+
+        TownSnapshot ruinedTown = new TownSnapshot(
+                townUuid, "RuinedArchivedTown", UUID.randomUUID(), List.of(), true,
+                Optional.empty(), 5, 0, 0);
+        when(townyFacade.town(townUuid)).thenReturn(Optional.of(ruinedTown));
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(0, report.inconsistenciesFound());
+        assertEquals(0, report.inconsistenciesRepaired());
+        assertTrue(report.problemDetails().isEmpty());
+
+        verify(discordGateway, never()).submit(any(GuildOperation.ArchiveSpace.class));
+        verify(discordGateway, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("T27: Periodic sync does not enqueue archive again once space is ARCHIVED for deleted town")
+    void periodicSyncDoesNotEnqueueArchiveAgainOnceSpaceIsArchivedForDeletedTown() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(
+                townUuid, "DeletedArchivedTown",
+                Optional.of("cat-1"), Optional.of("txt-1"), Optional.empty(),
+                Optional.empty(), SpaceState.ARCHIVED,
+                clock.instant(), Optional.of(clock.instant()), Optional.empty());
+        spaceRepository.save(space);
+
+        when(townyFacade.town(townUuid)).thenReturn(Optional.empty());
+
+        SyncReport report = service.reconcileAll().join();
+
+        assertEquals(1, report.spacesChecked());
+        assertEquals(0, report.inconsistenciesFound());
+        assertEquals(0, report.inconsistenciesRepaired());
+        assertTrue(report.problemDetails().isEmpty());
+
+        verify(discordGateway, never()).submit(any(GuildOperation.ArchiveSpace.class));
+        verify(discordGateway, never()).submit(any());
+    }
+
+    @Test
     @DisplayName("Failed archive leaving space inconsistent is retried on later passes and archived")
     void failedArchiveLeavingSpaceInconsistentIsRetriedOnLaterPasses() {
         UUID townUuid = UUID.randomUUID();

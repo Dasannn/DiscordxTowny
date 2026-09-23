@@ -947,6 +947,388 @@ class JdaGuildOperationExecutorTest {
                 && s.voiceChannelId().equals(Optional.of(voiceChId))));
     }
 
+    // --- T27: Archiving leniency tests (already gone is the goal, not an obstacle) ---
+
+    @Test
+    @DisplayName("T27: Archive with text channel missing succeeds, space becomes ARCHIVED and not INCONSISTENT")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceWithMissingTextChannelSucceedsAndMarksArchivedNotDeleted() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "MissingTextTown";
+        String textChId = "txt-deleted-hand-1";
+        String voiceChId = "vc-arch-1";
+        String roleId = "role-arch-1";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        // Text channel was deleted by hand -> lookup returns null
+        when(guild.getTextChannelById(textChId)).thenReturn(null);
+
+        VoiceChannel voiceCh = mock(VoiceChannel.class);
+        when(voiceCh.getId()).thenReturn(voiceChId);
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(voiceCh);
+
+        VoiceChannelManager voiceManager = mock(VoiceChannelManager.class);
+        when(voiceCh.getManager()).thenReturn(voiceManager);
+        when(voiceManager.setParent(archiveCat)).thenReturn(voiceManager);
+
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+
+        PermissionOverrideAction voiceOverrideAction = mock(PermissionOverrideAction.class);
+        when(voiceCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.deny(any(Permission[].class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.grant(any(Permission[].class))).thenReturn(voiceOverrideAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertTrue(outcome.succeeded());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("text channel " + textChId));
+
+        // Remaining voice channel is archived and left read-only
+        verify(voiceManager).setParent(archiveCat);
+        verify(voiceOverrideAction).deny(Permission.VOICE_CONNECT, Permission.VIEW_CHANNEL);
+
+        // Role was deleted
+        verify(townRole).delete();
+
+        // State in DB is ARCHIVED and never marked INCONSISTENT
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Archive with voice channel missing succeeds, space becomes ARCHIVED and not INCONSISTENT")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceWithMissingVoiceChannelSucceedsAndMarksArchived() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "MissingVoiceTown";
+        String textChId = "txt-arch-2";
+        String voiceChId = "vc-deleted-hand-2";
+        String roleId = "role-arch-2";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        TextChannel textCh = mock(TextChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh);
+
+        // Voice channel was deleted by hand -> lookup returns null
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(null);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(textManager.setParent(archiveCat)).thenReturn(textManager);
+
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+
+        PermissionOverrideAction textOverrideAction = mock(PermissionOverrideAction.class);
+        when(textCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.deny(any(Permission[].class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.grant(any(Permission[].class))).thenReturn(textOverrideAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertTrue(outcome.succeeded());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("voice channel " + voiceChId));
+
+        // Remaining text channel is archived and left read-only
+        verify(textManager).setParent(archiveCat);
+        verify(textOverrideAction).deny(Permission.MESSAGE_SEND, Permission.VIEW_CHANNEL);
+
+        // Role was deleted
+        verify(townRole).delete();
+
+        // State in DB is ARCHIVED and never marked INCONSISTENT
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Archive with category missing succeeds, space becomes ARCHIVED and not INCONSISTENT")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceWithMissingCategorySucceedsAndMarksArchived() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "MissingCategoryTown";
+        String catId = "cat-deleted-hand-3";
+        String textChId = "txt-arch-3";
+        String voiceChId = "vc-arch-3";
+        String roleId = "role-arch-3";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of(catId), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        // Active category was deleted by hand -> lookup returns null
+        when(guild.getCategoryById(catId)).thenReturn(null);
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        TextChannel textCh = mock(TextChannel.class);
+        VoiceChannel voiceCh = mock(VoiceChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        when(voiceCh.getId()).thenReturn(voiceChId);
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh);
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(voiceCh);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        VoiceChannelManager voiceManager = mock(VoiceChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(voiceCh.getManager()).thenReturn(voiceManager);
+        when(textManager.setParent(archiveCat)).thenReturn(textManager);
+        when(voiceManager.setParent(archiveCat)).thenReturn(voiceManager);
+
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+
+        PermissionOverrideAction textOverrideAction = mock(PermissionOverrideAction.class);
+        when(textCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.deny(any(Permission[].class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.grant(any(Permission[].class))).thenReturn(textOverrideAction);
+
+        PermissionOverrideAction voiceOverrideAction = mock(PermissionOverrideAction.class);
+        when(voiceCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.deny(any(Permission[].class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.grant(any(Permission[].class))).thenReturn(voiceOverrideAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertTrue(outcome.succeeded());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("category " + catId));
+
+        // Channels are moved to archive category and role is deleted
+        verify(textManager).setParent(archiveCat);
+        verify(voiceManager).setParent(archiveCat);
+        verify(townRole).delete();
+
+        // State in DB is ARCHIVED and never marked INCONSISTENT
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Archive with role missing succeeds, space becomes ARCHIVED and not INCONSISTENT")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceWithMissingRoleSucceedsAndMarksArchived() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "MissingRoleTown";
+        String textChId = "txt-arch-4";
+        String voiceChId = "vc-arch-4";
+        String roleId = "role-deleted-hand-4";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        // Role was deleted by hand -> lookup returns null
+        when(guild.getRoleById(roleId)).thenReturn(null);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        TextChannel textCh = mock(TextChannel.class);
+        VoiceChannel voiceCh = mock(VoiceChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        when(voiceCh.getId()).thenReturn(voiceChId);
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh);
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(voiceCh);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        VoiceChannelManager voiceManager = mock(VoiceChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(voiceCh.getManager()).thenReturn(voiceManager);
+        when(textManager.setParent(archiveCat)).thenReturn(textManager);
+        when(voiceManager.setParent(archiveCat)).thenReturn(voiceManager);
+
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+
+        PermissionOverrideAction textOverrideAction = mock(PermissionOverrideAction.class);
+        when(textCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.deny(any(Permission[].class))).thenReturn(textOverrideAction);
+        when(textOverrideAction.grant(any(Permission[].class))).thenReturn(textOverrideAction);
+
+        PermissionOverrideAction voiceOverrideAction = mock(PermissionOverrideAction.class);
+        when(voiceCh.upsertPermissionOverride(any(net.dv8tion.jda.api.entities.IPermissionHolder.class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.deny(any(Permission[].class))).thenReturn(voiceOverrideAction);
+        when(voiceOverrideAction.grant(any(Permission[].class))).thenReturn(voiceOverrideAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertTrue(outcome.succeeded());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("role " + roleId));
+
+        // Channels moved to archive category
+        verify(textManager).setParent(archiveCat);
+        verify(voiceManager).setParent(archiveCat);
+
+        // State in DB is ARCHIVED and never marked INCONSISTENT
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Archive with both channels missing creates no archive category, succeeds and marks ARCHIVED")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceWithBothChannelsMissingCreatesNoArchiveCategoryAndSucceeds() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "BothChannelsMissingTown";
+        String textChId = "txt-del-5";
+        String voiceChId = "vc-del-5";
+        String roleId = "role-del-5";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.of(voiceChId),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        // Both channels deleted by hand
+        when(guild.getTextChannelById(textChId)).thenReturn(null);
+        when(guild.getVoiceChannelById(voiceChId)).thenReturn(null);
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertTrue(outcome.succeeded());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("text channel " + textChId));
+        assertTrue(outcome.reason().get().contains("voice channel " + voiceChId));
+
+        // Role is deleted
+        verify(townRole).delete();
+
+        // Never creates an archive category when there are zero channels to archive
+        verify(guild, never()).createCategory(any());
+
+        // State in DB is ARCHIVED and not INCONSISTENT
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: A create operation with a missing prerequisite still fails and marks INCONSISTENT (leniency is not widened)")
+    @SuppressWarnings("unchecked")
+    void createSpaceWithMissingPrerequisiteFailsAndLeavesSpaceInconsistent() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "CreateFailTown";
+        SpaceRequest req = new SpaceRequest(townUuid, townName, UUID.randomUUID(), List.of(), "mayor", 2);
+
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.empty());
+        when(spaces.findAll()).thenReturn(Collections.emptyList());
+
+        // Role creation succeeds
+        mockRoleCreation("role-town-id", townName);
+
+        // Category exists in Discord
+        when(structureConfig.categoryName()).thenReturn("Comunidades");
+        when(structureConfig.createTextChannel()).thenReturn(true);
+        when(structureConfig.textChannelName()).thenReturn("{town}");
+        when(structureConfig.createVoiceChannel()).thenReturn(false);
+
+        Category category = mock(Category.class);
+        when(category.getId()).thenReturn("cat-1");
+        when(category.getName()).thenReturn("Comunidades");
+        when(category.getChannels()).thenReturn(Collections.emptyList());
+        when(category.getTextChannels()).thenReturn(Collections.emptyList());
+        when(category.getVoiceChannels()).thenReturn(Collections.emptyList());
+        when(guild.getCategoriesByName("Comunidades", true)).thenReturn(List.of(category));
+
+        Role publicRole = mock(Role.class);
+        when(guild.getPublicRole()).thenReturn(publicRole);
+
+        // Prerequisite missing during channel creation: Discord reports UNKNOWN_CHANNEL
+        // (e.g. parent category missing/deleted in Discord)
+        net.dv8tion.jda.api.requests.restaction.ChannelAction<TextChannel> textChAction =
+                mock(net.dv8tion.jda.api.requests.restaction.ChannelAction.class);
+        when(category.createTextChannel(anyString())).thenReturn(textChAction);
+        when(textChAction.addPermissionOverride(any(), any(), any())).thenReturn(textChAction);
+
+        ErrorResponseException unknownChannelEx = mock(ErrorResponseException.class);
+        when(unknownChannelEx.getErrorResponse()).thenReturn(ErrorResponse.UNKNOWN_CHANNEL);
+        when(textChAction.complete()).thenThrow(unknownChannelEx);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.CreateSpace(req));
+
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+
+        // Space is marked INCONSISTENT on failure
+        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ACTIVE));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+    }
+
     @Test
     @DisplayName("Restoration returns the exact same channel IDs, with zero channel creations and zero deletions, and reapplies permissions (F10)")
     @SuppressWarnings("unchecked")
