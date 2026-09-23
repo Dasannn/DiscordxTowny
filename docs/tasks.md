@@ -1027,3 +1027,59 @@ small as classifying a missing-channel outcome during archive as success, but
 check what else reads that outcome first: the audit log, the Discord log channel,
 and the sync report all consume it, and a success that lies about what happened is
 worse than the loop.
+
+## T28 — An administrator can put their own name in front of our messages
+
+- **Branch**: `feat/admin-prefix` · **Responsible**: agent · **Status**: pending
+- **Zone**: `src/main/java/com/discordtowny/config/YamlMessages.java` and
+  `Messages.java`, `src/main/java/com/discordtowny/minecraft/MinecraftCommands.java`,
+  `src/main/java/com/discordtowny/storage/` for the stored value, their tests, and
+  the `admin:` section of both catalogs.
+- **Spec**: `docs/spec.md` §9.1, added for this task.
+
+**Why**
+
+Every message the plugin writes begins with `prefix`, defined in both catalogs as
+`&8[&bDiscordTowny&8] &r`. A server that wants its own name and colours in front of
+those messages has to edit a catalog file and reload. The owner asked for a command
+instead.
+
+Nothing has to be built for colour: `YamlMessages.get` already renders
+`prefix + text` through `legacyAmpersand()`, so Essentials-style `&` codes work
+today. What is missing is a way to change the text and have it stick.
+
+**What has to be true**
+
+- `/dt admin prefix` shows the prefix in use twice: rendered as players see it, and
+  raw as it is written, so the administrator can copy it and adapt it.
+- `/dt admin prefix <texto...>` sets it, for everyone, without a restart or a
+  reload. The rest of the line is the prefix, spaces included.
+- `/dt admin prefix reset` restores the catalog's prefix.
+- The value is stored in `SettingsRepository`, which already holds this kind of
+  thing. It survives a restart, a reload and a catalog upgrade: T23 merges
+  catalogs, and a stored prefix must not be undone by that merge.
+- The catalog `prefix` remains the default and the fallback: with nothing stored,
+  behaviour is exactly what it is today, and if the store is unreachable the plugin
+  still prints messages rather than failing.
+- It applies to what players read in chat. The console and the plugin's Discord
+  messages keep the catalog prefix — the same reason the console stays in English:
+  a log has to stay identifiable. `plain()` feeds both of those.
+- Changing it is a privileged action: it writes an audit row like the others,
+  naming who changed it and to what.
+
+**Limits that matter**
+
+- A prefix is not a message: it carries no placeholders. `{` and `}` are refused
+  rather than silently mangled.
+- Refuse a line break, and refuse anything long enough to push real text off the
+  screen. Choose a limit, say what it is in the refusal, and justify the number in
+  the report.
+- The empty prefix is legitimate — a server may want none — and is not the same as
+  `reset`. Make sure the distinction survives storage.
+
+**Notes for whoever takes it**
+
+`YamlMessages.isUsable` already treats `prefix` as the one key whose blank value is
+valid; understand why before touching it. Check every caller of `get`, `plain` and
+`label` before deciding where the stored value is read: `label` deliberately
+carries no prefix.
