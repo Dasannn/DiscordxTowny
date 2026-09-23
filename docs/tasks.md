@@ -830,7 +830,7 @@ that can never be upgraded, which was accepted deliberately and can be revisited
 
 ## T25 — The admin who joins is told the update exists
 
-- **Branch**: `fix/update-join-notice` · **Responsible**: agent · **Status**: pending
+- **Branch**: `fix/update-join-notice` · **Responsible**: agent · **Status**: integrated (five rounds; reviewed four times, the fourth found nothing)
 - **Zone**: `src/main/java/com/discordtowny/minecraft/` join listeners and their
   tests, `src/main/java/com/discordtowny/DiscordTownyPlugin.java`,
   `DiscordTownyWiring.java`, `src/main/java/com/discordtowny/update/`, and the
