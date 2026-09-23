@@ -1002,4 +1002,62 @@ class DefaultSpaceServiceTest {
         assertTrue(event.success());
         assertEquals(Optional.of("Town inactive for 30 days"), event.detail());
     }
+
+    @Test
+    @DisplayName("T27: A successful archive with something already missing writes an audit row whose detail names what was missing")
+    void archiveSpaceWithMissingResourceWritesAuditRowNamingMissingResource() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(townUuid, "Falkreath",
+                Optional.of("cat-1"), Optional.of("t1"), Optional.of("v1"), Optional.of("r1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        String note = "already missing in Discord: text channel 1551261398644957207";
+        when(discordGateway.submit(any(GuildOperation.ArchiveSpace.class)))
+                .thenReturn(CompletableFuture.completedFuture(
+                        new OperationOutcome(OperationOutcome.Status.SUCCESS, Optional.of(note))));
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        serviceWithSink.archive(townUuid, "Town Falkreath is ruined").join();
+
+        List<AuditEvent> events = storage.audit().recent("Falkreath", 10);
+        assertEquals(1, events.size(), "Archive must write an audit row");
+        AuditEvent event = events.get(0);
+        assertEquals("space_archive", event.action());
+        assertEquals("Falkreath", event.target());
+        assertTrue(event.success());
+        assertEquals(Optional.of("Town Falkreath is ruined (already missing in Discord: text channel 1551261398644957207)"), event.detail());
+    }
+
+    @Test
+    @DisplayName("T27: A successful archive with missing resource and null reason writes the missing note as detail")
+    void archiveSpaceWithMissingResourceAndNullReasonWritesMissingNoteAsDetail() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(townUuid, "Riften",
+                Optional.of("cat-1"), Optional.of("t1"), Optional.of("v1"), Optional.of("r1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        String note = "already missing in Discord: voice channel 99887766";
+        when(discordGateway.submit(any(GuildOperation.ArchiveSpace.class)))
+                .thenReturn(CompletableFuture.completedFuture(
+                        new OperationOutcome(OperationOutcome.Status.SUCCESS, Optional.of(note))));
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        serviceWithSink.archive(townUuid, null).join();
+
+        List<AuditEvent> events = storage.audit().recent("Riften", 10);
+        assertEquals(1, events.size(), "Archive must write an audit row");
+        AuditEvent event = events.get(0);
+        assertEquals("space_archive", event.action());
+        assertEquals("Riften", event.target());
+        assertTrue(event.success());
+        assertEquals(Optional.of("already missing in Discord: voice channel 99887766"), event.detail());
+    }
 }

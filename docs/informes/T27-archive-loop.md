@@ -263,3 +263,65 @@ During live operation, when the archive loop occurred, the operator executed `/d
    - `adminPurgeWithConsoleAndInconsistentSpacesRepliesInEnglish`: Verifies console operator receives the English `purge-skipped` text per Spec 9.1.
    - `adminPurgeRequiresConfirmation`: Preserved byte-for-byte.
    - `adminPurgeWhenNoArchivedSpacesShowsEmpty`: Preserved byte-for-byte.
+
+---
+
+## 10. Round 4: Which Thing is Missing Decides Everything
+
+### A. F1: Disambiguating `UNKNOWN_CHANNEL` on Move & Scoping `classifyError`
+1. **The Root Ambiguity**:
+   When moving a text or voice channel to the archive category (`channel.getManager().setParent(archive).complete()`), Discord throws `ErrorResponseException(ErrorResponse.UNKNOWN_CHANNEL)` under two completely distinct scenarios:
+   - **Scenario 1 (Source Channel Deleted)**: The channel being moved was deleted concurrently in Discord. Absence of the town's channel is the goal of archiving; this is legitimate absence and archiving should succeed.
+   - **Scenario 2 (Destination Category Vanished)**: The destination archive category disappeared in Discord between `ensureCategoryWithCapacity` and `setParent`. Here the town's channel is alive, untouched, unarchived, and still visible in Discord. Treating this as absence would falsely mark the space as `ARCHIVED` in the database, hiding the unarchived channel from repair.
+2. **The Disambiguation Solution**:
+   - In [`JdaGuildOperationExecutor.archiveSpace`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L343-L392), when `UNKNOWN_CHANNEL` is caught during `setParent(archive)`:
+     - For text channels: the executor queries Discord via `guild.getTextChannelById(textCh.getId())`.
+     - For voice channels: the executor queries Discord via `guild.getVoiceChannelById(voiceCh.getId())`.
+     - If the channel is **still alive** (`!= null`), the destination category vanished. The exception `e` is immediately rethrown. It is **not** recorded as absence, and the space does **not** reach `ARCHIVED`.
+     - If the channel is **gone** (`== null`), the source channel was deleted. The missing channel is added to `missing` and archiving continues.
+3. **Scoping `classifyError`**:
+   - In [`JdaGuildOperationExecutor.classifyError`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L1044-L1057), `ArchiveSpace` was removed from the `UNKNOWN_CHANNEL, UNKNOWN_ROLE -> yield OperationOutcome.success();` branch, leaving only `DeleteSpace`.
+   - The local catches in `archiveSpace` already handle every legitimate absence precisely.
+   - Any uncaught `UNKNOWN_CHANNEL` or `UNKNOWN_ROLE` outside local catches (or rethrown because the channel is alive) now correctly classifies as `OperationOutcome.permanentFailure`. This triggers `onOperationFailed`, marks the space `INCONSISTENT`, and keeps it visible for repair.
+
+### B. F2: Carrying the Missing Resource Note into the Audit Detail
+1. **The Discarded Note Defect**:
+   - `OperationOutcome` in [`JdaGuildOperationExecutor`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L405-L408) correctly carries the note: `already missing in Discord: text channel <id>...`.
+   - In [`DefaultSpaceService.archive`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/space/DefaultSpaceService.java#L288-L304), when `outcome.succeeded()` was true, `outcome.reason()` was previously discarded. The audit event recorded only the Towny reason (e.g. `"Town testeo is ruined"`).
+   - Because the Discord log channel (`JdaDiscordGateway` via `LogQueue`) and `/dt admin info` consume `AuditEvent`, the server owner watching the Discord log channel never learned what was missing. The note survived only in the server console log.
+2. **Carrying the Note**:
+   - In [`DefaultSpaceService.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/space/DefaultSpaceService.java#L288-L304), when `outcome.succeeded()` is true:
+     - If `outcome.reason()` is present and non-blank:
+       `auditDetail = (reason != null && !reason.isBlank()) ? reason + " (" + note + ")" : note;`
+     - If `outcome.reason()` is empty (no missing resources):
+       `auditDetail = reason;` (preserving previous behavior byte-for-byte).
+     - The `AuditEvent` is recorded with `Optional.ofNullable(auditDetail)`.
+   - This populates the existing `detail` column on the audit table without adding new columns, event types, or sinks.
+   - The Discord log channel embed directly renders this detail:
+     `ℹ️ **space_archive** testeo — Town testeo is ruined (already missing in Discord: text channel 1551261398644957207) 14:32:00`
+   - `/dt admin info <town>` and database audit queries now retain the missing resource notice in audit history.
+3. **Architectural Boundary Regarding `/dt sync`**:
+   - As directed by the card ("Work within the zone the card names. If carrying it requires touching something outside, say so in the report and stop there rather than reaching"), propagating the note into `/dt sync` was evaluated:
+     - `DefaultSyncService.executeArchive` delegates to `spaceService.archive(space.townUuid(), reason)`.
+     - The [`SpaceService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/space/SpaceService.java) interface defines `CompletableFuture<Void> archive(...)`. Returning outcome data would require modifying the interface outside the zone.
+     - `SyncReport` in [`SyncService.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/sync/SyncService.java) only tracks counters and `Problem` records (which represent errors/failures). It has no field for successful repair notes.
+     - [`SyncMinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/minecraft/SyncMinecraftCommands.java) and the message catalogs (`messages_*.yml`) would require modifications outside the card's zone to display repair notes.
+     - Therefore, the note is carried strictly into the audit detail where it reaches the primary destination watched by the server owner (the Discord log channel) and audit history, without exceeding the card zone.
+
+### C. Test Verification
+1. **[`JdaGuildOperationExecutorTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/test/java/com/discordtowny/discord/JdaGuildOperationExecutorTest.java)**:
+   - `archiveSpaceWhenSourceTextChannelGoneDuringMoveCompletesArchive`:
+     Source text channel is deleted concurrently during the move (`complete()` raises `UNKNOWN_CHANNEL`, subsequent lookup is `null`). Absence is recorded, archive completes successfully, state is saved as `ARCHIVED`, never `INCONSISTENT`.
+   - `archiveSpaceWhenSourceTextChannelAliveAndMoveThrowsUnknownChannelFailsAndMarksInconsistent`:
+     Source text channel is alive in Discord (`guild.getTextChannelById` is non-null) and move raises `UNKNOWN_CHANNEL` (destination category vanished). Operation fails with `PERMANENT_FAILURE`, space is marked `INCONSISTENT`, and never `ARCHIVED`.
+   - `archiveSpaceWhenSourceVoiceChannelAliveAndMoveThrowsUnknownChannelFailsAndMarksInconsistent`:
+     Source voice channel is alive in Discord (`guild.getVoiceChannelById` is non-null) and move raises `UNKNOWN_CHANNEL`. Operation fails with `PERMANENT_FAILURE`, space is marked `INCONSISTENT`, and never `ARCHIVED`.
+   - `archiveSpaceWithUncaughtUnknownChannelOrRoleFailsAndMarksInconsistent`:
+     `UNKNOWN_CHANNEL` or `UNKNOWN_ROLE` raised outside local catches (e.g. during category creation in `ensureCategoryWithCapacity`) is classified by `classifyError` as `PERMANENT_FAILURE`, marking the space `INCONSISTENT` and leaving it visible for repair.
+2. **[`DefaultSpaceServiceTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/test/java/com/discordtowny/space/DefaultSpaceServiceTest.java)**:
+   - `archiveSpaceWithMissingResourceWritesAuditRowNamingMissingResource`:
+     Verifies that a successful archive with missing resource note in `outcome.reason()` writes an audit row whose detail contains and names what was missing: `"Town Falkreath is ruined (already missing in Discord: text channel 1551261398644957207)"`.
+   - `archiveSpaceWithMissingResourceAndNullReasonWritesMissingNoteAsDetail`:
+     Verifies that when Towny reason is `null`, the missing resource note is written as the audit detail: `"already missing in Discord: voice channel 99887766"`.
+   - `archiveSpaceWritesItsRowToDatabase`:
+     Verifies that an archive without missing resources writes the row with Towny reason unchanged: `"Town inactive for 30 days"`.

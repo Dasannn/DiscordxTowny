@@ -344,8 +344,14 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         int channelsNeeded = (textCh != null ? 1 : 0) + (voiceCh != null ? 1 : 0);
         if (channelsNeeded > 0) {
             Category archive = ensureCategoryWithCapacity(config.structure().archiveCategoryName(), channelsNeeded);
+            if (archive == null) {
+                OperationOutcome outcome = OperationOutcome.permanentFailure(
+                        "Archive category unavailable in Discord for town " + op.townUuid());
+                onOperationFailed(op, outcome);
+                return outcome;
+            }
 
-            if (textCh != null && archive != null) {
+            if (textCh != null) {
                 try {
                     textCh.getManager().setParent(archive).complete();
                     // Visible only for administrators in read-only: @everyone cannot see the channel
@@ -363,11 +369,14 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                     if (e.getErrorResponse() != ErrorResponse.UNKNOWN_CHANNEL) {
                         throw e;
                     }
+                    if (guild.getTextChannelById(textCh.getId()) != null) {
+                        throw e;
+                    }
                     missing.add("text channel " + space.textChannelId().orElse(""));
                 }
             }
 
-            if (voiceCh != null && archive != null) {
+            if (voiceCh != null) {
                 try {
                     voiceCh.getManager().setParent(archive).complete();
                     // Visible only for administrators in read-only: @everyone cannot see the channel
@@ -383,6 +392,9 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                     }
                 } catch (ErrorResponseException e) {
                     if (e.getErrorResponse() != ErrorResponse.UNKNOWN_CHANNEL) {
+                        throw e;
+                    }
+                    if (guild.getVoiceChannelById(voiceCh.getId()) != null) {
                         throw e;
                     }
                     missing.add("voice channel " + space.voiceChannelId().orElse(""));
@@ -1035,8 +1047,7 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
         String context = operation.describe();
         return switch (response) {
             case UNKNOWN_CHANNEL, UNKNOWN_ROLE -> {
-                if (operation instanceof GuildOperation.DeleteSpace
-                        || operation instanceof GuildOperation.ArchiveSpace) {
+                if (operation instanceof GuildOperation.DeleteSpace) {
                     yield OperationOutcome.success();
                 }
                 yield OperationOutcome.permanentFailure(
