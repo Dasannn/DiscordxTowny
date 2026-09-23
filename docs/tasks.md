@@ -877,7 +877,7 @@ notice is the kind of thing the next reader trips over.
 
 ## T26 — One bot, many Discords: each server answers only its own
 
-- **Branch**: `fix/guild-scoped-events` · **Responsible**: agent · **Status**: pending
+- **Branch**: `fix/guild-scoped-events` · **Responsible**: agent · **Status**: integrated (two rounds; reviewed once, the finding was against this card)
 - **Zone**: `src/main/java/com/discordtowny/discord/TownySlashCommands.java`,
   `src/main/java/com/discordtowny/discord/LinkSlashCommands.java`, their tests,
   `src/test/java/com/discordtowny/DiscordTownyPluginTest.java`, and the `discord:`
