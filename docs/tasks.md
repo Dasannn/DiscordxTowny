@@ -1033,8 +1033,13 @@ worse than the loop.
 - **Branch**: `feat/admin-prefix` · **Responsible**: agent · **Status**: pending
 - **Zone**: `src/main/java/com/discordtowny/config/YamlMessages.java` and
   `Messages.java`, `src/main/java/com/discordtowny/minecraft/MinecraftCommands.java`,
-  `src/main/java/com/discordtowny/storage/` for the stored value, their tests, and
-  the `admin:` section of both catalogs.
+  `src/main/java/com/discordtowny/storage/` for the stored value,
+  `src/main/java/com/discordtowny/DiscordTownyPlugin.java` and
+  `DiscordTownyWiring.java` so the settings repository can be handed to the
+  commands explicitly, their tests, and the `admin:` section of both catalogs.
+- **Zone widened after round 1**: the first zone gave no way to pass the settings
+  repository from the plugin, so the agent reached it through the Discord gateway
+  and parked it in a static setter. A dependency the task needs has to have a door.
 - **Spec**: `docs/spec.md` §9.1, added for this task.
 
 **Why**
