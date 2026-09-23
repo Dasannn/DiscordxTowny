@@ -191,8 +191,11 @@ admin:
   prefix-line-break: "&cThe prefix cannot contain line breaks."
   prefix-too-long: "&cThe prefix cannot be longer than {max} visible characters."
   prefix-raw-too-long: "&cThe raw prefix cannot be longer than {max} characters."
-  prefix-starting: "&cThe plugin is still starting up. Try again in a moment."
-  prefix-saved-incomplete: "&ePrefix was saved to database, but could not be applied live. The change will take effect on next restart."
+  prefix-starting: "&cAuditing is unavailable, so the change was not made. Try again later."
+  prefix-saved-incomplete: "&ePrefix was saved to database ({target}), but {stage} failed. The change will take effect on next restart."
+  prefix-stage-audit: "audit dispatch"
+  prefix-stage-live: "live application"
+  prefix-reset-target: "catalog default"
 
 # Labels for the embeds the bot publishes in Discord. Spec 9.1: the language
 # setting covers these too, so they are not hard-coded in the code.

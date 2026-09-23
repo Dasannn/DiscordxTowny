@@ -798,4 +798,160 @@ A total of **13 call sites** were updated across production and test suites to t
 - **Test Scenarios**: All four Round 5 scenarios (`startupWindowSettingsAvailableAuditSinkNotRefusesAndWritesNothing`, `startupWindowRefusesResetWhenAuditSinkUnavailable`, `auditConsumerThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`, and `applyThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved` / `applyThatThrowsAfterSuccessfulResetInformsOperatorValueSaved`) remain intact, asserting all original F7 and F8 invariants.
 - **Verification**: All 78 tests across [`AdminPrefixCommandTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) and [`MinecraftCommandsTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/MinecraftCommandsTest.java) run and pass with 0 failures, 0 errors, and 0 skipped tests. All Java source files compile with 0 compilation errors.
 
+---
+
+## 15. Round 7 — Hold the Checked Sink & Operator Reporting Accuracy (Review 3 Resolution)
+
+In Round 7, the findings and follow-ups from [`docs/revisiones/T28-revision-3.md`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/docs/revisiones/T28-revision-3.md) were implemented:
+1. **Finding F9 (blocking)**: Capturing and holding the checked audit sink instance across the administrative change pipeline rather than re-querying the supplier after storage persistence.
+2. **Follow-up 1**: Enhancing the incomplete save reply (`admin.prefix-saved-incomplete`) to explicitly state the stored value (the raw text for set, or catalog default for reset) and which post-write stage failed.
+3. **Follow-up 2**: Rewording the audit unavailability refusal (`admin.prefix-starting`) to accurately fit both initial startup and stalled service initialization without false promises.
+
+---
+
+### 15.1 Finding F9: Single Sink Resolution and Instance Capture
+
+#### Problem Description
+In [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java), `executeSetPrefix` and `executeResetPrefix` checked `resolveAuditConsumer(auditConsumerSupplier)` before initiating work, but then re-read the supplier inside `CompletableFuture.runAsync` and a third time inside `.thenRun`.
+
+In `.thenRun`, the code previously handled the sink via:
+```java
+Consumer<AuditEvent> activeAudit = resolveAuditConsumer(auditConsumerSupplier);
+if (activeAudit != null) {
+    activeAudit.accept(...);
+}
+```
+If the supplier became `null` between the pre-write check and the post-write block:
+- The database write had already succeeded and committed.
+- `activeAudit == null` silently skipped audit delivery (`accept`).
+- The in-memory prefix was updated.
+- The operator was sent a success reply.
+
+This path meant a privileged administrative mutation completed successfully with zero audit event recorded. This was not merely theoretical: the production supplier supplied by [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyPlugin.java) reads `wiring.getAuditSink()`, which is cleared during plugin shutdown and replaced during configuration reload (`DiscordTownyWiring.java:563-577, 671-681`).
+
+#### Architectural Resolution
+The audit sink is now resolved strictly **once**, before any storage mutation or asynchronous scheduling:
+```java
+Consumer<AuditEvent> auditConsumer = resolveAuditConsumer(auditConsumerSupplier);
+if (auditConsumer == null) {
+    sender.sendMessage(msg.get("admin.prefix-starting"));
+    return 1;
+}
+```
+1. **Instance Capture**: The validated non-null `auditConsumer` reference is captured by the asynchronous pipeline closure.
+2. **Elimination of Redundant Supplier Reads**: The redundant supplier check inside `runAsync` and the third read inside `thenRun` were eliminated.
+3. **Dispatch to Checked Sink**: In `.thenRun`, audit delivery invokes `auditConsumer.accept(...)` directly on the captured instance. What the command checked is guaranteed to be what it dispatches to.
+4. **Failure Preservation**: If the captured sink throws during `accept(...)`, execution routes cleanly into the post-write `catch (Throwable t)` block established in F8, preserving existing failure semantics.
+
+---
+
+### 15.2 Follow-up 1: Explaining Stored Value and Failed Stage in Incomplete Reply
+
+#### Problem Description
+When a post-write stage failed (such as an exceptional audit sink or an in-memory application failure), `admin.prefix-saved-incomplete` informed the operator:
+> *"Prefix was saved to database, but could not be applied live. The change will take effect on next restart."*
+
+This reply was incomplete in two critical respects:
+1. It did not disclose **which stage** failed (audit dispatch vs. live application).
+2. It did not repeat the **stored value** (the raw string that was stored in the database, or the catalog default in the case of a reset), leaving the operator unable to verify from chat what value a server reboot will load.
+
+#### Architectural Resolution
+The message and execution pipeline were enhanced to capture and report both data points on a single concise line:
+
+1. **Catalog Message Templates**:
+   Updated `admin.prefix-saved-incomplete` in both language catalogs with `{target}` and `{stage}` placeholders:
+   - **`messages_en.yml`**:
+     ```yaml
+     prefix-saved-incomplete: "&ePrefix was saved to database ({target}), but {stage} failed. The change will take effect on next restart."
+     prefix-stage-audit: "audit dispatch"
+     prefix-stage-live: "live application"
+     prefix-reset-target: "catalog default"
+     ```
+   - **`messages_es.yml`**:
+     ```yaml
+     prefix-saved-incomplete: "&eEl prefijo se guardó en la base de datos ({target}), pero falló {stage}. El cambio tendrá efecto tras reiniciar el servidor."
+     prefix-stage-audit: "el registro de auditoría"
+     prefix-stage-live: "la aplicación en vivo"
+     prefix-reset-target: "el valor por defecto del catálogo"
+     ```
+2. **Stage Tracking and Localization Helper**:
+   In `MinecraftCommands`, `.thenRun` tracks the executing stage before each critical operation:
+   - Before `auditConsumer.accept(...)`: `failedStage = resolveStage(msg, "admin.prefix-stage-audit", "audit dispatch");`
+   - Before in-memory apply: `failedStage = resolveStage(msg, "admin.prefix-stage-live", "live application");`
+   - `resolveStage(Messages msg, String key, String fallback)` looks up the label via `msg.label(key)` and falls back safely to the default if unconfigured or missing.
+3. **Stored Value Representation**:
+   - For `executeSetPrefix`: `{target}` is the raw prefix string `finalPrefix` (e.g. `&e[Saved]&r `).
+   - For `executeResetPrefix`: `{target}` resolves to `admin.prefix-reset-target` (e.g. `"catalog default"` in English, `"el valor por defecto del catálogo"` in Spanish).
+
+---
+
+### 15.3 Follow-up 2: Rewording Persistent Audit Unavailability Refusal
+
+#### Problem Description
+The previous refusal message `admin.prefix-starting` promised:
+> *"The plugin is still starting up. Try again in a moment."*
+
+If service initialization encountered an error or stalled before constructing the audit sink, the command repeatedly told this to the administrator. Inviting a retry "in a moment" while promising that the plugin is merely starting up was false in any scenario where initialization stalled.
+
+#### Architectural Resolution
+Reworded `admin.prefix-starting` across both catalogs to state the objective requirement: auditing is unavailable, so the mutation was not made. It mentions retrying without promising that it will resolve momentarily:
+- **`messages_en.yml`**:
+  ```yaml
+  prefix-starting: "&cAuditing is unavailable, so the change was not made. Try again later."
+  ```
+- **`messages_es.yml`**:
+  ```yaml
+  prefix-starting: "&cLa auditoría no está disponible, por lo que no se realizó el cambio. Inténtalo de nuevo más tarde."
+  ```
+
+The refusal behavior remains strictly identical:
+- Synchronous refusal before writing to storage.
+- Zero database modifications (`SettingsRepository` untouched).
+- Zero in-memory mutations (`Messages` unchanged).
+- Zero audit records emitted.
+
+---
+
+### 15.4 Catalog Synchronization
+
+All catalog additions and adjustments were synchronized between `src/main/resources/` and `build/resources/main/` for both `messages_en.yml` and `messages_es.yml`:
+- Identical key-set integrity verified against `bundledMessagesHaveIdenticalKeySets`.
+- Identical placeholder sets verified against `bundledMessagesHaveMatchingPlaceholders`.
+
+---
+
+### 15.5 Test Coverage & Verification
+
+The test suite in [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) was expanded and updated to cover all Round 7 requirements:
+
+1. **Transient Supplier / Captured Sink Delivery (F9)**:
+   - `auditSupplierReturningNullAfterPreWriteReadStillDeliversAuditToCheckedSink`: Installs an atomic supplier that returns a mock audit sink on the first read and `null` on all subsequent reads. Executes `/dt admin prefix &3[Captured]&r `. Verifies:
+     - The captured sink receives the `AuditEvent` with action `"prefix"` and target `"&3[Captured]&r "`.
+     - The setting is persisted to `SettingsRepository`.
+     - The prefix is updated in memory for player messages.
+     - The operator receives the success reply.
+   - `auditSupplierReturningNullAfterPreWriteReadStillDeliversAuditOnReset`: Verifies the identical captured sink guarantee for `/dt admin prefix reset`.
+2. **Incomplete Reply Stored Value and Failed Stage Naming (Follow-up 1)**:
+   - `auditConsumerThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`: Verifies the reply names the stored raw prefix (`&e[Saved]&r `) and the failed stage (`audit dispatch`).
+   - `applyThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`: Verifies the reply names the stored raw prefix (`&b[AppliedFail]&r `) and the failed stage (`live application`).
+   - `auditConsumerThatThrowsAfterSuccessfulResetInformsOperatorValueSaved`: Verifies the reply names the reset target (`catalog default`) and the failed stage (`audit dispatch`).
+   - `applyThatThrowsAfterSuccessfulResetInformsOperatorValueSaved`: Verifies the reply names the reset target (`catalog default`) and the failed stage (`live application`).
+3. **Reworded Refusal Verification (Follow-up 2)**:
+   - `startupWindowSettingsAvailableAuditSinkNotRefusesAndWritesNothing`: Asserts operator receives the reworded refusal (`"Auditing is unavailable"` and `"change was not made"`), nothing is written to storage, nothing is applied in memory, and no audit row is written.
+   - `startupWindowRefusesResetWhenAuditSinkUnavailable`: Asserts identical reworded refusal on reset command, ensuring stored settings and active prefix remain untouched.
+
+---
+
+### 15.6 Summary of Changes in Round 7
+
+| File | Change Type | Description |
+| :--- | :--- | :--- |
+| [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java) | **Production Bug Fix (F9 & Follow-up 1)** | Captured checked `auditConsumer` once before write; eliminated redundant post-write supplier reads; added `resolveStage` helper; reported `{target}` and `{stage}` in `admin.prefix-saved-incomplete`. |
+| [`messages_en.yml`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/resources/messages_en.yml) | **Catalog Update (Follow-ups 1 & 2)** | Reworded `prefix-starting`; updated `prefix-saved-incomplete` with `{target}` and `{stage}`; added `prefix-stage-audit`, `prefix-stage-live`, and `prefix-reset-target`. |
+| [`messages_es.yml`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/resources/messages_es.yml) | **Catalog Update (Follow-ups 1 & 2)** | Spanish equivalents for `prefix-starting`, `prefix-saved-incomplete`, `prefix-stage-audit`, `prefix-stage-live`, and `prefix-reset-target`. |
+| `build/resources/main/messages_en.yml` | **Build Resource Sync** | Synchronized English catalog additions with compile output directory. |
+| `build/resources/main/messages_es.yml` | **Build Resource Sync** | Synchronized Spanish catalog additions with compile output directory. |
+| [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) | **Test Suite Enhancement** | Added tests for transient audit supplier (set and reset), updated incomplete reply assertions to check stored value and failed stage, added reset audit throw test, and updated refusal message assertions. |
+
+
 

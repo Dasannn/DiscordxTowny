@@ -1579,47 +1579,43 @@ public final class MinecraftCommands {
 
         Executor exec = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
         CompletableFuture.runAsync(() -> {
-            if (resolveAuditConsumer(auditConsumerSupplier) == null) {
-                throw new IllegalStateException("Audit sink unavailable during startup");
-            }
             SettingsRepository settings = resolveSettings(settingsSupplier);
             if (settings == null) {
                 throw new IllegalStateException("Database settings repository unavailable");
             }
             settings.delete(SettingsRepository.KEY_CHAT_PREFIX);
         }, exec).thenRun(() -> {
+            String target = resolveStage(msg, "admin.prefix-reset-target", "catalog default");
+            String failedStage = null;
             try {
-                Consumer<AuditEvent> activeAudit = resolveAuditConsumer(auditConsumerSupplier);
-                if (activeAudit != null) {
-                    String catPrefix = (messagesSupplier != null && messagesSupplier.get() != null)
-                            ? messagesSupplier.get().catalogPrefix()
-                            : "";
-                    activeAudit.accept(new AuditEvent(
-                            Instant.now(),
-                            AuditEvent.Severity.INFO,
-                            sender.getName(),
-                            "prefix",
-                            catPrefix.isEmpty() ? "reset" : catPrefix,
-                            true,
-                            Optional.of("reset")
-                    ));
-                }
+                failedStage = resolveStage(msg, "admin.prefix-stage-audit", "audit dispatch");
+                String catPrefix = (messagesSupplier != null && messagesSupplier.get() != null)
+                        ? messagesSupplier.get().catalogPrefix()
+                        : "";
+                auditConsumer.accept(new AuditEvent(
+                        Instant.now(),
+                        AuditEvent.Severity.INFO,
+                        sender.getName(),
+                        "prefix",
+                        catPrefix.isEmpty() ? "reset" : catPrefix,
+                        true,
+                        Optional.of("reset")
+                ));
+
+                failedStage = resolveStage(msg, "admin.prefix-stage-live", "live application");
                 if (messagesSupplier != null && messagesSupplier.get() != null) {
                     messagesSupplier.get().resetPrefix();
                 }
                 scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-reset")));
             } catch (Throwable t) {
-                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete")));
+                final String stage = failedStage != null ? failedStage : resolveStage(msg, "admin.prefix-stage-live", "live application");
+                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete", Map.of(
+                        "target", target,
+                        "stage", stage
+                ))));
             }
         }).exceptionally(ex -> {
-            scheduler.accept(() -> {
-                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                if (cause instanceof IllegalStateException && "Audit sink unavailable during startup".equals(cause.getMessage())) {
-                    sender.sendMessage(msg.get("admin.prefix-starting"));
-                } else {
-                    sender.sendMessage(msg.get("general.database-unavailable"));
-                }
-            });
+            scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
             return null;
         });
 
@@ -1681,28 +1677,26 @@ public final class MinecraftCommands {
         Executor exec = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
 
         CompletableFuture.runAsync(() -> {
-            if (resolveAuditConsumer(auditConsumerSupplier) == null) {
-                throw new IllegalStateException("Audit sink unavailable during startup");
-            }
             SettingsRepository settings = resolveSettings(settingsSupplier);
             if (settings == null) {
                 throw new IllegalStateException("Database settings repository unavailable");
             }
             settings.put(SettingsRepository.KEY_CHAT_PREFIX, finalPrefix);
         }, exec).thenRun(() -> {
+            String failedStage = null;
             try {
-                Consumer<AuditEvent> activeAudit = resolveAuditConsumer(auditConsumerSupplier);
-                if (activeAudit != null) {
-                    activeAudit.accept(new AuditEvent(
-                            Instant.now(),
-                            AuditEvent.Severity.INFO,
-                            sender.getName(),
-                            "prefix",
-                            finalPrefix,
-                            true,
-                            Optional.empty()
-                    ));
-                }
+                failedStage = resolveStage(msg, "admin.prefix-stage-audit", "audit dispatch");
+                auditConsumer.accept(new AuditEvent(
+                        Instant.now(),
+                        AuditEvent.Severity.INFO,
+                        sender.getName(),
+                        "prefix",
+                        finalPrefix,
+                        true,
+                        Optional.empty()
+                ));
+
+                failedStage = resolveStage(msg, "admin.prefix-stage-live", "live application");
                 if (messagesSupplier != null && messagesSupplier.get() != null) {
                     messagesSupplier.get().setCustomPrefix(finalPrefix);
                 }
@@ -1713,17 +1707,14 @@ public final class MinecraftCommands {
                     sender.sendMessage(reply);
                 });
             } catch (Throwable t) {
-                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete")));
+                final String stage = failedStage != null ? failedStage : resolveStage(msg, "admin.prefix-stage-live", "live application");
+                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete", Map.of(
+                        "target", finalPrefix,
+                        "stage", stage
+                ))));
             }
         }).exceptionally(ex -> {
-            scheduler.accept(() -> {
-                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                if (cause instanceof IllegalStateException && "Audit sink unavailable during startup".equals(cause.getMessage())) {
-                    sender.sendMessage(msg.get("admin.prefix-starting"));
-                } else {
-                    sender.sendMessage(msg.get("general.database-unavailable"));
-                }
-            });
+            scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
             return null;
         });
 
@@ -1756,5 +1747,17 @@ public final class MinecraftCommands {
             }
         }
         return null;
+    }
+
+    private static String resolveStage(Messages msg, String key, String fallback) {
+        if (msg != null) {
+            try {
+                String label = msg.label(key);
+                if (label != null && !label.isBlank() && !label.startsWith("[missing message")) {
+                    return label;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return fallback;
     }
 }

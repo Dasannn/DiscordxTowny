@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -58,8 +59,11 @@ class AdminPrefixCommandTest {
         texts.put("admin.prefix-line-break", "&cThe prefix cannot contain line breaks.");
         texts.put("admin.prefix-too-long", "&cThe prefix cannot be longer than {max} visible characters.");
         texts.put("admin.prefix-raw-too-long", "&cThe raw prefix cannot be longer than {max} characters.");
-        texts.put("admin.prefix-starting", "&cThe plugin is still starting up. Try again in a moment.");
-        texts.put("admin.prefix-saved-incomplete", "&ePrefix was saved to database, but could not be applied live. The change will take effect on next restart.");
+        texts.put("admin.prefix-starting", "&cAuditing is unavailable, so the change was not made. Try again later.");
+        texts.put("admin.prefix-saved-incomplete", "&ePrefix was saved to database ({target}), but {stage} failed. The change will take effect on next restart.");
+        texts.put("admin.prefix-stage-audit", "audit dispatch");
+        texts.put("admin.prefix-stage-live", "live application");
+        texts.put("admin.prefix-reset-target", "catalog default");
         texts.put("general.database-unavailable", "&cCannot access the database. Notify an administrator.");
 
         settingsRepo = new InMemorySettingsRepository();
@@ -512,10 +516,10 @@ class AdminPrefixCommandTest {
 
         startupDispatcher.execute("dt admin prefix &a[Early]&r ", sourceStack);
 
-        // 1. Refusal message says plugin is still starting
+        // 1. Refusal message says auditing is unavailable and change was not made
         verify(admin).sendMessage(argThat((Component c) -> {
             String text = PlainTextComponentSerializer.plainText().serialize(c);
-            return text.contains("still starting up");
+            return text.contains("Auditing is unavailable") && text.contains("change was not made");
         }));
 
         // 2. Nothing is written to settings
@@ -560,8 +564,10 @@ class AdminPrefixCommandTest {
 
         startupDispatcher.execute("dt admin prefix reset", sourceStack);
 
-        verify(admin).sendMessage(argThat((Component c) ->
-                PlainTextComponentSerializer.plainText().serialize(c).contains("still starting up")));
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("Auditing is unavailable") && text.contains("change was not made");
+        }));
 
         // Setting row still exists (nothing deleted)
         assertEquals("&6[Active]&r ", settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).orElseThrow());
@@ -596,10 +602,12 @@ class AdminPrefixCommandTest {
 
         throwingDispatcher.execute("dt admin prefix &e[Saved]&r ", sourceStack);
 
-        // 1. Operator is told the value was saved, not that the database failed
+        // 1. Operator is told the value was saved, which stage failed, and not that the database failed
         verify(admin).sendMessage(argThat((Component c) -> {
             String text = PlainTextComponentSerializer.plainText().serialize(c);
-            return text.contains("saved") && text.contains("restart");
+            return text.contains("saved") && text.contains("restart")
+                    && text.contains("&e[Saved]&r ")
+                    && text.contains("audit dispatch");
         }));
         verify(admin, never()).sendMessage(argThat((Component c) ->
                 PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
@@ -642,10 +650,12 @@ class AdminPrefixCommandTest {
 
         throwingDispatcher.execute("dt admin prefix &b[AppliedFail]&r ", sourceStack);
 
-        // 1. Operator is told the value was saved, not that the database failed
+        // 1. Operator is told the value was saved, which stage failed, and not that the database failed
         verify(admin).sendMessage(argThat((Component c) -> {
             String text = PlainTextComponentSerializer.plainText().serialize(c);
-            return text.contains("saved") && text.contains("restart");
+            return text.contains("saved") && text.contains("restart")
+                    && text.contains("&b[AppliedFail]&r ")
+                    && text.contains("live application");
         }));
         verify(admin, never()).sendMessage(argThat((Component c) ->
                 PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
@@ -655,6 +665,53 @@ class AdminPrefixCommandTest {
 
         // 3. Audit row was recorded
         assertEquals(1, auditLogs.size());
+    }
+
+    @Test
+    void auditConsumerThatThrowsAfterSuccessfulResetInformsOperatorValueSaved() throws Exception {
+        settingsRepo.put(SettingsRepository.KEY_CHAT_PREFIX, "&a[Custom]&r ");
+        messages.setCustomPrefix("&a[Custom]&r ");
+
+        Consumer<AuditEvent> throwingAudit = event -> {
+            throw new RuntimeException("Simulated audit sink failure on reset");
+        };
+
+        LiteralCommandNode<CommandSourceStack> throwingRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                () -> throwingAudit,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> throwingDispatcher = new CommandDispatcher<>();
+        throwingDispatcher.getRoot().addChild(throwingRoot);
+
+        throwingDispatcher.execute("dt admin prefix reset", sourceStack);
+
+        // 1. Operator is told the value was saved (as catalog default) and audit dispatch failed
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("saved") && text.contains("restart")
+                    && text.contains("catalog default")
+                    && text.contains("audit dispatch");
+        }));
+        verify(admin, never()).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
+
+        // 2. Setting key was successfully deleted from settings repo
+        assertTrue(settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).isEmpty());
+
+        // 3. Live in-memory prefix remains the old one (not reset because post-write stage failed)
+        assertEquals("&a[Custom]&r ", messages.rawPrefix());
     }
 
     @Test
@@ -690,13 +747,121 @@ class AdminPrefixCommandTest {
 
         verify(admin).sendMessage(argThat((Component c) -> {
             String text = PlainTextComponentSerializer.plainText().serialize(c);
-            return text.contains("saved") && text.contains("restart");
+            return text.contains("saved") && text.contains("restart")
+                    && text.contains("catalog default")
+                    && text.contains("live application");
         }));
         verify(admin, never()).sendMessage(argThat((Component c) ->
                 PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
 
         // In storage, the key is deleted
         assertTrue(settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).isEmpty());
+    }
+
+    @Test
+    void auditSupplierReturningNullAfterPreWriteReadStillDeliversAuditToCheckedSink() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        @SuppressWarnings("unchecked")
+        Consumer<AuditEvent> capturedSink = mock(Consumer.class);
+        Supplier<Consumer<AuditEvent>> transientSupplier = () -> {
+            if (reads.getAndIncrement() == 0) {
+                return capturedSink;
+            }
+            return null;
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                transientSupplier,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> cmdDispatcher = new CommandDispatcher<>();
+        cmdDispatcher.getRoot().addChild(root);
+
+        cmdDispatcher.execute("dt admin prefix &3[Captured]&r ", sourceStack);
+
+        // 1. Audit event must be delivered to the sink captured during the pre-write check
+        ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(capturedSink, times(1)).accept(captor.capture());
+        AuditEvent event = captor.getValue();
+        assertEquals("prefix", event.action());
+        assertEquals("&3[Captured]&r ", event.target());
+        assertEquals("AdminAlice", event.actor());
+
+        // 2. Setting stored in repository
+        assertEquals("&3[Captured]&r ", settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).orElseThrow());
+
+        // 3. Setting applied live
+        assertEquals("&3[Captured]&r ", messages.rawPrefix());
+
+        // 4. Operator told it succeeded
+        verify(admin).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("Prefix changed to:")));
+    }
+
+    @Test
+    void auditSupplierReturningNullAfterPreWriteReadStillDeliversAuditOnReset() throws Exception {
+        settingsRepo.put(SettingsRepository.KEY_CHAT_PREFIX, "&a[Previous]&r ");
+        messages.setCustomPrefix("&a[Previous]&r ");
+
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        @SuppressWarnings("unchecked")
+        Consumer<AuditEvent> capturedSink = mock(Consumer.class);
+        Supplier<Consumer<AuditEvent>> transientSupplier = () -> {
+            if (reads.getAndIncrement() == 0) {
+                return capturedSink;
+            }
+            return null;
+        };
+
+        LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                transientSupplier,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> cmdDispatcher = new CommandDispatcher<>();
+        cmdDispatcher.getRoot().addChild(root);
+
+        cmdDispatcher.execute("dt admin prefix reset", sourceStack);
+
+        // 1. Audit event delivered to captured sink
+        ArgumentCaptor<AuditEvent> captor = ArgumentCaptor.forClass(AuditEvent.class);
+        verify(capturedSink, times(1)).accept(captor.capture());
+        AuditEvent event = captor.getValue();
+        assertEquals("prefix", event.action());
+        assertEquals(Optional.of("reset"), event.detail());
+
+        // 2. Setting deleted from repository
+        assertTrue(settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).isEmpty());
+
+        // 3. Reset live
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+
+        // 4. Operator told reset succeeded
+        verify(admin).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("catalog default")));
     }
 
     private static class InMemorySettingsRepository implements SettingsRepository {
