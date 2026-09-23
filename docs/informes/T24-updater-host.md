@@ -965,4 +965,123 @@ All five branches now share the exact same recognizer patterns, representation, 
 
 3. **Entire Suite**: All tests pass deterministically without weakening any assertions.
 
+---
+
+## 14. Seventh Review Corrections (Round 12)
+
+**Task Reference**: Seventh review findings (`docs/revisiones/T24-updater-host-r7.md`) on F2-A, F2-B, and F13.
+
+### 14.1 F2-A: Whole-Line Boundary and Explicit Unconsumed-Text Rejection in Checksum Files
+
+- **Checksum-File BSD Whole-Line Anchoring**:
+  - `Service:1248` reverted from `mBsd.find()` to `mBsd.matches()`. While the release body consists of free-form prose where embedded declarations are discovered mid-line via `find()`, a checksum file grammar consists strictly of line-by-line declarations.
+  - An input such as:
+    ```text
+    notice SHA256 (DiscordTowny-1.10.0.jar) = <H> trailing-text
+    ```
+    is no longer accepted in a checksum file asset. It fails `mBsd.matches()` due to the non-declaration prefix and suffix.
+- **Explicit Rejection of Unconsumed Non-Comment Text**:
+  - `parseChecksumFileContent` now explicitly terminates and returns `ChecksumOutcome.InvalidOrAmbiguous` for any non-empty, non-comment line that does not match a valid whole-line BSD declaration, sum declaration, or (in dedicated checksum files) standalone 64-hex string.
+  - This preserves the checksum file's strict grammar and rejects prose or unconsumed fragments without relying on side effects of sum fallbacks.
+
+### 14.2 F2-B: Digest-Side Recognition of Sum Declarations
+
+- **Digest-Side Hexadecimal Token Constraint**:
+  - In `Service:65`, `SUM_DECL_PATTERN` was refined from:
+    ```java
+    Pattern.compile("^(\\S+)(?:[ ]{2,}|[ ]\\*|\\t|\\s+[*]?)(\\S.*)$");
+    ```
+    to:
+    ```java
+    Pattern.compile("^([a-fA-F0-9]+)(?:[ ]{2,}|[ ]\\*|\\t|\\s+[*]?)(\\S.*)$");
+    ```
+  - A sum declaration is characterized on the digest side: its first field must be a hexadecimal token (`[a-fA-F0-9]+`).
+  - Ordinary body prose such as:
+    ```text
+    Release  notes
+    ```
+    contains non-hexadecimal characters (`R`, `l`, `s`) in its first field. It is not hexadecimal and is therefore not recognized as a sum declaration at all. It is ignored as body prose and never triggers malformed-declaration failures, allowing valid dedicated checksum assets to authorize the release.
+  - In contrast, broken digests like `<H>9  DiscordTowny-1.10.0-sources+dev.jar` (65 hex digits) are recognized as declarations because their first token is hexadecimal, and then correctly fail `validateDeclaration` because their length is not 64, refusing the release without restoring any curated filename alphabet.
+
+### 14.3 F13: Strict Freshness-Governed Publication Order
+
+- **Removal of `availabilityOverAbsence` Exemption**:
+  - In `Service:543-571`, the conditional bypass:
+    ```java
+    boolean availabilityOverAbsence = result.status() == CheckStatus.UPDATE_AVAILABLE
+            && lastCheckResult.get().status() == CheckStatus.UP_TO_DATE;
+    ```
+    was completely removed.
+  - Publication is now governed strictly by operation generation sequence:
+    ```java
+    if (checkSeq > publishedSequence.get()) {
+        publishedSequence.set(checkSeq);
+        lastCheckResult.set(result);
+        if (newCache != null) {
+            cachedRelease.set(newCache);
+        }
+        ...
+    }
+    ```
+  - Freshness decides publication unconditionally in both directions: an older check (`checkSeq <= publishedSequence.get()`) can never overwrite a newer completed check's published status, whether that older check produced `UP_TO_DATE` or `UPDATE_AVAILABLE`.
+- **Correction of Overlapping 200 Ordering Test**:
+  - Updated `overlapping200ChecksNeverLeavePublishedUpdateWithEmptyAvailabilityDeterministically` in `DefaultUpdateServiceTest`: Check A starts first (seq 1) and gets 1.10.0, but pauses in its audit hook; Check B starts later (seq 2) and publishes `UP_TO_DATE`. When Check A completes, its lower sequence (`1 <= 2`) is rejected by the sequence gate, keeping Check B's `UP_TO_DATE` authoritative.
+
+### 14.4 Unit Test Verification
+
+1. **Prefix-and-Suffix BSD in Checksum File (F2-A)**:
+   - `checksumAssetWithPrefixAndSuffixSurroundingBsdDeclarationIsRefused`: verifies that a checksum file containing `notice SHA256 (DiscordTowny-1.10.0.jar) = <H> trailing-text` fails with `CHECK_FAILED` and is never accepted as a valid declaration.
+2. **`Release  notes` Body Prose Beside Dedicated Asset (F2-B)**:
+   - `releaseBodyWithReleaseNotesProseBesideValidDedicatedChecksumIsAccepted`: verifies that a release body with two-word prose `Release  notes` beside a valid dedicated `.sha256` asset completes successfully with `UPDATE_AVAILABLE` and binds the valid checksum.
+3. **Authoritative Later-Started Check in Overlapping 200s (F13)**:
+   - `overlapping200ChecksNeverLeavePublishedUpdateWithEmptyAvailabilityDeterministically`: corrected to assert that Check B's later-started `UP_TO_DATE` result remains authoritative and is not overwritten by Check A's older `UPDATE_AVAILABLE` result.
+
+---
+
+## 15. Round 13: Correct Sum-Line Discriminator (Filename-Driven Classification)
+
+### 15.1 Why the Digest Field Could Never Carry the Discriminator
+
+In Round 12, `SUM_DECL_PATTERN` constrained the first token of a sum line to hexadecimal characters (`^([a-fA-F0-9]+)...`) in an attempt to differentiate prose like `Release  notes` from declarations.
+
+This placed the discriminator on the **wrong field**:
+1. **The discriminator cannot be the subject of validation**: If a line is recognized as a declaration only when its digest is hexadecimal, then any malformed digest containing non-hex characters (e.g. `invalid  sha256/DiscordTowny-1.10.0.jar` or `0123...Hg  DiscordTowny-1.10.0.jar`) fails the regex match before classification even occurs.
+2. **Malformed declarations become invisible**: Because the line does not match the sum declaration pattern, it is dropped as ordinary body prose. When directory-path prefix exclusions (`sha256/`) or absence of checksum keywords prevent keyword audit triggers, the malformed declaration produces neither a bound hash nor a failure. If a valid dedicated `.sha256` asset is attached, the release is accepted instead of rejected.
+3. **Contradiction with security policy**: A corrupted or attacker-tampered declaration must fail fast with `CHECK_FAILED` ("whoever it names"). A gate that uses digest validity to decide whether to inspect the digest makes malformed digests invisible rather than fatal.
+
+### 15.2 What the Discriminator Now Is
+
+The discriminator resides entirely on the **filename field**, not the digest field:
+- **Filename Gate**: A line in the release body is a sha256sum declaration if and only if its second field, once normalized, names a jar:
+  - It equals `targetJarName` (case-insensitive), or
+  - It ends with `.jar` (case-insensitive).
+- **Digest Validation**: The digest field is captured universally as `(\S+)` via:
+  ```java
+  SUM_DECL_PATTERN = Pattern.compile("^(\\S+)(?:[ ]{2,}|[ ]\\*|\\t|\\s+[*]?)(\\S.*)$");
+  ```
+  Once a line is classified as a declaration by its filename, its digest is passed to `validateDeclaration`. If the digest is not strictly 64 hexadecimal characters (`STRICT_HEX_64`), the release is refused with `CHECK_FAILED`.
+- **Prose Ignored**: Lines whose second field does not name a jar (such as `Release  notes`, `Release  notes  <64 hex>`, or non-jar artifacts like `invalid  DiscordTowny-1.10.0.zip`) return `false` from `isSupportedSumFilename` and are ignored as prose, neither registering hashes nor refusing on their own.
+- **Third Branch Removal**: In `isSupportedSumFilename`, the branch accepting any single token on a line containing double spaces or tabs (`!rawFile.contains(" ") && ...`) was removed. Only `targetJarName` and `.jar` extensions are accepted.
+- **Label Precedence Preserved**: The guard:
+  ```java
+  !candidateToken.matches("(?i)^sha-?256(?:sum)?(?:[:=].*)?$")
+  ```
+  ensures labeled lines (e.g., `SHA-256:`, `SHA-256=`, `sha256sum:`, `SHA-256`) are never treated as sum declarations with malformed digests, allowing the labeled declaration parser to validate and bind them.
+- **Checksum Files Unchanged**: Dedicated checksum files (`parseChecksumFileContent`) remain whole-line anchored, as every non-comment line in a dedicated checksum asset is intended as a declaration.
+
+### 15.3 Test Verification
+
+Added to `src/test/java/com/discordtowny/update/DefaultUpdateServiceTest.java`:
+1. **`releaseBodyWithReleaseNotesProseAndHexBesideValidLabeledDeclarationIsAccepted`**:
+   - Verifies that `Release  notes  <64 hex>` on a line beside a valid labeled declaration (`SHA-256: <validHex> DiscordTowny-1.10.0.jar`) is ignored as prose and does not refuse the release.
+2. **`sumLineForNonJarArtifactWithMalformedDigestIsTreatedAsProseAndDoesNotRefuseRelease`**:
+   - Verifies that a sum line for a non-jar artifact (`DiscordTowny-1.10.0.zip`) with malformed digests (`invalid`, `...Hg`):
+     - Beside a valid dedicated checksum asset, is treated as prose and does not block release acceptance.
+     - Beside a valid body labeled declaration, succeeds with `UPDATE_AVAILABLE`.
+3. **Existing Tests Restored**:
+   - `unlabeledSumLineWithNonHexTokensRefuseReleaseEvenWithValidChecksumAsset` passes on `...Hg` and `invalid`.
+   - `malformedChecksumWithDirectoryPrefixRefusesReleaseEvenWithValidAsset` passes on `invalid  sha256/DiscordTowny-1.10.0.jar`.
+
+
+
 

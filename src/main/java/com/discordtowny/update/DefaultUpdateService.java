@@ -120,9 +120,6 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         if (norm.toLowerCase(Locale.ROOT).endsWith(".jar")) {
             return true;
         }
-        if (!rawFile.contains(" ") && (line.contains("  ") || line.contains("\t") || line.contains(" *"))) {
-            return true;
-        }
         return false;
     }
 
@@ -541,14 +538,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     }
 
     private synchronized CheckResult publishCheckResult(long checkSeq, CheckResult result, CachedRelease newCache) {
-        boolean isNewerSeq = checkSeq > publishedSequence.get();
-        boolean availabilityOverAbsence = result.status() == CheckStatus.UPDATE_AVAILABLE
-                && lastCheckResult.get().status() == CheckStatus.UP_TO_DATE;
-
-        if (isNewerSeq || availabilityOverAbsence) {
-            if (checkSeq > publishedSequence.get()) {
-                publishedSequence.set(checkSeq);
-            }
+        if (checkSeq > publishedSequence.get()) {
+            publishedSequence.set(checkSeq);
             lastCheckResult.set(result);
             if (newCache != null) {
                 cachedRelease.set(newCache);
@@ -1249,9 +1240,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 continue;
             }
 
-            // Pattern 1: BSD style: "SHA256 (filename) = <hex>"
+            // Pattern 1: BSD style whole-line: "SHA256 (filename) = <hex>"
             Matcher mBsd = BSD_DECL_PATTERN.matcher(line);
-            if (mBsd.find()) {
+            if (mBsd.matches()) {
                 String file = mBsd.group(1).trim();
                 String candidateHex = mBsd.group(2).trim();
                 ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.BSD, candidateHex, file);
@@ -1296,10 +1287,14 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                         hasConflict = true;
                     }
                     matchedSha = line;
+                    continue;
                 } else {
                     return new ChecksumOutcome.InvalidOrAmbiguous("Malformed SHA-256 in dedicated checksum file: " + line);
                 }
             }
+
+            // Any unconsumed non-comment text in a checksum file is an invalid declaration (F2-A)
+            return new ChecksumOutcome.InvalidOrAmbiguous("Malformed or unrecognized declaration in checksum file: " + line);
         }
 
         if (hasConflict) {
