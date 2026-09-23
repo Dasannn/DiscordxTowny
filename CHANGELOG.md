@@ -8,6 +8,28 @@ The updater refuses any release that does not publish a SHA-256 alongside the ja
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-23
+
+### Fixed
+
+- The updater could not reach the release it found. GitHub delivers a release
+  asset from `release-assets.githubusercontent.com`, where the repository appears
+  as a numeric id, and the policy demanded a path naming the repository, which
+  that host can never carry. A server running an older build stayed silently out
+  of date while `/dt admin update status` told its administrator there was
+  nothing new: the failure existed only as a console warning. The update
+  subcommands now report a check that failed instead of answering as though
+  nothing had happened.
+- Checksum recognition in a release body settled on one rule: a line declares a
+  checksum when it carries a SHA-256 keyword or when its first field is
+  hash-shaped beside a release artifact. Ordinary prose cannot make a valid
+  release unavailable, and a release is still only accepted when a valid checksum
+  is bound to its jar.
+- Administrators were never told on join that an update was waiting. The notice
+  was composed and never delivered: nothing in production called it. It now
+  arrives, reads no file on the join thread, and is retried on a reload if its
+  listener ever failed to register.
+
 ## [1.0.0] - 2026-09-20
 
 First public release.
