@@ -287,10 +287,19 @@ public final class DefaultSpaceService implements SpaceService {
                         Instant eventTime = clock.instant();
                         if (outcome != null && outcome.succeeded()) {
                             spaceRepository.updateState(townUuid, SpaceState.ARCHIVED);
+                            String auditDetail;
+                            if (outcome.reason().isPresent() && !outcome.reason().get().isBlank()) {
+                                String note = outcome.reason().get();
+                                auditDetail = (reason != null && !reason.isBlank())
+                                        ? reason + " (" + note + ")"
+                                        : note;
+                            } else {
+                                auditDetail = reason;
+                            }
                             audit(new AuditEvent(
                                     eventTime, AuditEvent.Severity.INFO,
                                     "plugin", "space_archive", space.townName(), true,
-                                    Optional.ofNullable(reason)));
+                                    Optional.ofNullable(auditDetail)));
                         } else {
                             String errorReason = (outcome != null && outcome.reason().isPresent())
                                     ? outcome.reason().get()

@@ -163,6 +163,7 @@ admin:
   reloaded: "&aConfiguration reloaded."
   purge-confirm: "&cThis will permanently delete {count} archived spaces. Repeat the command to confirm."
   purged: "&aDeleted {count} archived spaces."
+  purge-skipped: "&eSkipped {count} inconsistent spaces. Use &f/dt admin list&e or &f/dt admin info <town>&e to review them."
   unlinked: "&a{player} no longer has a linked account."
   channel-text: "text"
   channel-voice: "voice"

@@ -772,6 +772,51 @@ class DefaultSpaceServiceTest {
         verify(discordGateway, never()).submit(any());
     }
 
+    @Test
+    @DisplayName("Purge archived preserves inconsistent spaces without submitting delete operations")
+    void purgeArchivedLeavesInconsistentSpacesUntouched() {
+        UUID archivedTown = UUID.randomUUID();
+        UUID inconsistentTown = UUID.randomUUID();
+
+        TownSpace archived = new TownSpace(archivedTown, "ArchivedTown",
+                Optional.of("cat-a"), Optional.of("t1"), Optional.of("v1"), Optional.empty(),
+                SpaceState.ARCHIVED, clock.instant(), Optional.of(clock.instant()), Optional.empty());
+        TownSpace inconsistent = new TownSpace(inconsistentTown, "InconsistentTown",
+                Optional.of("cat-b"), Optional.of("t2"), Optional.of("v2"), Optional.empty(),
+                SpaceState.INCONSISTENT, clock.instant(), Optional.empty(), Optional.empty());
+
+        spaceRepository.save(archived);
+        spaceRepository.save(inconsistent);
+
+        int purgedCount = service.purgeArchived().join();
+
+        assertEquals(1, purgedCount);
+        assertTrue(spaceRepository.findByTownUuid(archivedTown).isEmpty());
+        assertTrue(spaceRepository.findByTownUuid(inconsistentTown).isPresent());
+        assertEquals(SpaceState.INCONSISTENT, spaceRepository.findByTownUuid(inconsistentTown).get().state());
+
+        verify(discordGateway, times(1)).submit(any(GuildOperation.DeleteSpace.class));
+        verify(discordGateway, never()).submit(argThat(op ->
+                op instanceof GuildOperation.DeleteSpace ds && ds.townUuid().equals(inconsistentTown)));
+    }
+
+    @Test
+    @DisplayName("Purge archived returns zero and deletes nothing when only inconsistent spaces exist")
+    void purgeArchivedWithOnlyInconsistentSpacesPurgesNothing() {
+        UUID inconsistentTown = UUID.randomUUID();
+        TownSpace inconsistent = new TownSpace(inconsistentTown, "InconsistentTown",
+                Optional.of("cat-b"), Optional.of("t2"), Optional.of("v2"), Optional.empty(),
+                SpaceState.INCONSISTENT, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(inconsistent);
+
+        int purged = service.purgeArchived().join();
+
+        assertEquals(0, purged);
+        assertTrue(spaceRepository.findByTownUuid(inconsistentTown).isPresent());
+        assertEquals(SpaceState.INCONSISTENT, spaceRepository.findByTownUuid(inconsistentTown).get().state());
+        verify(discordGateway, never()).submit(any());
+    }
+
     // --- Rename ---
 
     @Test
@@ -956,5 +1001,63 @@ class DefaultSpaceServiceTest {
         assertEquals("Falkreath", event.target());
         assertTrue(event.success());
         assertEquals(Optional.of("Town inactive for 30 days"), event.detail());
+    }
+
+    @Test
+    @DisplayName("T27: A successful archive with something already missing writes an audit row whose detail names what was missing")
+    void archiveSpaceWithMissingResourceWritesAuditRowNamingMissingResource() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(townUuid, "Falkreath",
+                Optional.of("cat-1"), Optional.of("t1"), Optional.of("v1"), Optional.of("r1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        String note = "already missing in Discord: text channel 1551261398644957207";
+        when(discordGateway.submit(any(GuildOperation.ArchiveSpace.class)))
+                .thenReturn(CompletableFuture.completedFuture(
+                        new OperationOutcome(OperationOutcome.Status.SUCCESS, Optional.of(note))));
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        serviceWithSink.archive(townUuid, "Town Falkreath is ruined").join();
+
+        List<AuditEvent> events = storage.audit().recent("Falkreath", 10);
+        assertEquals(1, events.size(), "Archive must write an audit row");
+        AuditEvent event = events.get(0);
+        assertEquals("space_archive", event.action());
+        assertEquals("Falkreath", event.target());
+        assertTrue(event.success());
+        assertEquals(Optional.of("Town Falkreath is ruined (already missing in Discord: text channel 1551261398644957207)"), event.detail());
+    }
+
+    @Test
+    @DisplayName("T27: A successful archive with missing resource and null reason writes the missing note as detail")
+    void archiveSpaceWithMissingResourceAndNullReasonWritesMissingNoteAsDetail() {
+        UUID townUuid = UUID.randomUUID();
+        TownSpace space = new TownSpace(townUuid, "Riften",
+                Optional.of("cat-1"), Optional.of("t1"), Optional.of("v1"), Optional.of("r1"),
+                SpaceState.ACTIVE, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(space);
+
+        String note = "already missing in Discord: voice channel 99887766";
+        when(discordGateway.submit(any(GuildOperation.ArchiveSpace.class)))
+                .thenReturn(CompletableFuture.completedFuture(
+                        new OperationOutcome(OperationOutcome.Status.SUCCESS, Optional.of(note))));
+
+        CompositeAuditSink sink = new CompositeAuditSink(storage.audit(), discordGateway, Runnable::run);
+        DefaultSpaceService serviceWithSink = new DefaultSpaceService(
+                spaceRepository, config, discordGateway, sink, clock, ForkJoinPool.commonPool());
+
+        serviceWithSink.archive(townUuid, null).join();
+
+        List<AuditEvent> events = storage.audit().recent("Riften", 10);
+        assertEquals(1, events.size(), "Archive must write an audit row");
+        AuditEvent event = events.get(0);
+        assertEquals("space_archive", event.action());
+        assertEquals("Riften", event.target());
+        assertTrue(event.success());
+        assertEquals(Optional.of("already missing in Discord: voice channel 99887766"), event.detail());
     }
 }

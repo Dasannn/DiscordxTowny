@@ -934,12 +934,17 @@ public final class MinecraftCommands {
                     Instant pending = pendingPurges.get(senderKey);
 
                     if (pending == null || Instant.now().isAfter(pending)) {
-                        // First run: count archived spaces
+                        // First run: count archived and inconsistent spaces
                         spaceService.findAll().thenAccept(all -> {
                             long count = all.stream().filter(s -> s.state() == SpaceState.ARCHIVED).count();
+                            long inconsistent = all.stream().filter(s -> s.state() == SpaceState.INCONSISTENT).count();
                             scheduler.accept(() -> {
                                 if (count == 0) {
-                                    sender.sendMessage(msg.get("admin.purge-empty"));
+                                    if (inconsistent > 0) {
+                                        sender.sendMessage(msg.get("admin.purge-skipped", Map.of("count", String.valueOf(inconsistent))));
+                                    } else {
+                                        sender.sendMessage(msg.get("admin.purge-empty"));
+                                    }
                                     return;
                                 }
                                 pendingPurges.put(senderKey, Instant.now().plusSeconds(CONFIRMATION_EXPIRY_SECONDS));
@@ -955,8 +960,16 @@ public final class MinecraftCommands {
                     // Confirmed run
                     pendingPurges.remove(senderKey);
 
-                    spaceService.purgeArchived().thenAccept(deleted -> {
-                        scheduler.accept(() -> sender.sendMessage(msg.get("admin.purged", Map.of("count", String.valueOf(deleted)))));
+                    spaceService.findAll().thenCompose(all -> {
+                        long inconsistent = all.stream().filter(s -> s.state() == SpaceState.INCONSISTENT).count();
+                        return spaceService.purgeArchived().thenAccept(deleted -> {
+                            scheduler.accept(() -> {
+                                sender.sendMessage(msg.get("admin.purged", Map.of("count", String.valueOf(deleted))));
+                                if (inconsistent > 0) {
+                                    sender.sendMessage(msg.get("admin.purge-skipped", Map.of("count", String.valueOf(inconsistent))));
+                                }
+                            });
+                        });
                     }).exceptionally(ex -> {
                         scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
                         return null;

@@ -248,6 +248,9 @@ public final class DefaultSyncService implements SyncService {
                     if (spaceOpt.isPresent()) {
                         TownSpace space = spaceOpt.get();
                         SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
+                        if (space.state() == SpaceState.ARCHIVED) {
+                            return CompletableFuture.completedFuture(acc.toReport());
+                        }
                         acc.inconsistenciesFound.incrementAndGet();
                         acc.problems.add(new SyncReport.Problem(
                                 "sync.problem-town-no-longer-exists",
@@ -448,6 +451,9 @@ public final class DefaultSyncService implements SyncService {
 
             if (townOpt.isEmpty()) {
                 SyncReportAccumulator acc = new SyncReportAccumulator(1, mode);
+                if (space.state() == SpaceState.ARCHIVED) {
+                    return CompletableFuture.completedFuture(acc);
+                }
                 acc.inconsistenciesFound.incrementAndGet();
                 acc.problems.add(new SyncReport.Problem(
                         "sync.problem-town-no-longer-exists",
