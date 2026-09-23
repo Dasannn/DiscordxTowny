@@ -1030,7 +1030,15 @@ worse than the loop.
 
 ## T28 — An administrator can put their own name in front of our messages
 
-- **Branch**: `feat/admin-prefix` · **Responsible**: agent · **Status**: pending
+- **Branch**: `feat/admin-prefix` · **Responsible**: agent · **Status**: integrated (seven rounds; reviewed four times)
+- **Named follow-ups**:
+  - **F10** — the audit sink is captured before the settings write and used after
+    it. A reload that drains and replaces that sink in between can leave the value
+    saved, the operator told it succeeded, and nothing queued. Narrow: it needs a
+    reload concurrent with the command.
+  - **F11** — the partial-failure reply puts the stored value in parentheses. A
+    legitimately empty prefix renders as `()`, and a reset names "the catalog
+    default" without showing what that default actually is.
 - **Zone**: `src/main/java/com/discordtowny/config/YamlMessages.java` and
   `Messages.java`, `src/main/java/com/discordtowny/minecraft/MinecraftCommands.java`,
   `src/main/java/com/discordtowny/storage/` for the stored value,
