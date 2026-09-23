@@ -212,3 +212,54 @@ All sibling tests added for T27 in [`JdaGuildOperationExecutorTest.java`](file:/
    - **Audit**: JDA local cache lookups. Accurately produces `SUCCESS`, verifies no category creation (`verify(guild, never()).createCategory(any())`), deletes role, marks space `ARCHIVED`. No flaw.
 
 Conclusion: Only the guard test `createSpaceWithMissingPrerequisiteFailsAndLeavesSpaceInconsistent` suffered from the mocked-builder-null flaw. The archive tests faithfully model JDA's caching behavior for resources already deleted by hand.
+
+---
+
+## 9. Round 3: The Purge Cannot See What It Is Meant to Clean
+
+### A. Defect Description & Problem Analysis
+During live operation, when the archive loop occurred, the operator executed `/dt admin purge` to clear the space by hand. Thirty minutes later, the exact same failure returned to the Discord log channel.
+
+#### Root Cause:
+1. When an archive operation failed, [`JdaGuildOperationExecutor.onOperationFailed`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L1040-L1058) marked the space `INCONSISTENT`.
+2. `/dt admin purge` and [`DefaultSpaceService.purgeArchived`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/space/DefaultSpaceService.java#L367-L413) exclusively queried spaces in state `SpaceState.ARCHIVED`.
+3. Finding 0 archived spaces, `/dt admin purge` answered `admin.purge-empty` ("There are no archived spaces to delete"), completely blind to the `INCONSISTENT` space that required attention.
+4. While the Round 1 fix ensures hand-deleted channels allow archiving to reach `ARCHIVED` (where purge finds it), spaces left `INCONSISTENT` by any other failure remained trapped: the only command intended to clean could not see the spaces needing cleaning, while telling the operator nothing was wrong.
+
+### B. What Was Built
+1. **Inconsistent Spaces Are Never Silently Ignored**:
+   - In [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java#L922-L970), `/dt admin purge` reads all spaces via `spaceService.findAll()` to inspect both `ARCHIVED` and `INCONSISTENT` states.
+   - An operator is **never** told `admin.purge-empty` while an `INCONSISTENT` space exists.
+2. **Inconsistent Spaces Are Not Purged**:
+   - `INCONSISTENT` spaces are never purged and their state is never altered automatically. `INCONSISTENT` means a human administrator should inspect what failed before anything is deleted.
+   - The response points the operator to `/dt admin list` and `/dt admin info <town>` to review those spaces.
+3. **Preservation of Existing Scenarios**:
+   - When no inconsistent spaces exist, behavior is byte-for-byte unchanged:
+     - No spaces at all: `admin.purge-empty`.
+     - Only archived spaces: `admin.purge-confirm` followed by `admin.purged`.
+   - When only inconsistent spaces exist: nothing is purged, no confirmation is requested, and the operator is informed with the skipped count (`admin.purge-skipped`).
+   - When both archived and inconsistent spaces exist: the operator confirms deleting the archived spaces, the archived spaces are purged, and the operator receives both the deletion confirmation (`admin.purged`) and the skipped notice (`admin.purge-skipped`).
+
+### C. Message Key Added & Rationale
+- **Key**: `admin.purge-skipped`
+- **Location**: Added to both [`messages_en.yml`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/resources/messages_en.yml#L166) and [`messages_es.yml`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/resources/messages_es.yml#L166) under the `admin:` section directly following its siblings `purge-empty`, `purge-confirm`, and `purged`.
+- **Naming Rationale**: Follows the `purge-` prefix convention of its sibling keys (`purge-empty`, `purge-confirm`, `purged`).
+- **Texts**:
+  - `messages_en.yml`:
+    `purge-skipped: "&eSkipped {count} inconsistent spaces. Use &f/dt admin list&e or &f/dt admin info <town>&e to review them."`
+  - `messages_es.yml`:
+    `purge-skipped: "&eSe omitieron {count} espacios inconsistentes. Usa &f/dt admin list&e o &f/dt admin info <town>&e para revisarlos."`
+- **Why this message**: An audit of both catalogs confirmed no existing key expressed skipping inconsistent spaces during purge. The new key naturally points the administrator to the existing diagnostic commands without introducing new command surface.
+
+### D. Test Verification
+1. **[`DefaultSpaceServiceTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/test/java/com/discordtowny/space/DefaultSpaceServiceTest.java)**:
+   - `purgeArchivedLeavesInconsistentSpacesUntouched`: Given one `ARCHIVED` and one `INCONSISTENT` space, `purgeArchived()` purges the archived space, leaves the inconsistent space in repository with state `INCONSISTENT`, and submits no `GuildOperation.DeleteSpace` for it.
+   - `purgeArchivedWithOnlyInconsistentSpacesPurgesNothing`: Given only `INCONSISTENT` spaces, returns 0, deletes nothing, and submits zero Discord operations.
+   - `purgeArchivedDeletesOnlyArchivedSpaces`: Preserved byte-for-byte.
+   - `purgeArchivedReturnsZeroWhenEmpty`: Preserved byte-for-byte.
+2. **[`MinecraftCommandsTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/test/java/com/discordtowny/minecraft/MinecraftCommandsTest.java)**:
+   - `adminPurgeWithArchivedAndInconsistentSpacesPurgesArchivedAndReportsSkipped`: Tests 1st run requests confirmation for the archived space; 2nd run executes purge, verifies `admin.purged` with count 1, and verifies `admin.purge-skipped` with count 1.
+   - `adminPurgeWithOnlyInconsistentSpacesPurgesNothingAndReportsSkipped`: Verifies that running purge with only inconsistent spaces does not show `admin.purge-empty`, does not call `purgeArchived()`, and sends `admin.purge-skipped` with count 2.
+   - `adminPurgeWithConsoleAndInconsistentSpacesRepliesInEnglish`: Verifies console operator receives the English `purge-skipped` text per Spec 9.1.
+   - `adminPurgeRequiresConfirmation`: Preserved byte-for-byte.
+   - `adminPurgeWhenNoArchivedSpacesShowsEmpty`: Preserved byte-for-byte.

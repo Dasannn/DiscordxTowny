@@ -1141,6 +1141,87 @@ class MinecraftCommandsTest {
     }
 
     @Test
+    void adminPurgeWithArchivedAndInconsistentSpacesPurgesArchivedAndReportsSkipped() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        UUID adminUuid = UUID.randomUUID();
+        when(admin.getUniqueId()).thenReturn(adminUuid);
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        TownSpace archivedSpace = new TownSpace(UUID.randomUUID(), "OldTown", Optional.of("cat"),
+                Optional.empty(), Optional.empty(), Optional.empty(),
+                SpaceState.ARCHIVED, Instant.now(), Optional.of(Instant.now()), Optional.empty());
+        TownSpace inconsistentSpace = new TownSpace(UUID.randomUUID(), "BrokenTown", Optional.of("cat2"),
+                Optional.empty(), Optional.empty(), Optional.empty(),
+                SpaceState.INCONSISTENT, Instant.now(), Optional.empty(), Optional.empty());
+
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(archivedSpace, inconsistentSpace)));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+
+        // 1st run: requests confirmation for archived space only
+        root.getChild("admin").getChild("purge").getCommand().run(ctx);
+        verify(admin, times(1)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.purge-confirm", Map.of("count", "1")));
+        verify(spaceService, never()).purgeArchived();
+
+        // 2nd run: executes purge, reports purged archived and skipped inconsistent
+        when(spaceService.purgeArchived()).thenReturn(CompletableFuture.completedFuture(1));
+        root.getChild("admin").getChild("purge").getCommand().run(ctx);
+
+        verify(admin, times(3)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.purged", Map.of("count", "1")));
+        verify(admin).sendMessage(messages.get("admin.purge-skipped", Map.of("count", "1")));
+        verify(spaceService, times(1)).purgeArchived();
+    }
+
+    @Test
+    void adminPurgeWithOnlyInconsistentSpacesPurgesNothingAndReportsSkipped() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        Player admin = mock(Player.class);
+        when(admin.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        TownSpace inconsistent1 = new TownSpace(UUID.randomUUID(), "BrokenTown1", Optional.of("cat1"),
+                Optional.empty(), Optional.empty(), Optional.empty(),
+                SpaceState.INCONSISTENT, Instant.now(), Optional.empty(), Optional.empty());
+        TownSpace inconsistent2 = new TownSpace(UUID.randomUUID(), "BrokenTown2", Optional.of("cat2"),
+                Optional.empty(), Optional.empty(), Optional.empty(),
+                SpaceState.INCONSISTENT, Instant.now(), Optional.empty(), Optional.empty());
+
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(inconsistent1, inconsistent2)));
+
+        CommandContext<CommandSourceStack> ctx = createContext(admin);
+        root.getChild("admin").getChild("purge").getCommand().run(ctx);
+
+        verify(admin, times(1)).sendMessage(any(Component.class));
+        verify(admin).sendMessage(messages.get("admin.purge-skipped", Map.of("count", "2")));
+        verify(admin, never()).sendMessage(messages.get("admin.purge-empty"));
+        verify(spaceService, never()).purgeArchived();
+    }
+
+    @Test
+    void adminPurgeWithConsoleAndInconsistentSpacesRepliesInEnglish() throws Exception {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        ConsoleCommandSender console = mock(ConsoleCommandSender.class);
+        when(console.hasPermission("discordtowny.admin")).thenReturn(true);
+
+        TownSpace inconsistent = new TownSpace(UUID.randomUUID(), "BrokenTown", Optional.of("cat"),
+                Optional.empty(), Optional.empty(), Optional.empty(),
+                SpaceState.INCONSISTENT, Instant.now(), Optional.empty(), Optional.empty());
+
+        when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of(inconsistent)));
+
+        CommandContext<CommandSourceStack> ctx = createContext(console);
+        root.getChild("admin").getChild("purge").getCommand().run(ctx);
+
+        verify(console, times(1)).sendMessage(any(Component.class));
+        verify(console).sendMessage(consoleMessages.get("admin.purge-skipped", Map.of("count", "1")));
+        verify(console, never()).sendMessage(consoleMessages.get("admin.purge-empty"));
+        verify(spaceService, never()).purgeArchived();
+    }
+
+    @Test
     void adminReloadFailsGracefullyWhenActionThrows() throws Exception {
         Runnable failingReload = mock(Runnable.class);
         doThrow(new RuntimeException("Configuration syntax error")).when(failingReload).run();

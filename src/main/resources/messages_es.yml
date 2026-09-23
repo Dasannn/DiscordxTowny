@@ -163,6 +163,7 @@ admin:
   reloaded: "&aConfiguración recargada."
   purge-confirm: "&cEsto borrará definitivamente {count} espacios archivados. Repite el comando para confirmar."
   purged: "&aSe borraron {count} espacios archivados."
+  purge-skipped: "&eSe omitieron {count} espacios inconsistentes. Usa &f/dt admin list&e o &f/dt admin info <town>&e para revisarlos."
   unlinked: "&a{player} ya no tiene cuenta vinculada."
   channel-text: "texto"
   channel-voice: "voz"

@@ -772,6 +772,51 @@ class DefaultSpaceServiceTest {
         verify(discordGateway, never()).submit(any());
     }
 
+    @Test
+    @DisplayName("Purge archived preserves inconsistent spaces without submitting delete operations")
+    void purgeArchivedLeavesInconsistentSpacesUntouched() {
+        UUID archivedTown = UUID.randomUUID();
+        UUID inconsistentTown = UUID.randomUUID();
+
+        TownSpace archived = new TownSpace(archivedTown, "ArchivedTown",
+                Optional.of("cat-a"), Optional.of("t1"), Optional.of("v1"), Optional.empty(),
+                SpaceState.ARCHIVED, clock.instant(), Optional.of(clock.instant()), Optional.empty());
+        TownSpace inconsistent = new TownSpace(inconsistentTown, "InconsistentTown",
+                Optional.of("cat-b"), Optional.of("t2"), Optional.of("v2"), Optional.empty(),
+                SpaceState.INCONSISTENT, clock.instant(), Optional.empty(), Optional.empty());
+
+        spaceRepository.save(archived);
+        spaceRepository.save(inconsistent);
+
+        int purgedCount = service.purgeArchived().join();
+
+        assertEquals(1, purgedCount);
+        assertTrue(spaceRepository.findByTownUuid(archivedTown).isEmpty());
+        assertTrue(spaceRepository.findByTownUuid(inconsistentTown).isPresent());
+        assertEquals(SpaceState.INCONSISTENT, spaceRepository.findByTownUuid(inconsistentTown).get().state());
+
+        verify(discordGateway, times(1)).submit(any(GuildOperation.DeleteSpace.class));
+        verify(discordGateway, never()).submit(argThat(op ->
+                op instanceof GuildOperation.DeleteSpace ds && ds.townUuid().equals(inconsistentTown)));
+    }
+
+    @Test
+    @DisplayName("Purge archived returns zero and deletes nothing when only inconsistent spaces exist")
+    void purgeArchivedWithOnlyInconsistentSpacesPurgesNothing() {
+        UUID inconsistentTown = UUID.randomUUID();
+        TownSpace inconsistent = new TownSpace(inconsistentTown, "InconsistentTown",
+                Optional.of("cat-b"), Optional.of("t2"), Optional.of("v2"), Optional.empty(),
+                SpaceState.INCONSISTENT, clock.instant(), Optional.empty(), Optional.empty());
+        spaceRepository.save(inconsistent);
+
+        int purged = service.purgeArchived().join();
+
+        assertEquals(0, purged);
+        assertTrue(spaceRepository.findByTownUuid(inconsistentTown).isPresent());
+        assertEquals(SpaceState.INCONSISTENT, spaceRepository.findByTownUuid(inconsistentTown).get().state());
+        verify(discordGateway, never()).submit(any());
+    }
+
     // --- Rename ---
 
     @Test
