@@ -3,6 +3,7 @@ package com.discordtowny;
 import com.discordtowny.minecraft.MinecraftCommands;
 import com.discordtowny.minecraft.PlayerJoinSyncListener;
 import com.discordtowny.minecraft.TownySyncListener;
+import com.discordtowny.minecraft.UpdateJoinListener;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -64,8 +65,9 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                         try {
                             PlayerJoinSyncListener.register(this, w::getSyncService, w.getStorage().links(), w::getConfig);
                             TownySyncListener.register(this, w::getSyncService, w::getSpaceService);
+                            UpdateJoinListener.register(this, w::getUpdateService, w::isDegraded);
                         } catch (Throwable t) {
-                            getLogger().warning("Failed to register sync listeners: " + t.getMessage());
+                            getLogger().warning("Failed to register listeners: " + t.getMessage());
                         }
                     }
                 },
