@@ -938,8 +938,9 @@ If it is a snapshot, say so in the report rather than reaching outside the zone.
 
 - **Branch**: `fix/archive-missing-channel` · **Responsible**: agent · **Status**: pending
 - **Zone**: `src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java`
-  and its tests, plus `src/main/java/com/discordtowny/sync/DefaultSyncService.java`
-  and its tests if the loop needs closing from that side too.
+  and its tests, `src/main/java/com/discordtowny/sync/DefaultSyncService.java` and
+  its tests, and `src/main/java/com/discordtowny/space/DefaultSpaceService.java`
+  with its tests for the purge visibility below.
 
 **Why**
 
@@ -978,6 +979,25 @@ The channel was deleted by hand after the town was archived. The loop:
   purpose after archiving is not that.
 - Nothing is created to replace what was deleted. Archiving never re-creates a
   channel, a category or a role.
+
+**Second defect, found while the first was being fixed**
+
+The owner ran `/dt admin purge` to clear the offending space by hand, and thirty
+minutes later the message came back. `DefaultSpaceService.purgeArchived` selects
+only `findByState(SpaceState.ARCHIVED)`, and the space is `INCONSISTENT` —
+precisely because the failing archive marked it so. **The only command that cleans
+cannot see the only space that needs cleaning**, and it answers `admin.purge-empty`
+as though nothing were wrong.
+
+Fixing the archive resolves the owner's case: the space will reach `ARCHIVED` and
+purge will find it. The trap stays for any space left `INCONSISTENT` by some other
+failure, and that is what has to change:
+
+- `/dt admin purge` tells the operator how many inconsistent spaces it skipped,
+  instead of reporting an empty purge while such a space exists.
+- It does **not** purge them. `INCONSISTENT` means a human should look; deleting
+  channels nobody has looked at is worse than saying nothing.
+- If a message is missing for that count, it goes in both catalogs.
 
 **Notes for whoever takes it**
 
