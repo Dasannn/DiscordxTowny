@@ -313,3 +313,246 @@ Two new tests were added to [`YamlMessagesTest`](file:///C:/Users/ASUS/Desktop/P
    - Verifies both instances render with their respective prefixes independently.
    - Modifies `messagesA.setCustomPrefix(...)` and resets `messagesA.resetPrefix()`, verifying that `messagesB` remains entirely unaffected throughout mutations. This test definitively proves that instances are completely isolated.
 
+---
+
+## 11. Round 3 Architecture & Review Resolutions
+
+Following Review 1 (`docs/revisiones/T28-revision-1.md`), findings F1 through F5 were addressed across the wiring, configuration, and command layers, and F6 was formally documented as closed by decision.
+
+### 11.1 F1 & F2 — Complete Elimination of Reflection and Explicit Delegation
+
+#### F1: Direct Audit Delivery
+- **Defect**: In Round 2, `MinecraftCommands.register` passed `null` as `auditConsumer`. At runtime, `resolveAudit` attempted to discover an audit sink via Bukkit reflection (`getMethod("getWiring")`, `getMethod("getAuditSink")`, checking for a non-existent `log(AuditEvent)` method) and fell back to reflecting over `DefaultSpaceService` private fields. Any wrapper or field renaming silently resulted in dropped audit rows.
+- **Resolution**:
+  - `DiscordTownyPlugin.onEnable()` passes an explicit `Consumer<AuditEvent>` lambda delegating directly to `wiring.getAuditSink().accept(event)`.
+  - Added diagnostic accessor `getAuditSink()` to [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyPlugin.java).
+  - Updated `MinecraftCommands.register` to receive `Consumer<AuditEvent> auditConsumer` and pass it directly to `createCommandNode`. Retained backward-compatible overload passing `null`.
+  - Completely deleted `resolveAudit` and removed reflective imports (`java.lang.reflect.Field`, `Method`) from [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java).
+  - Commands invoke `auditConsumer.accept(...)` directly.
+
+#### F2: Explicit Delegation in `ReloadableMessages`
+- **Defect**: In Round 2, the `Messages` interface contained a default implementation of prefix methods that called a private `unwrap(Messages)` helper, which scanned `this.getClass().getDeclaredFields()` to locate the underlying delegate inside `ReloadableMessages`.
+- **Resolution**:
+  - [`ReloadableMessages`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlConfigLoader.java) now explicitly overrides and forwards all prefix methods (`rawPrefix()`, `catalogPrefix()`, `renderedPrefix()`, `setCustomPrefix(prefix)`, `resetPrefix()`, `invalidatePrefix()`) directly to `current`.
+  - Removed `unwrap(Messages)` and `java.lang.reflect.Field` from [`Messages.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/Messages.java). Default methods on `Messages` now perform clean no-ops or return default/empty values.
+  - Zero reflection remains across the entire branch.
+
+---
+
+### 11.2 F3 — Persistence Precedes In-Memory Mutation
+
+- **Defect**: Set and reset commands modified the shared in-memory prefix before asynchronously persisting to the database. If `settings.put` or `settings.delete` failed, the administrator received an error reply (`general.database-unavailable`), but players continued seeing the uncommitted prefix until the next reload or restart.
+- **Resolution**:
+  - In [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java), removed premature in-memory calls from `executeSetPrefix` and `executeResetPrefix`.
+  - Memory mutation (`messages.setCustomPrefix(...)` / `messages.resetPrefix()`) now executes strictly inside `thenRun(...)` **after** `settings.put` or `settings.delete` successfully finishes.
+  - On database write failure, execution routes to `exceptionally(...)`: memory remains untouched, the old effective prefix continues displaying for all players, and the error notification is sent.
+
+---
+
+### 11.3 F4 — Component Deserialization Isolation (Anti-Bleed)
+
+- **Defect**: `YamlMessages.get()` previously deserialized `effectivePrefix() + text(key)` as a single concatenated legacy string. If a custom prefix ended in an unclosed formatting code (such as `&k` for obfuscation, `&l` for bold, or a color like `&c` without `&r`), the formatting bled into and altered or obfuscated the entire message body.
+- **Resolution**:
+  - In [`YamlMessages.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlMessages.java), the prefix and catalog message body are now deserialized separately through `LegacyComponentSerializer.legacyAmpersand()`.
+  - The two components are joined as independent siblings under a parent container:
+    ```java
+    Component.text().append(prefixComponent).append(body).build()
+    ```
+  - In Kyori Adventure, sibling components never inherit style properties from adjacent siblings. This structurally isolates prefix styling from message styling for all formatting codes without requiring any code blacklists.
+
+---
+
+### 11.4 F5 — Visible Length Limit vs. Raw Storage Cap
+
+- **Defect**: The previous 64-character limit counted Java UTF-16 code units. Color and styling codes (e.g. hex colors `&#123456`) consumed the budget despite occupying zero screen width, while wide glyphs consumed the same budget as narrow ones.
+- **Resolution & Dual Limits**:
+  - **Visible Limit (`MAX_VISIBLE_PREFIX_LENGTH = 32`)**:
+    - Measured by stripping all legacy formatting and hex color codes via `stripFormatting(targetPrefix)` (`PlainTextComponentSerializer` over `legacyAmpersand().deserialize(...)`) and counting Unicode code points via `codePointCount`.
+    - Refusal: `admin.prefix-too-long` informs the administrator:
+      - EN: `&cThe prefix cannot be longer than {max} visible characters.`
+      - ES: `&cEl prefijo no puede tener más de {max} caracteres visibles.`
+  - **Raw Storage Cap (`MAX_RAW_PREFIX_LENGTH = 255`)**:
+    - Hard ceiling aligned with the `VARCHAR(255)` database column schema in `settings` to prevent SQL truncation, driver exceptions, or memory flooding. Checked before visible parsing to prevent DOS with oversized strings.
+    - Refusal: `admin.prefix-raw-too-long` informs the administrator:
+      - EN: `&cThe raw prefix cannot be longer than {max} characters.`
+      - ES: `&cEl prefijo sin formato no puede tener más de {max} caracteres.`
+  - **What the Limits Promise and Do Not Promise**:
+    - *Promises*: Guarantees that at most 32 visible characters/glyphs will appear in chat before the message body, reserving ~20–30 characters on the first line for the player name and message text under standard font metrics (~320px chat line width). Guarantees rich color formatting codes do not consume the visible budget. Guarantees raw payloads over 255 characters never reach the database.
+    - *Does Not Promise*: Does not guarantee an absolute pixel screen-width boundary. Minecraft fonts are proportional (e.g. `'i'` is 2 pixels wide, `'W'` is 6 pixels wide, and CJK full-width glyphs are 9 pixels wide), and players may install custom client resource packs with arbitrary glyph widths. Character counting provides a reliable glyph bound, not a pixel guarantee.
+
+---
+
+### 11.5 F6 — Closed by Decision: Shared Database Deployments Excluded
+
+- **Scope Review**: Review 1 noted that two server instances sharing a single database table could exhibit desynchronized prefixes until reload, because prefixes are cached in memory on startup and reload rather than queried per message.
+- **Resolution**:
+  - Per `docs/spec.md` §9.1 and the Project Constitution, multi-server networks sharing a database are explicitly unsupported deployments.
+  - Performing a database read on every chat message would violate Principle P4 ("Main thread is sacred") and introduce unacceptable tick latency.
+  - **Zero code was built for cross-process synchronization**, confirming the architectural decision.
+
+---
+
+### 11.6 Round 3 Test Suite Additions
+
+The following test cases were added across the test suite to verify Round 3 requirements:
+
+1. [`YamlConfigLoaderTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlConfigLoaderTest.java):
+   - `productionReloadableMessagesWrapperDelegatesPrefixMethodsExplicitlyWithoutReflection`: Verifies that mutating prefix methods on the `ReloadableMessages` wrapper built by `YamlConfigLoader` updates what players see without reflection, and that `resetPrefix()` cleanly restores catalog default.
+2. [`DiscordTownyWiringAuditTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/DiscordTownyWiringAuditTest.java):
+   - `productionWiringMessagesWrapperUpdatesPlayerMessage`: Verifies the end-to-end production path through `DiscordTownyWiring`, ensuring `wiring.getMessages().setCustomPrefix(...)` changes the rendered output of subsequent player messages without reflection.
+3. [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java):
+   - `refusalVisibleTooLong`: Verifies refusal when visible characters exceed 32.
+   - `refusalRawTooLong`: Verifies refusal when raw string length exceeds 255 characters.
+   - `formattingCodesDoNotConsumeVisibleLengthBudget`: Verifies that raw strings > 32 characters consisting of rich formatting codes (e.g. hex colors) succeed when visible character count is <= 32.
+   - `settingsStoreThatThrowsDuringCommandAlertsSenderGracefullyAndLeavesPrefixUnchanged`: Verifies that upon storage failure during `prefix <new>`, the in-memory prefix remains untouched and a player's subsequent message still displays the old prefix.
+   - `settingsStoreThatThrowsDuringResetAlertsSenderAndLeavesCustomPrefixUnchanged`: Verifies that upon storage failure during `prefix reset`, the active custom prefix remains in force for subsequent player messages.
+   - `auditConsumerDeliveredDirectlyWithoutReflection`: Verifies that explicit `Consumer<AuditEvent>` supplied during registration receives audit events without reflection.
+4. [`YamlMessagesTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlMessagesTest.java):
+   - `prefixEndingInObfuscationCodeDoesNotBleedIntoMessageBody`: Verifies that a prefix ending in `&k` does not obfuscate the message body.
+   - `prefixWithColorAndNoResetDoesNotBleedIntoMessageBody`: Verifies that a prefix with color and no reset code does not override the body's own color.
+   - `prefixWithColorAndNoResetDoesNotColorUncoloredMessageBody`: Verifies that an unclosed prefix color code does not color an uncolored message body.
+
+---
+
+## 12. Round 4 Defect Resolutions and Root-Cause Analysis
+
+Following the execution of the Round 3 test suite, four test failures were observed. Exactly one was a regression in a pre-existing test ([`YamlMessagesTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlMessagesTest.java)), and three were in newly added Round 3 tests ([`DiscordTownyWiringAuditTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/DiscordTownyWiringAuditTest.java), [`YamlConfigLoaderTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlConfigLoaderTest.java), [`AdminPrefixCommandTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java)).
+
+Below is the root-cause analysis, decision rationale, and resolution details for each failure.
+
+---
+
+### 12.1 Regression in Pre-Existing Test: `missingMessageOrPrefixIsIdentifiedAndWarnsOnce`
+
+- **Test**: [`YamlMessagesTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlMessagesTest.java) (line 42)
+- **Status**: Pre-existing test; passed prior to Round 3.
+- **Verdict**: **Production code was wrong; test was right.**
+
+#### Root Cause
+In Round 3, implementing F4 (anti-bleed component deserialization) split the formatting pipeline into separate components joined as siblings:
+```java
+Component.text().append(prefixComponent).append(body).build()
+```
+When this was written, the variable assignments in both [`YamlMessages.get`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlMessages.java#L142-L153) and [`YamlMessages.plain`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlMessages.java#L164-L176) evaluated `body` before `prefix`:
+```java
+Component body = resolve(LegacyComponentSerializer.legacyAmpersand().deserialize(text(key)), placeholders);
+String prefix = catalogPrefix();
+```
+Prior to Round 3, string concatenation `catalogPrefix() + text(key)` evaluated strictly left-to-right: `catalogPrefix()` (and therefore `text("prefix")`) was evaluated first, and `text(key)` was evaluated second.
+
+Because missing-key warnings are pushed to the warning sink on first lookup:
+1. Evaluating `text(key)` first caused the missing-key warning for `general.working` to be logged at index 0.
+2. Evaluating `catalogPrefix()` second caused the missing-key warning for `prefix` to be logged at index 1 (`warnings.getLast()`).
+3. The test asserted `assertTrue(warnings.getLast().contains("general.working"))`, which failed because `warnings.getLast()` contained `"prefix"`.
+
+#### Resolution
+The production code in [`YamlMessages.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlMessages.java) was corrected so that `prefix` is resolved before `body` in both `get()` and `plain()`:
+```java
+String prefix = effectivePrefix(); // (or catalogPrefix() in plain())
+Component body = resolve(
+        LegacyComponentSerializer.legacyAmpersand().deserialize(text(key)),
+        placeholders
+);
+```
+This restores the natural left-to-right evaluation order matching message appearance: `prefix` warning arrives first, `general.working` arrives second, and `warnings.getLast()` contains `"general.working"`.
+
+**Zero edits were made to [`YamlMessagesTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlMessagesTest.java)**, strictly honoring the contract for pre-existing tests.
+
+---
+
+### 12.2 Wiring Production Wrapper Test: `productionWiringMessagesWrapperUpdatesPlayerMessage`
+
+- **Test**: [`DiscordTownyWiringAuditTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/DiscordTownyWiringAuditTest.java) (line 362)
+- **Status**: Newly authored in Round 3.
+- **Verdict**: **Test fixture was wrong; production code was right.**
+
+#### Root Cause
+The test attempted to verify that the live wrapper built by [`DiscordTownyWiring`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyWiring.java) updates player messages without reflection:
+```java
+wiring.setConfigLoaderForTest(new YamlConfigLoader(tempFolder, warning -> {}));
+...
+wiring.reload();
+```
+In production, [`DiscordTownyWiring.reload()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyWiring.java#L461-L471) calls `configLoader.load()`. If the configuration file on disk is unreadable, corrupt, or missing, it logs a severe error and throws [`ConfigException`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/ConfigException.java) to reject the reload.
+
+In the test fixture, `tempFolder` was an empty temporary directory without `config.yml`. Consequently, `YamlConfigLoader.load()` failed validation across the entire configuration schema and threw `ConfigException` at line 362. Furthermore, invoking `reload()` without installing `discordGateway` on wiring would cause `reload()` to instantiate a live `JdaDiscordGateway` and attempt network I/O.
+
+#### Resolution
+The test fixture was corrected to match the standard pattern established by all other tests in [`DiscordTownyWiringAuditTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/DiscordTownyWiringAuditTest.java):
+1. Instantiated a real [`YamlConfigLoader`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlConfigLoader.java) to obtain its genuine production `ReloadableMessages` wrapper (`realLoader.messages()`).
+2. Installed a mock `loader` whose `load()` returns the test fixture's valid in-memory `PluginConfig` and whose `messages()` supplies `realLoader.messages()`.
+3. Installed `wiring.setDiscordGatewayForTest(discordGateway)` to prevent live network gateway initialization during reload.
+4. Corrected the post-reset assertion from `contains("[DiscordTowny]")` to `contains("\u00a7bDiscordTowny")` (see §12.3).
+
+The production code in `DiscordTownyWiring.java` was not modified, as throwing `ConfigException` on reload with invalid disk configuration is a fundamental specification requirement.
+
+---
+
+### 12.3 Config Loader Wrapper Delegation Test: `productionReloadableMessagesWrapperDelegatesPrefixMethodsExplicitlyWithoutReflection`
+
+- **Test**: [`YamlConfigLoaderTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlConfigLoaderTest.java) (line 575)
+- **Status**: Newly authored in Round 3.
+- **Verdict**: **Test expectation was wrong; production code was right.**
+
+#### Root Cause
+Line 575 asserted:
+```java
+messages.resetPrefix();
+assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+Component resetComp = messages.get("linking.code-invalid");
+String resetRendered = LegacyComponentSerializer.legacySection().serialize(resetComp);
+assertTrue(resetRendered.contains("[DiscordTowny]"));
+```
+Line 572 passed, confirming that `messages.rawPrefix()` was correctly restored to `"&8[&bDiscordTowny&8] &r"`.
+
+However, `resetRendered` was serialized using Kyori Adventure's `LegacyComponentSerializer.legacySection()`. In legacy section formatting, the ampersand `&b` (cyan) inside the brackets becomes the section symbol `§b` (`\u00a7b`):
+```
+§8[§bDiscordTowny§8] §r
+```
+Because the formatting code `§b` intervenes directly between `[` and `DiscordTowny`, the literal substring `"[DiscordTowny]"` does not exist anywhere in the formatted string. The author had remembered formatting codes in line 563 (`\u00a79[CustomServer]`), but overlooked that the default catalog prefix carries cyan formatting inside the brackets.
+
+#### Resolution
+Line 575 was corrected to assert:
+```java
+assertTrue(resetRendered.contains("\u00a7bDiscordTowny"));
+```
+This tests the exact formatted branding defined by the catalog without weakening the assertion, confirming that the catalog prefix and its cyan styling are restored to player messages upon reset.
+
+---
+
+### 12.4 F3 Store Failure Resilience Test: `settingsStoreThatThrowsDuringCommandAlertsSenderGracefullyAndLeavesPrefixUnchanged`
+
+- **Test**: [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) (line 392)
+- **Status**: Newly authored in Round 3.
+- **Verdict**: **Test expectation was wrong; production code was right.**
+
+#### Root Cause
+The test verifies F3: when `settings.put(...)` throws [`StorageException`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/storage/StorageException.java), the new prefix must not be applied to in-memory state, and subsequent player messages must continue displaying the old prefix.
+
+In the test execution:
+- Line 384 passed: sender received `general.database-unavailable`.
+- Line 389 passed: `messages.rawPrefix()` remained unchanged (`"&8[&bDiscordTowny&8] &r"`).
+- Line 393 passed: player message did not contain `[Test]`.
+- Line 394 passed: no audit event was written.
+
+Line 392 failed solely because it asserted `assertTrue(rendered.contains("[DiscordTowny]"))` on `LegacyComponentSerializer.legacySection().serialize(playerMsg)`. For the exact same reason as in `YamlConfigLoaderTest` (§12.3), `rendered` contained `§8[§bDiscordTowny§8] §r`, where `§b` separates `[` from `DiscordTowny`.
+
+#### Resolution
+Line 392 was corrected to assert:
+```java
+assertTrue(rendered.contains("\u00a7bDiscordTowny"));
+```
+This cleanly verifies that the old catalog prefix remains active and visible to players following a database failure, as mandated by requirement F3.
+
+---
+
+### 12.5 Summary of Changes in Round 4
+
+| File | Nature of Fix | Description |
+| :--- | :--- | :--- |
+| [`YamlMessages.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/YamlMessages.java) | **Production Bug Fix** | Evaluated prefix before body in `get()` and `plain()`, restoring left-to-right evaluation order and warning sequence to fix regression in pre-existing test `missingMessageOrPrefixIsIdentifiedAndWarnsOnce`. |
+| [`DiscordTownyWiringAuditTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/DiscordTownyWiringAuditTest.java) | **Test Fixture Fix** | Installed mock config loader returning fixture `config` while supplying `realLoader.messages()` production wrapper; added test Discord gateway; fixed rendered prefix assertion to `\u00a7bDiscordTowny`. |
+| [`YamlConfigLoaderTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlConfigLoaderTest.java) | **Test Expectation Fix** | Corrected line 575 to assert `\u00a7bDiscordTowny` in rendered Adventure component serialized with `legacySection()`. |
+| [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) | **Test Expectation Fix** | Corrected line 392 to assert `\u00a7bDiscordTowny` in rendered Adventure component serialized with `legacySection()`. |
+
+

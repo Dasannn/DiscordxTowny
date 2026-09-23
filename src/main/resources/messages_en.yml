@@ -189,7 +189,8 @@ admin:
   prefix-raw: "&7Raw: &f{raw}"
   prefix-placeholders: "&cThe prefix cannot contain placeholders or braces."
   prefix-line-break: "&cThe prefix cannot contain line breaks."
-  prefix-too-long: "&cThe prefix cannot be longer than {max} characters."
+  prefix-too-long: "&cThe prefix cannot be longer than {max} visible characters."
+  prefix-raw-too-long: "&cThe raw prefix cannot be longer than {max} characters."
 
 # Labels for the embeds the bot publishes in Discord. Spec 9.1: the language
 # setting covers these too, so they are not hard-coded in the code.

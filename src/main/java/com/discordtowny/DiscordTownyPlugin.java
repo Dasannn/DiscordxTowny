@@ -80,6 +80,11 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                     () -> wiring != null ? wiring.getDiscordGateway() : null,
                     () -> wiring != null ? wiring.getUpdateService() : null,
                     () -> wiring != null ? wiring.getSettingsRepository() : null,
+                    event -> {
+                        if (wiring != null && wiring.getAuditSink() != null) {
+                            wiring.getAuditSink().accept(event);
+                        }
+                    },
                     () -> { if (wiring != null) wiring.reload(); }
             );
         } catch (Throwable t) {
@@ -179,6 +184,10 @@ public final class DiscordTownyPlugin extends JavaPlugin {
 
     public com.discordtowny.storage.SettingsRepository getSettingsRepository() {
         return wiring != null ? wiring.getSettingsRepository() : null;
+    }
+
+    public com.discordtowny.CompositeAuditSink getAuditSink() {
+        return wiring != null ? wiring.getAuditSink() : null;
     }
 
     public com.discordtowny.discord.JdaDiscordGateway getDiscordGateway() {

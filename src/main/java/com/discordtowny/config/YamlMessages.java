@@ -140,9 +140,16 @@ public final class YamlMessages implements Messages {
 
     @Override
     public Component get(String key, Map<String, String> placeholders) {
-        Component message = LegacyComponentSerializer.legacyAmpersand()
-                .deserialize(effectivePrefix() + text(key));
-        return resolve(message, placeholders);
+        String prefix = effectivePrefix();
+        Component body = resolve(
+                LegacyComponentSerializer.legacyAmpersand().deserialize(text(key)),
+                placeholders
+        );
+        if (prefix.isEmpty()) {
+            return body;
+        }
+        Component prefixComponent = LegacyComponentSerializer.legacyAmpersand().deserialize(prefix);
+        return Component.text().append(prefixComponent).append(body).build();
     }
 
     /** Replaces placeholders without ever interpreting their values as formatting. */
@@ -155,9 +162,17 @@ public final class YamlMessages implements Messages {
 
     @Override
     public String plain(String key, Map<String, String> placeholders) {
-        Component message = LegacyComponentSerializer.legacyAmpersand()
-                .deserialize(catalogPrefix() + text(key));
-        return PlainTextComponentSerializer.plainText().serialize(resolve(message, placeholders));
+        String prefix = catalogPrefix();
+        Component body = resolve(
+                LegacyComponentSerializer.legacyAmpersand().deserialize(text(key)),
+                placeholders
+        );
+        if (prefix.isEmpty()) {
+            return PlainTextComponentSerializer.plainText().serialize(body);
+        }
+        Component prefixComponent = LegacyComponentSerializer.legacyAmpersand().deserialize(prefix);
+        Component combined = Component.text().append(prefixComponent).append(body).build();
+        return PlainTextComponentSerializer.plainText().serialize(combined);
     }
 
     @Override

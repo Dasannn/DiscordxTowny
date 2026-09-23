@@ -189,7 +189,8 @@ admin:
   prefix-raw: "&7Original: &f{raw}"
   prefix-placeholders: "&cEl prefijo no puede contener marcadores ni llaves."
   prefix-line-break: "&cEl prefijo no puede contener saltos de línea."
-  prefix-too-long: "&cEl prefijo no puede tener más de {max} caracteres."
+  prefix-too-long: "&cEl prefijo no puede tener más de {max} caracteres visibles."
+  prefix-raw-too-long: "&cEl prefijo sin formato no puede tener más de {max} caracteres."
 
 # Etiquetas de los embeds que el bot publica en Discord. Spec 9.1: el ajuste de
 # idioma también las cubre, por eso no van escritas en el código.

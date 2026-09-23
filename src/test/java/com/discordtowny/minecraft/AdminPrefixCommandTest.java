@@ -28,6 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import java.util.function.Consumer;
 
 /**
  * Unit and integration tests for the /dt admin prefix command and prefix behavior (T28).
@@ -54,7 +55,8 @@ class AdminPrefixCommandTest {
         texts.put("admin.prefix-raw", "&7Raw: &f{raw}");
         texts.put("admin.prefix-placeholders", "&cThe prefix cannot contain placeholders or braces.");
         texts.put("admin.prefix-line-break", "&cThe prefix cannot contain line breaks.");
-        texts.put("admin.prefix-too-long", "&cThe prefix cannot be longer than {max} characters.");
+        texts.put("admin.prefix-too-long", "&cThe prefix cannot be longer than {max} visible characters.");
+        texts.put("admin.prefix-raw-too-long", "&cThe raw prefix cannot be longer than {max} characters.");
         texts.put("general.database-unavailable", "&cCannot access the database. Notify an administrator.");
 
         settingsRepo = new InMemorySettingsRepository();
@@ -254,16 +256,42 @@ class AdminPrefixCommandTest {
     }
 
     @Test
-    void refusalTooLong() throws Exception {
-        String overlyLongPrefix = "a".repeat(65); // MAX_PREFIX_LENGTH is 64
+    void refusalVisibleTooLong() throws Exception {
+        String overlyLongPrefix = "a".repeat(33); // MAX_VISIBLE_PREFIX_LENGTH is 32
         dispatcher.execute("dt admin prefix " + overlyLongPrefix, sourceStack);
 
         verify(admin).sendMessage(argThat((Component c) -> {
             String text = PlainTextComponentSerializer.plainText().serialize(c);
-            return text.contains("cannot be longer than 64 characters");
+            return text.contains("cannot be longer than 32 visible characters");
         }));
         assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
         assertTrue(auditLogs.isEmpty(), "No audit event must be written on refusal");
+    }
+
+    @Test
+    void refusalRawTooLong() throws Exception {
+        // Raw length > 255 but visible length small:
+        // "&c" repeated 128 times is 256 characters, plus "a" = 257 characters
+        String overlyLongRawPrefix = "&c".repeat(128) + "a";
+        dispatcher.execute("dt admin prefix " + overlyLongRawPrefix, sourceStack);
+
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("raw prefix cannot be longer than 255 characters");
+        }));
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+        assertTrue(auditLogs.isEmpty(), "No audit event must be written on refusal");
+    }
+
+    @Test
+    void formattingCodesDoNotConsumeVisibleLengthBudget() throws Exception {
+        // Raw length is 35 (which would exceed 32 under raw count),
+        // but visible text is "[Server] " (9 characters <= 32).
+        String formattedPrefix = "&#112233[&#445566Server&#778899] &r";
+        dispatcher.execute("dt admin prefix " + formattedPrefix, sourceStack);
+
+        assertEquals(formattedPrefix, messages.rawPrefix());
+        assertEquals(1, auditLogs.size());
     }
 
     @Test
@@ -311,7 +339,7 @@ class AdminPrefixCommandTest {
     }
 
     @Test
-    void settingsStoreThatThrowsDuringCommandAlertsSenderGracefully() throws Exception {
+    void settingsStoreThatThrowsDuringCommandAlertsSenderGracefullyAndLeavesPrefixUnchanged() throws Exception {
         SettingsRepository failingStore = new SettingsRepository() {
             @Override
             public Optional<String> get(String key) {
@@ -347,11 +375,114 @@ class AdminPrefixCommandTest {
         CommandDispatcher<CommandSourceStack> failingDispatcher = new CommandDispatcher<>();
         failingDispatcher.getRoot().addChild(failingRoot);
 
+        // Before command, prefix is catalog default
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+
         failingDispatcher.execute("dt admin prefix &3[Test]&r ", sourceStack);
 
         // Sender receives database unavailable notification
         verify(admin).sendMessage(argThat((Component c) ->
                 PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
+
+        // F3 requirement: On failure nothing changes and the refusal stands.
+        // Player's next message still carries the old prefix after a failed write.
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+        Component playerMsg = messages.get("test.msg", Map.of("player", "Alice"));
+        String rendered = LegacyComponentSerializer.legacySection().serialize(playerMsg);
+        assertTrue(rendered.contains("\u00a7bDiscordTowny"));
+        assertFalse(rendered.contains("[Test]"));
+        assertTrue(auditLogs.isEmpty(), "No audit event should be recorded if write failed");
+    }
+
+    @Test
+    void settingsStoreThatThrowsDuringResetAlertsSenderAndLeavesCustomPrefixUnchanged() throws Exception {
+        // Set an active custom prefix first
+        messages.setCustomPrefix("&6[Active]&r ");
+        assertEquals("&6[Active]&r ", messages.rawPrefix());
+
+        SettingsRepository failingStore = new SettingsRepository() {
+            @Override
+            public Optional<String> get(String key) {
+                return Optional.of("&6[Active]&r ");
+            }
+            @Override
+            public void put(String key, String value) {
+                throw new StorageException("Database offline");
+            }
+            @Override
+            public void delete(String key) {
+                throw new StorageException("Database offline");
+            }
+        };
+
+        LiteralCommandNode<CommandSourceStack> failingRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> failingStore,
+                auditLogs::add,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+
+        CommandDispatcher<CommandSourceStack> failingDispatcher = new CommandDispatcher<>();
+        failingDispatcher.getRoot().addChild(failingRoot);
+
+        failingDispatcher.execute("dt admin prefix reset", sourceStack);
+
+        // Sender receives database unavailable notification
+        verify(admin).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
+
+        // F3 requirement: On failed reset, prefix remains the custom one
+        assertEquals("&6[Active]&r ", messages.rawPrefix());
+        Component playerMsg = messages.get("test.msg", Map.of("player", "Alice"));
+        String rendered = LegacyComponentSerializer.legacySection().serialize(playerMsg);
+        assertTrue(rendered.contains("[Active]"));
+        assertFalse(rendered.contains("[DiscordTowny]"));
+        assertTrue(auditLogs.isEmpty(), "No audit event should be recorded if reset write failed");
+    }
+
+    @Test
+    void auditConsumerDeliveredDirectlyWithoutReflection() throws Exception {
+        List<AuditEvent> delivered = new ArrayList<>();
+        Consumer<AuditEvent> consumer = delivered::add;
+
+        LiteralCommandNode<CommandSourceStack> node = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                consumer,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+
+        CommandDispatcher<CommandSourceStack> customDispatcher = new CommandDispatcher<>();
+        customDispatcher.getRoot().addChild(node);
+
+        customDispatcher.execute("dt admin prefix &a[Audited]&r ", sourceStack);
+
+        assertEquals(1, delivered.size(), "Explicitly supplied audit consumer must receive event");
+        AuditEvent event = delivered.get(0);
+        assertEquals("AdminAlice", event.actor());
+        assertEquals("prefix", event.action());
+        assertEquals("&a[Audited]&r ", event.target());
+        assertTrue(event.success());
     }
 
     private static class InMemorySettingsRepository implements SettingsRepository {

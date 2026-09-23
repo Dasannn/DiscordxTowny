@@ -9,6 +9,7 @@ import java.util.Map;
 import com.discordtowny.storage.SettingsRepository;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.junit.jupiter.api.Test;
+import net.kyori.adventure.text.Component;
 
 class YamlMessagesTest {
     @Test
@@ -325,5 +326,51 @@ class YamlMessagesTest {
         messagesA.resetPrefix();
         assertEquals("[Catalog] ", messagesA.rawPrefix());
         assertEquals("&9[PrefixB] ", messagesB.rawPrefix());
+    }
+
+    @Test
+    void prefixEndingInObfuscationCodeDoesNotBleedIntoMessageBody() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&8[&bDT&8]&k ", "saludo", "&aHello {name}!"),
+                warning -> {}
+        );
+        Component component = messages.get("saludo", Map.of("name", "Bob"));
+        String legacy = LegacyComponentSerializer.legacySection().serialize(component);
+        assertTrue(legacy.contains("\u00a7k"));
+        int greenIndex = legacy.indexOf("\u00a7a");
+        assertTrue(greenIndex >= 0);
+        String bodyPart = legacy.substring(greenIndex);
+        assertFalse(bodyPart.contains("\u00a7k"), "Message body must not carry obfuscation from prefix");
+        assertTrue(bodyPart.contains("Hello Bob!"));
+    }
+
+    @Test
+    void prefixWithColorAndNoResetDoesNotBleedIntoMessageBody() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&c[Admin] ", "saludo", "&eHello {name}!"),
+                warning -> {}
+        );
+        Component component = messages.get("saludo", Map.of("name", "Bob"));
+        String legacy = LegacyComponentSerializer.legacySection().serialize(component);
+        assertTrue(legacy.startsWith("\u00a7c[Admin] "));
+        int yellowIndex = legacy.indexOf("\u00a7e");
+        assertTrue(yellowIndex >= 0);
+        String bodyPart = legacy.substring(yellowIndex);
+        assertTrue(bodyPart.contains("Hello Bob!"));
+    }
+
+    @Test
+    void prefixWithColorAndNoResetDoesNotColorUncoloredMessageBody() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&c[Admin] ", "info", "Plain message"),
+                warning -> {}
+        );
+        Component component = messages.get("info");
+        String legacy = LegacyComponentSerializer.legacySection().serialize(component);
+        assertTrue(legacy.startsWith("\u00a7c[Admin] "));
+        int adminEnd = legacy.indexOf("[Admin] ") + "[Admin] ".length();
+        String afterPrefix = legacy.substring(adminEnd);
+        assertTrue(afterPrefix.startsWith("\u00a7r") || !afterPrefix.startsWith("\u00a7c"));
+        assertTrue(afterPrefix.contains("Plain message"));
     }
 }

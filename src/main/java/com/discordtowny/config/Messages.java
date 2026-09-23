@@ -44,10 +44,6 @@ public interface Messages {
      * Raw prefix currently in effect, including formatting codes (e.g. &amp;8[&amp;bDiscordTowny&amp;8] &amp;r).
      */
     default String rawPrefix() {
-        Messages target = unwrap(this);
-        if (target != this && target != null) {
-            return target.rawPrefix();
-        }
         return "";
     }
 
@@ -55,10 +51,6 @@ public interface Messages {
      * Default prefix from the catalog (file/resource), ignoring custom store.
      */
     default String catalogPrefix() {
-        Messages target = unwrap(this);
-        if (target != this && target != null) {
-            return target.catalogPrefix();
-        }
         return "";
     }
 
@@ -72,46 +64,15 @@ public interface Messages {
     /**
      * Updates the in-memory custom prefix.
      */
-    default void setCustomPrefix(String prefix) {
-        Messages target = unwrap(this);
-        if (target != this && target != null) {
-            target.setCustomPrefix(prefix);
-        }
-    }
+    default void setCustomPrefix(String prefix) {}
 
     /**
      * Resets the custom prefix, reverting to the catalog default.
      */
-    default void resetPrefix() {
-        Messages target = unwrap(this);
-        if (target != this && target != null) {
-            target.resetPrefix();
-        }
-    }
+    default void resetPrefix() {}
 
     /**
      * Invalidates the cached prefix so it re-reads from storage on next access.
      */
-    default void invalidatePrefix() {
-        Messages target = unwrap(this);
-        if (target != this && target != null) {
-            target.invalidatePrefix();
-        }
-    }
-
-    private static Messages unwrap(Messages messages) {
-        if (messages == null) return null;
-        try {
-            for (java.lang.reflect.Field f : messages.getClass().getDeclaredFields()) {
-                if (Messages.class.isAssignableFrom(f.getType())) {
-                    f.setAccessible(true);
-                    Object val = f.get(messages);
-                    if (val instanceof Messages inner && inner != messages) {
-                        return unwrap(inner);
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-        return messages;
-    }
+    default void invalidatePrefix() {}
 }

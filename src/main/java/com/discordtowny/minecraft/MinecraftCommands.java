@@ -30,8 +30,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
 import java.time.Instant;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +49,7 @@ import com.discordtowny.config.YamlMessages;
 import com.discordtowny.model.AuditEvent;
 import com.discordtowny.storage.SettingsRepository;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 /**
  * Unified registration and handling of all in-game commands under {@code /dt} (alias {@code /discordtowny}).
@@ -70,7 +69,9 @@ public final class MinecraftCommands {
     public static final String PERMISSION_USE = "discordtowny.use";
     public static final String PERMISSION_ADMIN = "discordtowny.admin";
     public static final int PAGE_SIZE = 10;
-    public static final int MAX_PREFIX_LENGTH = 64;
+    public static final int MAX_VISIBLE_PREFIX_LENGTH = 32;
+    public static final int MAX_RAW_PREFIX_LENGTH = 255;
+    public static final int MAX_PREFIX_LENGTH = MAX_VISIBLE_PREFIX_LENGTH;
 
     private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
     private static final long CONFIRMATION_EXPIRY_SECONDS = 30L;
@@ -1192,6 +1193,48 @@ public final class MinecraftCommands {
     }
 
     /**
+     * Registers commands in Paper's lifecycle manager with audit consumer.
+     */
+    public static void register(
+            Plugin plugin,
+            Supplier<PluginConfig> configSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Supplier<LinkService> linkServiceSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<SyncService> syncServiceSupplier,
+            Supplier<TownyFacade> townyFacadeSupplier,
+            Supplier<DiscordGateway> discordGatewaySupplier,
+            Supplier<UpdateService> updateServiceSupplier,
+            Supplier<SettingsRepository> settingsSupplier,
+            Consumer<AuditEvent> auditConsumer,
+            Runnable reloadAction) {
+        Consumer<Runnable> scheduler = task -> Bukkit.getScheduler().runTask(plugin, task);
+        plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
+            Commands registrar = event.registrar();
+            LiteralCommandNode<CommandSourceStack> node = createCommandNode(
+                    linkServiceSupplier,
+                    spaceServiceSupplier,
+                    syncServiceSupplier,
+                    townyFacadeSupplier,
+                    discordGatewaySupplier,
+                    updateServiceSupplier,
+                    settingsSupplier,
+                    auditConsumer,
+                    configSupplier,
+                    messagesSupplier,
+                    consoleMessagesSupplier,
+                    reloadAction,
+                    scheduler,
+                    null
+            );
+            Messages m = messagesSupplier != null ? messagesSupplier.get() : null;
+            String description = (m != null) ? m.label("help.description") : "DiscordTowny in-game commands";
+            registrar.register(node, description, List.of("discordtowny"));
+        });
+    }
+
+    /**
      * Registers commands in Paper's lifecycle manager.
      */
     public static void register(
@@ -1207,29 +1250,21 @@ public final class MinecraftCommands {
             Supplier<UpdateService> updateServiceSupplier,
             Supplier<SettingsRepository> settingsSupplier,
             Runnable reloadAction) {
-        Consumer<Runnable> scheduler = task -> Bukkit.getScheduler().runTask(plugin, task);
-        plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
-            Commands registrar = event.registrar();
-            LiteralCommandNode<CommandSourceStack> node = createCommandNode(
-                    linkServiceSupplier,
-                    spaceServiceSupplier,
-                    syncServiceSupplier,
-                    townyFacadeSupplier,
-                    discordGatewaySupplier,
-                    updateServiceSupplier,
-                    settingsSupplier,
-                    null,
-                    configSupplier,
-                    messagesSupplier,
-                    consoleMessagesSupplier,
-                    reloadAction,
-                    scheduler,
-                    null
-            );
-            Messages m = messagesSupplier != null ? messagesSupplier.get() : null;
-            String description = (m != null) ? m.label("help.description") : "DiscordTowny in-game commands";
-            registrar.register(node, description, List.of("discordtowny"));
-        });
+        register(
+                plugin,
+                configSupplier,
+                messagesSupplier,
+                consoleMessagesSupplier,
+                linkServiceSupplier,
+                spaceServiceSupplier,
+                syncServiceSupplier,
+                townyFacadeSupplier,
+                discordGatewaySupplier,
+                updateServiceSupplier,
+                settingsSupplier,
+                null,
+                reloadAction
+        );
     }
 
     public static void register(
@@ -1646,10 +1681,6 @@ public final class MinecraftCommands {
         CommandSender sender = ctx.getSource().getSender();
         Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
 
-        if (messagesSupplier != null && messagesSupplier.get() != null) {
-            messagesSupplier.get().resetPrefix();
-        }
-
         Executor exec = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
         CompletableFuture.runAsync(() -> {
             SettingsRepository settings = resolveSettings(settingsSupplier);
@@ -1657,12 +1688,11 @@ public final class MinecraftCommands {
                 throw new IllegalStateException("Database settings repository unavailable");
             }
             settings.delete(SettingsRepository.KEY_CHAT_PREFIX);
-            Consumer<AuditEvent> audit = resolveAudit(auditConsumer, spaceServiceSupplier);
-            if (audit != null) {
+            if (auditConsumer != null) {
                 String catPrefix = (messagesSupplier != null && messagesSupplier.get() != null)
                         ? messagesSupplier.get().catalogPrefix()
                         : "";
-                audit.accept(new AuditEvent(
+                auditConsumer.accept(new AuditEvent(
                         Instant.now(),
                         AuditEvent.Severity.INFO,
                         sender.getName(),
@@ -1673,6 +1703,9 @@ public final class MinecraftCommands {
                 ));
             }
         }, exec).thenRun(() -> {
+            if (messagesSupplier != null && messagesSupplier.get() != null) {
+                messagesSupplier.get().resetPrefix();
+            }
             scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-reset")));
         }).exceptionally(ex -> {
             scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
@@ -1713,15 +1746,17 @@ public final class MinecraftCommands {
             return 1;
         }
 
-        // 3. Length limit
-        if (targetPrefix.length() > MAX_PREFIX_LENGTH) {
-            sender.sendMessage(msg.get("admin.prefix-too-long", Map.of("max", String.valueOf(MAX_PREFIX_LENGTH))));
+        // 3. Raw cap limit
+        if (targetPrefix.length() > MAX_RAW_PREFIX_LENGTH) {
+            sender.sendMessage(msg.get("admin.prefix-raw-too-long", Map.of("max", String.valueOf(MAX_RAW_PREFIX_LENGTH))));
             return 1;
         }
 
-        // Immediate update in memory for everyone
-        if (messagesSupplier != null && messagesSupplier.get() != null) {
-            messagesSupplier.get().setCustomPrefix(targetPrefix);
+        // 4. Visible length limit (counting characters with & codes removed)
+        int visLen = visibleLength(targetPrefix);
+        if (visLen > MAX_VISIBLE_PREFIX_LENGTH) {
+            sender.sendMessage(msg.get("admin.prefix-too-long", Map.of("max", String.valueOf(MAX_VISIBLE_PREFIX_LENGTH))));
+            return 1;
         }
 
         final String finalPrefix = targetPrefix;
@@ -1733,9 +1768,8 @@ public final class MinecraftCommands {
                 throw new IllegalStateException("Database settings repository unavailable");
             }
             settings.put(SettingsRepository.KEY_CHAT_PREFIX, finalPrefix);
-            Consumer<AuditEvent> audit = resolveAudit(auditConsumer, spaceServiceSupplier);
-            if (audit != null) {
-                audit.accept(new AuditEvent(
+            if (auditConsumer != null) {
+                auditConsumer.accept(new AuditEvent(
                         Instant.now(),
                         AuditEvent.Severity.INFO,
                         sender.getName(),
@@ -1746,6 +1780,9 @@ public final class MinecraftCommands {
                 ));
             }
         }, exec).thenRun(() -> {
+            if (messagesSupplier != null && messagesSupplier.get() != null) {
+                messagesSupplier.get().setCustomPrefix(finalPrefix);
+            }
             scheduler.accept(() -> {
                 Component base = msg.get("admin.prefix-set");
                 Component rendered = LegacyComponentSerializer.legacyAmpersand().deserialize(finalPrefix);
@@ -1760,6 +1797,20 @@ public final class MinecraftCommands {
         return 1;
     }
 
+    public static String stripFormatting(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        return PlainTextComponentSerializer.plainText().serialize(
+                LegacyComponentSerializer.legacyAmpersand().deserialize(input)
+        );
+    }
+
+    public static int visibleLength(String input) {
+        String stripped = stripFormatting(input);
+        return stripped.codePointCount(0, stripped.length());
+    }
+
     private static SettingsRepository resolveSettings(
             Supplier<SettingsRepository> settingsSupplier) {
         if (settingsSupplier != null) {
@@ -1772,51 +1823,5 @@ public final class MinecraftCommands {
             }
         }
         return null;
-    }
-
-    private static Consumer<AuditEvent> resolveAudit(
-            Consumer<AuditEvent> auditConsumer,
-            Supplier<SpaceService> spaceServiceSupplier) {
-        if (auditConsumer != null) {
-            return auditConsumer;
-        }
-        try {
-            if (Bukkit.getServer() != null) {
-                Plugin p = Bukkit.getPluginManager().getPlugin("DiscordTowny");
-                if (p != null) {
-                    Method wm = p.getClass().getMethod("getWiring");
-                    Object wiring = wm.invoke(p);
-                    if (wiring != null) {
-                        Method am = wiring.getClass().getMethod("getAuditSink");
-                        Object sink = am.invoke(wiring);
-                        if (sink != null) {
-                            Method logMethod = sink.getClass().getMethod("log", AuditEvent.class);
-                            return event -> {
-                                try {
-                                    logMethod.invoke(sink, event);
-                                } catch (Throwable ignored) {}
-                            };
-                        }
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-        if (spaceServiceSupplier != null) {
-            try {
-                SpaceService ss = spaceServiceSupplier.get();
-                if (ss != null) {
-                    for (Field f : ss.getClass().getDeclaredFields()) {
-                        if (Consumer.class.isAssignableFrom(f.getType())) {
-                            f.setAccessible(true);
-                            Object c = f.get(ss);
-                            if (c instanceof Consumer<?>) {
-                                return (Consumer<AuditEvent>) c;
-                            }
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
-        return event -> {};
     }
 }
