@@ -8,6 +8,31 @@ The updater refuses any release that does not publish a SHA-256 alongside the ja
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-23
+
+### Added
+
+- One bot token can serve several Discord servers. Each Minecraft server is
+  configured with its own `guild-id` and its own channels, and answers only the
+  interactions from that server. Previously every instance processed every other
+  server's commands against its own database and its own Towny, and they raced to
+  answer the same interaction. A command used in a direct message now gets a
+  refusal in the reader's language instead of a spinner that times out.
+
+### Fixed
+
+- Archiving a space whose Discord channel had been deleted by hand failed every
+  thirty minutes, forever: the channel was required to exist, the failure marked
+  the space inconsistent rather than archived, and the next synchronisation tried
+  again. Deleting the channel achieves what archiving intended, so a missing
+  channel, category or role is now that part of the work already done. The archive
+  completes and the operator is told once what was already gone.
+- `/dt admin purge` reported an empty purge while an inconsistent space existed,
+  because it looks only at archived ones — so the single command that cleans could
+  not see the single space that needed cleaning. It now says how many it skipped
+  and where to review them. It still never deletes them: an inconsistent space is
+  one a human should look at first.
+
 ## [1.1.1] - 2026-09-23
 
 No functional change. Published to exercise the updater end to end against a
