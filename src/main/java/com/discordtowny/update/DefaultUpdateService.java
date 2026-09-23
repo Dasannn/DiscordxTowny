@@ -106,7 +106,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return ABSORBED_DECL_PATTERN.matcher(file).find();
     }
 
-    private static boolean isSupportedSumFilename(String rawFile, String line, String targetJarName) {
+    private static boolean isSupportedSumFilename(String rawFile, String targetJarName, Set<String> releaseAssetNames) {
         if (rawFile == null || rawFile.isBlank()) {
             return false;
         }
@@ -119,6 +119,16 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
         if (norm.toLowerCase(Locale.ROOT).endsWith(".jar")) {
             return true;
+        }
+        if (releaseAssetNames != null && !releaseAssetNames.isEmpty()) {
+            for (String assetName : releaseAssetNames) {
+                if (assetName != null) {
+                    String normAsset = normalizeFilename(assetName);
+                    if (normAsset != null && norm.equalsIgnoreCase(normAsset)) {
+                        return true;
+                    }
+                }
+            }
         }
         return false;
     }
@@ -1015,10 +1025,14 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             // F1 & F2: Find all eligible runnable jar assets and checksum assets
             List<SimpleJson.JsonObject> eligibleJars = new ArrayList<>();
             List<SimpleJson.JsonObject> checksumAssets = new ArrayList<>();
+            Set<String> releaseAssetNames = new HashSet<>();
 
             for (SimpleJson.JsonValue val : assets) {
                 if (val instanceof SimpleJson.JsonObject asset) {
                     String name = asset.getString("name");
+                    if (name != null && !name.isBlank()) {
+                        releaseAssetNames.add(name.trim());
+                    }
                     String downloadUrl = asset.getString("browser_download_url");
                     if (name == null || downloadUrl == null) {
                         continue;
@@ -1078,7 +1092,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 return ParseResult.failure("Invalid or ambiguous checksum in assets: " + inv.reason());
             }
 
-            ChecksumOutcome bodyOutcome = extractSha256FromBody(notes, selectedJarName);
+            ChecksumOutcome bodyOutcome = extractSha256FromBody(notes, selectedJarName, releaseAssetNames);
             if (bodyOutcome instanceof ChecksumOutcome.InvalidOrAmbiguous inv) {
                 logger.warning("Invalid or ambiguous checksum evidence in body for " + selectedJarName + ": " + inv.reason() + "; refusing without fallback.");
                 return ParseResult.failure("Invalid or ambiguous checksum in release body: " + inv.reason());
@@ -1229,6 +1243,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         if (content == null || content.isBlank()) {
             return new ChecksumOutcome.None();
         }
+        if (content.startsWith("\uFEFF")) {
+            content = content.substring(1);
+        }
 
         String[] lines = content.split("\\r?\\n");
         String matchedSha = null;
@@ -1304,7 +1321,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return matchedSha != null ? new ChecksumOutcome.Valid(matchedSha.toLowerCase(Locale.ROOT)) : new ChecksumOutcome.None();
     }
 
-    private ChecksumOutcome extractSha256FromBody(String body, String targetJarName) {
+    private ChecksumOutcome extractSha256FromBody(String body, String targetJarName, Set<String> releaseAssetNames) {
         if (body == null || body.isBlank()) {
             return new ChecksumOutcome.None();
         }
@@ -1323,8 +1340,22 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             if (line.startsWith("- ") || line.startsWith("* ")) {
                 line = line.substring(2).trim();
             }
-            if (line.startsWith("`") && line.endsWith("`") && line.length() >= 2) {
-                line = line.substring(1, line.length() - 1).trim();
+            boolean stripped;
+            do {
+                stripped = false;
+                if (line.startsWith("`") && line.endsWith("`") && line.length() >= 2) {
+                    line = line.substring(1, line.length() - 1).trim();
+                    stripped = true;
+                } else if (line.startsWith("\"") && line.endsWith("\"") && line.length() >= 2) {
+                    line = line.substring(1, line.length() - 1).trim();
+                    stripped = true;
+                } else if (line.startsWith("'") && line.endsWith("'") && line.length() >= 2) {
+                    line = line.substring(1, line.length() - 1).trim();
+                    stripped = true;
+                }
+            } while (stripped && !line.isEmpty());
+            if (line.isEmpty()) {
+                continue;
             }
 
             // 1. BSD format declarations on the line: SHA256 (filename) = <token>
@@ -1359,7 +1390,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 // If candidateToken is a checksum label keyword (e.g. SHA-256:, SHA-256=<H>), this is a labeled line, not a sha256sum line
                 if (!candidateToken.matches("(?i)^sha-?256(?:sum)?(?:[:=].*)?$")) {
-                    if (isSupportedSumFilename(file, line, targetJarName)) {
+                    if (isSupportedSumFilename(file, targetJarName, releaseAssetNames)) {
                         ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.SUM, candidateToken, file);
                         ChecksumOutcome validation = validateDeclaration(decl, "body");
                         if (validation != null) {

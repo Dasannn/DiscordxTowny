@@ -1082,6 +1082,112 @@ Added to `src/test/java/com/discordtowny/update/DefaultUpdateServiceTest.java`:
    - `unlabeledSumLineWithNonHexTokensRefuseReleaseEvenWithValidChecksumAsset` passes on `...Hg` and `invalid`.
    - `malformedChecksumWithDirectoryPrefixRefusesReleaseEvenWithValidAsset` passes on `invalid  sha256/DiscordTowny-1.10.0.jar`.
 
+---
+
+## 16. Round 14: Release Asset Publication Awareness & Gate Rectification
+
+### 16.1 F14: The Filename Gate Must Know the Release's Published Artifacts
+
+#### The Flaw in Round 13's Narrow Gate
+In Round 13, `isSupportedSumFilename` was restricted to accept only:
+1. Exact match with `targetJarName`, or
+2. Suffix match with `.jar`.
+
+This rule was an artificial narrowing of the full T24 checksum rule, made because the release's published asset names were not plumbed into `extractSha256FromBody`. As a consequence, a release body sum line declaring a checksum for a non-jar artifact actually published in that release—such as `invalid  DiscordTowny-1.10.0.zip` when `DiscordTowny-1.10.0.zip` is an asset of the release—was rejected by the filename gate and silently treated as prose. If a valid checksum for the jar was present elsewhere (e.g., in a dedicated `.sha256` asset or labeled declaration), the release was accepted despite publishing a broken checksum declaration for one of its artifacts.
+
+T24 requires outright refusal whenever a release body contains a checksum declaration whose digest is not a valid 64-hex token, regardless of which artifact it names.
+
+#### What the Gate Now Consults
+The real rule is:
+> A body line is a sha256sum declaration when its second field names **an artifact of that release** — the target jar, any `.jar`, or any asset actually published in the release being parsed.
+
+`parseRelease` already parses the release's `assets` array from GitHub release metadata. It now collects the set of published asset names (`releaseAssetNames`) and plumbs it directly down into `extractSha256FromBody(notes, selectedJarName, releaseAssetNames)`. No new network requests or external calls are added.
+
+`isSupportedSumFilename(rawFile, line, targetJarName, releaseAssetNames)` now evaluates:
+1. `norm.equalsIgnoreCase(targetJarName)` (the target jar);
+2. `norm.toLowerCase(Locale.ROOT).endsWith(".jar")` (any jar);
+3. `norm.equalsIgnoreCase(normAsset)` for any asset name in `releaseAssetNames` (any artifact published by this release).
+
+The old single-token double-space fallback was **not** restored, ensuring ordinary prose never passes the gate. If a caller provides an empty set of asset names, the gate preserves Round 13's jar-only behavior with zero leniency.
+
+#### Why the Asset List Separates Declarations from Prose
+Release notes intermix unstructured English prose (release descriptions, install guides, changelogs) with structured sha256sum lines.
+The fundamental discriminator that separates a checksum declaration from prose is whether the named entity corresponds to **an artifact of that release**:
+- When a line contains `invalid  DiscordTowny-1.10.0.zip` and the release publishes `DiscordTowny-1.10.0.zip`, the second field names a published release artifact. The publisher's intent to declare a checksum is unambiguous, and the broken digest (`invalid`) represents a corrupted declaration that must immediately refuse the release (`CHECK_FAILED`).
+- In contrast, a prose line like `Release  notes` or `Release  notes  <64 hex>` names `notes`, which does not end in `.jar` and is not a published artifact in `releaseAssetNames`. It is reliably ignored as prose without refusing the release.
+- If a line names a file that is neither a jar nor a published artifact of the release (e.g. `invalid  unrelated-file.zip`), it does not name any artifact of the release and stays prose.
+
+The asset list provides an authoritative, publisher-defined boundary that cleanly separates authentic declarations from incidental prose without guessing.
+
+---
+
+### 16.2 F15: Quoted Sum Declarations Escaping the Gate
+
+#### Root Cause
+In Markdown release notes, publishers frequently enclose code, commands, or checksum declarations in quotes or backticks. While `extractSha256FromBody` previously stripped enclosing backticks (`` `...` ``), it did not strip quotes. For a line such as:
+```text
+"invalid  DiscordTowny-1.10.0.jar"
+```
+`SUM_DECL_PATTERN` captured `\"invalid` as the digest and `DiscordTowny-1.10.0.jar\"` as the filename. Because the captured filename ended with `\"`, it failed `endsWith(\".jar\")` and failed to match the target jar. The line was discarded as unrecognized, escaping digest validation.
+
+#### Resolution
+`extractSha256FromBody` now normalizes line delimiters in a loop, stripping matching pairs of surrounding double quotes (`\"...\"`) and single quotes (`'...'`) in the exact same manner as backticks:
+```java
+boolean stripped;
+do {
+    stripped = false;
+    if (line.startsWith("`") && line.endsWith("`") && line.length() >= 2) {
+        line = line.substring(1, line.length() - 1).trim();
+        stripped = true;
+    } else if (line.startsWith("\"") && line.endsWith("\"") && line.length() >= 2) {
+        line = line.substring(1, line.length() - 1).trim();
+        stripped = true;
+    } else if (line.startsWith("'") && line.endsWith("'") && line.length() >= 2) {
+        line = line.substring(1, line.length() - 1).trim();
+        stripped = true;
+    }
+} while (stripped && !line.isEmpty());
+```
+Both single-quoted and double-quoted declarations are recognized and subjected to standard checksum validation.
+
+---
+
+### 16.3 F16: Leading UTF-8 BOM on BSD Checksum Files
+
+#### Root Cause
+Checksum files created on Windows tools frequently include a UTF-8 Byte Order Mark (`\uFEFF`, bytes `EF BB BF`) at the very start of the file. In Java, `trim()` strips ASCII whitespace (`<= ' '`), leaving `\uFEFF` attached to the start of the first line.
+In Round 12, pattern matching was changed from `find()` to `matches()` to reject trailing garbage. Because `\uFEFF` preceded `SHA256`, whole-line regex `BSD_DECL_PATTERN.matcher(line).matches()` failed on the first line, and Round 12's unconsumed-line branch rejected the valid checksum file as malformed.
+
+#### Resolution
+`parseChecksumFileContent` strips a leading `\uFEFF` from the input content and from the first line before evaluating declarations:
+```java
+if (content.startsWith("\uFEFF")) {
+    content = content.substring(1);
+}
+String[] lines = content.split("\\r?\\n");
+if (lines.length > 0 && lines[0].startsWith("\uFEFF")) {
+    lines[0] = lines[0].substring(1);
+}
+```
+Whole-line declaration matching is strictly preserved for all formats.
+
+---
+
+### 16.4 Test Verification
+
+Updated and added tests in `src/test/java/com/discordtowny/update/DefaultUpdateServiceTest.java`:
+
+1. **`sumLineForNonJarArtifactWithMalformedDigestIsTreatedAsProseAndDoesNotRefuseRelease` (Inverted & Extended, F14)**:
+   - **Case 1 (Inverted)**: When `DiscordTowny-1.10.0.zip` is published in `assets`, malformed digests (`invalid`, `0123...Hg`) on the sum line for the zip now cause outright refusal (`CHECK_FAILED`), both beside a dedicated checksum asset and beside a valid body declaration.
+   - **Case 2 (Prose Preservation)**: When `DiscordTowny-1.10.0.zip` is **not** published as an asset of the release, the malformed sum line is not recognized as an artifact declaration, remains prose, and does not block release discovery (`UPDATE_AVAILABLE`).
+2. **`quotedSumDeclarationWithMalformedDigestRefusesReleaseForBothQuoteCharacters` (F15)**:
+   - Verifies that quoted sum declarations with malformed digests enclosed in double quotes (`"..."`) or single quotes (`'...'`) are recognized as declarations and refuse the release with `CHECK_FAILED`.
+3. **`quotedSumDeclarationWithValidDigestIsAcceptedForBothQuoteCharacters` (F15)**:
+   - Verifies that valid sum declarations enclosed in double quotes (`"..."`) or single quotes (`'...'`) are parsed and bound successfully (`UPDATE_AVAILABLE`).
+4. **`checksumAssetWithLeadingUtf8BomOnBsdDeclarationLineIsAccepted` (F16)**:
+   - Verifies that a dedicated checksum file beginning with a UTF-8 BOM (`\uFEFF`) on a BSD declaration line (`\uFEFFSHA256 (DiscordTowny-1.10.0.jar) = <hex>`) is parsed cleanly, passes whole-line matching, and authorizes the release (`UPDATE_AVAILABLE`).
+
+
 
 
 
