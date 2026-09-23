@@ -19,6 +19,8 @@ import java.util.concurrent.RejectedExecutionException;
 public final class DiscordTownyPlugin extends JavaPlugin {
 
     private DiscordTownyWiring wiring;
+    private final java.util.concurrent.atomic.AtomicBoolean syncListenersRegistered = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean updateListenerRegistered = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     @Override
     public void onEnable() {
@@ -60,17 +62,7 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                         Bukkit.getScheduler().cancelTasks(this);
                     }
                 },
-                w -> {
-                    if (!w.isDegraded() && w.getStorage() != null) {
-                        try {
-                            PlayerJoinSyncListener.register(this, w::getSyncService, w.getStorage().links(), w::getConfig);
-                            TownySyncListener.register(this, w::getSyncService, w::getSpaceService);
-                            UpdateJoinListener.register(this, w::getUpdateService, w::isDegraded);
-                        } catch (Throwable t) {
-                            getLogger().warning("Failed to register listeners: " + t.getMessage());
-                        }
-                    }
-                },
+                this::registerListeners,
                 getPluginMeta().getVersion()
         );
 
@@ -95,12 +87,38 @@ public final class DiscordTownyPlugin extends JavaPlugin {
         wiring.start();
     }
 
+    void registerListeners(DiscordTownyWiring w) {
+        if (w != null && !w.isDegraded() && w.getStorage() != null) {
+            try {
+                if (syncListenersRegistered.compareAndSet(false, true)) {
+                    PlayerJoinSyncListener.register(this, w::getSyncService, w.getStorage().links(), w::getConfig);
+                    TownySyncListener.register(this, w::getSyncService, w::getSpaceService);
+                }
+                if (updateListenerRegistered.compareAndSet(false, true)) {
+                    UpdateJoinListener.register(this, w::getUpdateService, w::isDegraded);
+                }
+            } catch (Throwable t) {
+                getLogger().warning("Failed to register listeners: " + t.getMessage());
+            }
+        }
+    }
+
     @Override
     public void onDisable() {
         if (wiring != null) {
             wiring.stop();
             wiring = null;
         }
+        syncListenersRegistered.set(false);
+        updateListenerRegistered.set(false);
+    }
+
+    boolean isUpdateListenerRegistered() {
+        return updateListenerRegistered.get();
+    }
+
+    boolean isSyncListenersRegistered() {
+        return syncListenersRegistered.get();
     }
 
     public void reloadPlugin() {

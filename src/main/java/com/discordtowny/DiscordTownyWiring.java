@@ -327,7 +327,7 @@ public final class DiscordTownyWiring {
         dispatchPostStart();
     }
 
-    private void dispatchPostStart() {
+    private void dispatchPostStart(boolean startup) {
         Runnable returnAction = () -> {
             synchronized (this) {
                 if (stopped) {
@@ -340,7 +340,9 @@ public final class DiscordTownyWiring {
                         safeLog(Level.SEVERE, "Failed to register components: " + t.getMessage());
                     }
                 }
-                safeLog(Level.INFO, "DiscordTowny " + version + " started.");
+                if (startup) {
+                    safeLog(Level.INFO, "DiscordTowny " + version + " started.");
+                }
             }
         };
 
@@ -353,6 +355,10 @@ public final class DiscordTownyWiring {
         } else {
             returnAction.run();
         }
+    }
+
+    private void dispatchPostStart() {
+        dispatchPostStart(true);
     }
 
     public synchronized void stop() {
@@ -443,6 +449,7 @@ public final class DiscordTownyWiring {
     }
 
     public synchronized void reload() {
+        boolean wasDegraded = this.degraded;
         if (configLoader != null) {
             PluginConfig oldConfig = this.config;
             PluginConfig newConfig;
@@ -488,22 +495,27 @@ public final class DiscordTownyWiring {
             this.messages = currentMessages;
             this.consoleMessages = EnglishMessages.bundled();
 
-            // Attempt recovery from degraded mode if storage was uninitialized
-            if (degraded && storage == null) {
-                try {
-                    storage = new HikariStorage(newConfig.database(), logger, dataFolder);
-                    storage.initialize();
-                    degraded = false;
-                    safeLog(Level.INFO, "Recovered from degraded mode: database connection established.");
-                } catch (RuntimeException e) {
-                    safeLog(Level.SEVERE, "Database initialization failed during reload: " + e.getMessage());
-                    if (storage != null) {
-                        try {
-                            storage.close();
-                        } catch (Throwable ignored) {}
-                        storage = null;
+            // Attempt recovery from degraded mode
+            if (degraded) {
+                if (storage == null) {
+                    try {
+                        storage = new HikariStorage(newConfig.database(), logger, dataFolder);
+                        storage.initialize();
+                        degraded = false;
+                        safeLog(Level.INFO, "Recovered from degraded mode: database connection established.");
+                    } catch (RuntimeException e) {
+                        safeLog(Level.SEVERE, "Database initialization failed during reload: " + e.getMessage());
+                        if (storage != null) {
+                            try {
+                                storage.close();
+                            } catch (Throwable ignored) {}
+                            storage = null;
+                        }
+                        degraded = true;
                     }
-                    degraded = true;
+                } else {
+                    degraded = false;
+                    safeLog(Level.INFO, "Recovered from degraded mode: storage available.");
                 }
             }
 
@@ -622,6 +634,10 @@ public final class DiscordTownyWiring {
                 } catch (Throwable t) {
                     safeLog(Level.WARNING, "Failed to re-register Discord slash commands during reload: " + t.getMessage());
                 }
+
+                if (wasDegraded) {
+                    dispatchPostStart(false);
+                }
             }
 
             safeLog(Level.INFO, "Configuration and messages reloaded.");
@@ -738,9 +754,6 @@ public final class DiscordTownyWiring {
     }
 
     // Package-private test setters for testing shutdown after failed startup
-    void setUpdateServiceForTest(UpdateService updateService) {
-        this.updateService = updateService;
-    }
     void setPeriodicSyncJobForTest(PeriodicSyncJob job) {
         this.periodicSyncJob = job;
     }

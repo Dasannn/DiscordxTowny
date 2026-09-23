@@ -6034,4 +6034,91 @@ class DefaultUpdateServiceTest {
         assertEquals("1.10.0", service.getAvailableUpdate().get().version());
         assertEquals(validHex.toLowerCase(Locale.ROOT), service.getAvailableUpdate().get().sha256().toLowerCase(Locale.ROOT));
     }
+
+    @Test
+    @DisplayName("F2: stagedUpdatePending is seeded from disk on startup and reflected in notifyAdminOnJoin")
+    void stagedUpdatePending_seededFromDiskAtStartupAndReflectedInNotifyAdminOnJoin(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+
+        // Service 1: empty update folder -> staged state is false
+        DefaultUpdateService service1 = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+        List<String> messages1 = new ArrayList<>();
+        service1.notifyAdminOnJoin(messages1::add);
+        assertTrue(messages1.isEmpty(), "Initially no notice when no staged jar exists");
+        assertFalse(service1.isUpdatePending());
+
+        // Now create a staged jar on disk before Service 2 starts
+        Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
+        Files.writeString(stagedJar, "STAGED_JAR_CONTENT");
+
+        // Service 2: seeded at startup off server thread
+        DefaultUpdateService service2 = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+        List<String> messages2 = new ArrayList<>();
+        service2.notifyAdminOnJoin(messages2::add);
+        assertEquals(1, messages2.size(), "Staged jar on disk seeds stagedUpdatePending to true during initialization");
+        assertTrue(messages2.get(0).toLowerCase(Locale.ROOT).contains("downloaded")
+                || messages2.get(0).toLowerCase(Locale.ROOT).contains("descargada"));
+
+        // Calling isUpdatePending still checks disk and keeps cache consistent
+        assertTrue(service2.isUpdatePending());
+    }
+
+    @Test
+    @DisplayName("F2: notifyAdminOnJoin consumes in-memory staged state and does not call isUpdatePending")
+    void notifyAdminOnJoin_consumesCachedStagedStateWithoutDiskAccess(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+
+        // Write a real staged jar so constructor seeds stagedUpdatePending to true
+        Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
+        Files.writeString(stagedJar, "STAGED_JAR_CONTENT");
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+
+        // Delete the staged jar from disk before calling notifyAdminOnJoin.
+        // If notifyAdminOnJoin checked disk or called isUpdatePending(), it would find nothing.
+        // Reading strictly from cached in-memory state means the notice is still delivered.
+        Files.delete(stagedJar);
+        assertFalse(Files.exists(stagedJar), "Staged jar must no longer exist on disk");
+
+        List<String> messagesSent = new ArrayList<>();
+        assertDoesNotThrow(() -> service.notifyAdminOnJoin(messagesSent::add));
+        assertEquals(1, messagesSent.size(), "Downloaded update notice delivered to consumer from cached in-memory state");
+        assertTrue(messagesSent.get(0).toLowerCase(Locale.ROOT).contains("downloaded")
+                || messagesSent.get(0).toLowerCase(Locale.ROOT).contains("descargada"));
+
+        // Now isUpdatePending is called explicitly; it probes disk, sees jar is gone, and syncs cache
+        assertFalse(service.isUpdatePending(), "isUpdatePending probes disk and observes jar was deleted");
+
+        // Subsequent notifyAdminOnJoin reflects the synced cache
+        List<String> subsequentMessages = new ArrayList<>();
+        service.notifyAdminOnJoin(subsequentMessages::add);
+        assertTrue(subsequentMessages.isEmpty(), "After isUpdatePending syncs cache to false, no notice is sent");
+    }
 }

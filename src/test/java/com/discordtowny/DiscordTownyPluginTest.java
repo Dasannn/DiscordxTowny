@@ -20,7 +20,9 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -553,5 +555,43 @@ class DiscordTownyPluginTest {
         assertEquals(oldDb, wiring.getConfig().database(), "Wiring config must NOT be updated when reload fails");
         verify(gateway, never()).updateConfig(any());
         verify(gateway, never()).registerSlashCommands(any(), any(), any(), any());
+    }
+
+    @Test
+    void reloadAfterDegradedStartRecoversAndDispatchesPostStartOnce(@TempDir Path tempFolder) throws Exception {
+        AtomicInteger postStartCount = new AtomicInteger(0);
+        Consumer<DiscordTownyWiring> postStartAction = w -> postStartCount.incrementAndGet();
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(
+                tempFolder, tempFolder.resolve("update"), Logger.getLogger("test"), Runnable::run,
+                (t, i) -> () -> {}, () -> {}, postStartAction, "1.0.0"
+        );
+
+        // 1. Degraded start: empty folder causes ConfigException, starting degraded
+        wiring.start();
+        assertEquals(1, postStartCount.get(), "Initial degraded start calls postStartAction");
+
+        // 2. Recovery reload
+        Storage mockStorage = mock(Storage.class);
+        when(mockStorage.spaces()).thenReturn(mock(com.discordtowny.storage.SpaceRepository.class));
+        when(mockStorage.settings()).thenReturn(mock(com.discordtowny.storage.SettingsRepository.class));
+        when(mockStorage.links()).thenReturn(mock(com.discordtowny.storage.LinkRepository.class));
+        wiring.setStorageForTest(mockStorage);
+
+        PluginConfig.Database db = new PluginConfig.Database(
+                PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db.sqlite", "", "", "dt_", 1, 1, Duration.ofSeconds(5));
+        PluginConfig validConfig = createTestConfig(new PluginConfig.Discord("token", "guild", Optional.empty()), db);
+        wiring.setConfigForTest(validConfig);
+        YamlConfigLoader configLoader = mock(YamlConfigLoader.class);
+        when(configLoader.load()).thenReturn(validConfig);
+        when(configLoader.messages()).thenReturn(mock(com.discordtowny.config.Messages.class));
+        wiring.setConfigLoaderForTest(configLoader);
+
+        wiring.reload();
+        assertEquals(2, postStartCount.get(), "PostStartAction dispatched upon recovery in reload");
+
+        // 3. Second reload: plugin was already not degraded
+        wiring.reload();
+        assertEquals(2, postStartCount.get(), "Second reload must NOT dispatch postStartAction again");
     }
 }

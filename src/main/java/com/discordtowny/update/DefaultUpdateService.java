@@ -269,6 +269,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private final Set<String> consoleNotifiedVersions = ConcurrentHashMap.newKeySet();
     private final Set<String> logChannelNotifiedVersions = ConcurrentHashMap.newKeySet();
     private final Set<String> downloadNotifiedVersions = ConcurrentHashMap.newKeySet();
+    // Staged update indicator cached in memory for zero-I/O join notices (F2)
+    private final AtomicBoolean stagedUpdatePending = new AtomicBoolean(false);
 
     private ScheduledFuture<?> periodicTask = null;
 
@@ -388,6 +390,18 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         this.ownsScheduler = ownsScheduler;
         this.maxDownloadBytes = maxDownloadBytes > 0 ? maxDownloadBytes : DEFAULT_MAX_DOWNLOAD_BYTES;
         this.requestTimeout = requestTimeout != null ? requestTimeout : DEFAULT_TIMEOUT;
+
+        // Seed cached staged update state once during initialisation off the server thread (F2)
+        this.stagedUpdatePending.set(probeDiskForStagedUpdate());
+    }
+
+    private boolean probeDiskForStagedUpdate() {
+        try {
+            Path target = updateFolder.resolve(targetJarName);
+            return Files.isRegularFile(target) && Files.size(target) > 0;
+        } catch (IOException | SecurityException e) {
+            return false;
+        }
     }
 
     private boolean isDestinationActiveJar(Path destination) {
@@ -489,8 +503,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     public boolean isUpdatePending() {
         try {
             Path target = updateFolder.resolve(targetJarName);
-            return Files.isRegularFile(target) && Files.size(target) > 0;
-        } catch (IOException e) {
+            boolean exists = Files.isRegularFile(target) && Files.size(target) > 0;
+            stagedUpdatePending.set(exists);
+            return exists;
+        } catch (IOException | SecurityException e) {
+            stagedUpdatePending.set(false);
             return false;
         }
     }
@@ -726,7 +743,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         CheckResult lastResult = getLastCheckResult();
         boolean checkFailed = lastResult.status() == CheckStatus.CHECK_FAILED;
         Release available = lastResult.release().orElse(null);
-        if (isUpdatePending()) {
+        if (stagedUpdatePending.get()) {
             String ver = available != null ? available.version() : "new";
             messageSender.accept(msgs.plain("updates.downloaded", Map.of("latest", ver)));
             if (checkFailed) {
@@ -1722,6 +1739,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     }
 
                     publishExecutable(tempFile, destination);
+                    stagedUpdatePending.set(true);
                     tempFile = null; // Successfully published
                 }
 
@@ -1807,6 +1825,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     moveError.addSuppressed(restoreError);
                 }
             }
+            stagedUpdatePending.set(probeDiskForStagedUpdate());
             throw (moveError instanceof IOException ioe ? ioe : new IOException("Failed to publish executable", moveError));
         } finally {
             if (published && backup != null) {

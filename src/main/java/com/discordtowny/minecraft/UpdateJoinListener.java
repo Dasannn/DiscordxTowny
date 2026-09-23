@@ -41,7 +41,6 @@ public final class UpdateJoinListener implements Listener {
     public UpdateJoinListener(UpdateService updateService) {
         this(() -> updateService, () -> false);
     }
-
     public static void register(Plugin plugin, Supplier<UpdateService> updateServiceSupplier, BooleanSupplier degradedSupplier) {
         Objects.requireNonNull(plugin, "plugin cannot be null");
         Bukkit.getPluginManager().registerEvents(new UpdateJoinListener(updateServiceSupplier, degradedSupplier), plugin);
@@ -71,8 +70,8 @@ public final class UpdateJoinListener implements Listener {
         }
         try {
             updateService.notifyAdminOnJoin(player::sendMessage);
-        } catch (Throwable t) {
-            LOGGER.log(Level.FINE, "Failed to notify admin on join", t);
+        } catch (Exception e) {
+            LOGGER.log(Level.WARNING, "Failed to notify admin " + player.getName() + " (" + player.getUniqueId() + ") on join: " + e.getMessage(), e);
         }
     }
 }
