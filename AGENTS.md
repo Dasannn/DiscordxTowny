@@ -60,4 +60,4 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0-T24. Next: T25 join notice.
+See `docs/tasks.md`. Integrated: T0-T24. In progress: T25 admin join notice.

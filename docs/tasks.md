@@ -827,3 +827,46 @@ up to date.
 same guard as U+0085, but only U+0085 is exercised by a test. Flow mappings and
 anchors are refused rather than merged; an owner who uses either keeps a file
 that can never be upgraded, which was accepted deliberately and can be revisited.
+
+## T25 — The admin who joins is told the update exists
+
+- **Branch**: `fix/update-join-notice` · **Responsible**: agent · **Status**: pending
+- **Zone**: `src/main/java/com/discordtowny/minecraft/PlayerJoinSyncListener.java`
+  and its tests, `src/main/java/com/discordtowny/DiscordTownyPlugin.java`, and the
+  `updates:` section of both catalogs if a message is missing. Do not change
+  `update/`: `notifyAdminOnJoin` already does the right thing and is covered.
+
+**Why**
+
+`DefaultUpdateService.notifyAdminOnJoin` exists, is tested five times, and is
+called by nothing but those tests. Production never invokes it: the only join
+listener registered at `DiscordTownyPlugin.java:65` is `PlayerJoinSyncListener`,
+which dispatches account synchronization and nothing else.
+
+So the notice `spec.md` §10.1 promises — "to administrators upon joining the
+server" — has never once been delivered on a running server. Of the three notices
+that section requires, console at startup and the Discord log channel work; this
+one is a method waiting for a caller.
+
+**What has to be true**
+
+- A player who joins holding `discordtowny.admin` receives the update notice, once
+  per join, when the service has something to say.
+- A player without that permission receives nothing, ever.
+- The notice is the one `notifyAdminOnJoin` already composes — available, breaking,
+  downloaded, and the failure line when the last check failed. Do not write a
+  second copy of that text.
+- `updates.notify-admins-on-join: false` in the config suppresses it, as
+  `shouldNotifyAdminsOnJoin` already says.
+- Nothing is sent on the main thread that can block it: the service answers from
+  its last cached result, so no check is started by a join.
+- A degraded plugin, a null update service, or a service that has never completed a
+  check sends nothing and logs nothing at warning level. Joining a broken server
+  must not spam its admins.
+
+**Notes for whoever takes it**
+
+The wiring point is the same lambda that registers the sync listeners. Decide
+whether the notice belongs in `PlayerJoinSyncListener` or in a listener of its own
+and say why in the report; a listener whose name says "sync" growing an update
+notice is the kind of thing the next reader trips over.
