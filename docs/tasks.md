@@ -933,3 +933,57 @@ wins and the second fails with "Interaction has already been acknowledged".
 
 Check how each class holds its configuration before assuming a field is current.
 If it is a snapshot, say so in the report rather than reaching outside the zone.
+
+## T27 — A channel deleted by hand is not a reason to retry forever
+
+- **Branch**: `fix/archive-missing-channel` · **Responsible**: agent · **Status**: pending
+- **Zone**: `src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java`
+  and its tests, plus `src/main/java/com/discordtowny/sync/DefaultSyncService.java`
+  and its tests if the loop needs closing from that side too.
+
+**Why**
+
+Found on the live server on 2026-09-23. Every thirty minutes, the Discord log
+channel receives the same line:
+
+```
+space_archive testeo — Required text channel 1551261398644957207 not found in
+Discord for town b1bb1b69-1fa5-4eae-9309-d855c22b9d3a
+```
+
+The channel was deleted by hand after the town was archived. The loop:
+
+1. The periodic sync sees a space whose town should be archived and whose stored
+   state is not `ARCHIVED`.
+2. It enqueues the archive operation.
+3. `JdaGuildOperationExecutor` requires the stored text channel to exist
+   (`JdaGuildOperationExecutor.java:232-242`), does not find it, and returns
+   `permanentFailure`.
+4. The failure marks the space `INCONSISTENT` — never `ARCHIVED`.
+5. Thirty minutes later, step 1 sees it again. Forever.
+
+**What has to be true**
+
+- Archiving a space whose channel no longer exists **succeeds**. Deleting the
+  channel by hand achieves what archiving intended; there is nothing left to do.
+  The stored state becomes `ARCHIVED`, the loop ends, and the operator is told once
+  that the channel was already gone — not once every thirty minutes.
+- The same holds for a missing voice channel, a missing category and a missing
+  role during an archive: absence is the desired end state.
+- **This applies to archiving only.** Creating a space, granting roles or syncing
+  members must keep failing when something they need is missing: there the absence
+  is a real problem and the operator has to know.
+- A space whose channel is missing must not be left `INCONSISTENT` by the archive
+  path. `INCONSISTENT` means "a human should look at this"; a channel deleted on
+  purpose after archiving is not that.
+- Nothing is created to replace what was deleted. Archiving never re-creates a
+  channel, a category or a role.
+
+**Notes for whoever takes it**
+
+Read `markSpaceInconsistent` (around line 1039) and every caller of
+`onOperationFailed` before deciding where the change belongs. The fix may be as
+small as classifying a missing-channel outcome during archive as success, but
+check what else reads that outcome first: the audit log, the Discord log channel,
+and the sync report all consume it, and a success that lies about what happened is
+worse than the loop.
