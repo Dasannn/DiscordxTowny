@@ -831,10 +831,14 @@ that can never be upgraded, which was accepted deliberately and can be revisited
 ## T25 — The admin who joins is told the update exists
 
 - **Branch**: `fix/update-join-notice` · **Responsible**: agent · **Status**: pending
-- **Zone**: `src/main/java/com/discordtowny/minecraft/PlayerJoinSyncListener.java`
-  and its tests, `src/main/java/com/discordtowny/DiscordTownyPlugin.java`, and the
-  `updates:` section of both catalogs if a message is missing. Do not change
-  `update/`: `notifyAdminOnJoin` already does the right thing and is covered.
+- **Zone**: `src/main/java/com/discordtowny/minecraft/` join listeners and their
+  tests, `src/main/java/com/discordtowny/DiscordTownyPlugin.java`,
+  `DiscordTownyWiring.java`, `src/main/java/com/discordtowny/update/`, and the
+  `updates:` section of both catalogs if a message is missing.
+- **Zone widened after the first review**: it started at the listener only, on the
+  assumption that `notifyAdminOnJoin` already did the right thing. It does not:
+  it reaches the filesystem, which is harmless from a command and not harmless on
+  the join thread. A defect the task exposes is inside the task.
 
 **Why**
 
