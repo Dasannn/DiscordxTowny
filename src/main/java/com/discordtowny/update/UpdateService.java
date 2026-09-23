@@ -19,7 +19,11 @@ import java.util.concurrent.CompletableFuture;
  */
 public interface UpdateService {
 
-    CompletableFuture<Optional<Release>> checkForUpdate();
+    CompletableFuture<CheckResult> checkForUpdate();
+
+    default CompletableFuture<Optional<Release>> checkForUpdateOptional() {
+        return checkForUpdate().thenApply(CheckResult::release);
+    }
 
     /**
      * Downloads the release, verifies its SHA-256 against the published checksum,
@@ -54,6 +58,60 @@ public interface UpdateService {
     boolean isAwaitingConfirmation();
 
     /**
+     * Returns true if the most recent update check failed to complete.
+     */
+    default boolean isLastCheckFailed() {
+        return false;
+    }
+
+    /**
+     * Returns the failure reason of the most recent update check, if it failed.
+     */
+    default Optional<String> getLastCheckError() {
+        return Optional.empty();
+    }
+
+    /**
+     * Distinct status outcomes for an update check.
+     */
+    enum CheckStatus {
+        UP_TO_DATE,
+        UPDATE_AVAILABLE,
+        CHECK_FAILED,
+        NOT_CHECKED
+    }
+
+    /**
+     * Returns true if at least one update check has completed (successfully or with failure).
+     */
+    default boolean hasCheckedAtLeastOnce() {
+        return false;
+    }
+
+    /**
+     * Returns the outcome of the most recent update check as a coherent immutable record.
+     */
+    default CheckResult getLastCheckResult() {
+        if (isLastCheckFailed()) {
+            return CheckResult.checkFailed(getLastCheckError().orElse(null), getAvailableUpdate().orElse(null));
+        }
+        if (getAvailableUpdate().isPresent()) {
+            return CheckResult.updateAvailable(getAvailableUpdate().get());
+        }
+        if (!hasCheckedAtLeastOnce()) {
+            return CheckResult.notChecked(null);
+        }
+        return CheckResult.upToDate();
+    }
+
+    /**
+     * Returns the current status of update checking.
+     */
+    default CheckStatus checkStatus() {
+        return getLastCheckResult().status();
+    }
+
+    /**
      * Stops the periodic check and abandons any transfer in flight.
      *
      * <p>Part of the contract because the service owns a scheduler and a worker:
@@ -70,5 +128,51 @@ public interface UpdateService {
         NETWORK_ERROR,
         TOO_LARGE,
         IO_ERROR
+    }
+
+    record CheckResult(CheckStatus status, Optional<Release> release, Optional<String> error) {
+        public static CheckResult upToDate() {
+            return new CheckResult(CheckStatus.UP_TO_DATE, Optional.empty(), Optional.empty());
+        }
+
+        public static CheckResult updateAvailable(Release release) {
+            return new CheckResult(CheckStatus.UPDATE_AVAILABLE, Optional.of(release), Optional.empty());
+        }
+
+        public static CheckResult checkFailed(String error) {
+            return new CheckResult(CheckStatus.CHECK_FAILED, Optional.empty(), Optional.ofNullable(error));
+        }
+
+        public static CheckResult checkFailed(String error, Release cachedRelease) {
+            return new CheckResult(CheckStatus.CHECK_FAILED, Optional.ofNullable(cachedRelease), Optional.ofNullable(error));
+        }
+
+        public static CheckResult notChecked(String reason) {
+            return new CheckResult(CheckStatus.NOT_CHECKED, Optional.empty(), Optional.ofNullable(reason));
+        }
+
+        public boolean isSuccess() {
+            return status == CheckStatus.UP_TO_DATE || status == CheckStatus.UPDATE_AVAILABLE;
+        }
+
+        public boolean isFailed() {
+            return status == CheckStatus.CHECK_FAILED;
+        }
+
+        public boolean isNotChecked() {
+            return status == CheckStatus.NOT_CHECKED;
+        }
+
+        public Optional<Release> getRelease() {
+            return release;
+        }
+
+        public Optional<String> getError() {
+            return error;
+        }
+
+        public CheckStatus getStatus() {
+            return status;
+        }
     }
 }

@@ -5,7 +5,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.regex.Pattern;
+import java.util.Set;
 
 /**
  * Enforces the official source policy for all updater network requests and downloads.
@@ -24,11 +24,23 @@ final class UpdateSourcePolicy {
     public static final String OFFICIAL_OWNER = DefaultUpdateService.REPOSITORY_OWNER;
     public static final String OFFICIAL_REPO = DefaultUpdateService.REPOSITORY_NAME;
 
-    private static final Pattern GITHUB_USER_CONTENT_PATTERN = Pattern.compile(
-            "^[a-z0-9-]+\\.githubusercontent\\.com$"
+    public static final Set<String> ALLOWED_DELIVERY_HOSTS = Set.of(
+            "release-assets.githubusercontent.com",
+            "objects.githubusercontent.com"
     );
 
     private UpdateSourcePolicy() {}
+
+    /**
+     * Checks if a destination URI is permitted for an initial request (metadata or initial asset download).
+     * Must strictly target the official repository on api.github.com or github.com.
+     */
+    public static boolean isAllowedInitialUri(URI uri) {
+        if (!isBasicHttpsValid(uri)) {
+            return false;
+        }
+        return isAllowedApiUri(uri) || isAllowedAssetUri(uri);
+    }
 
     /**
      * Checks if a destination URI is permitted for metadata, asset download, or redirect hops.
@@ -37,7 +49,7 @@ final class UpdateSourcePolicy {
         if (uri == null) {
             return false;
         }
-        return isAllowedApiUri(uri) || isAllowedAssetUri(uri) || isAllowedDeliveryRedirectUri(uri);
+        return isAllowedInitialUri(uri);
     }
 
     /**
@@ -51,12 +63,28 @@ final class UpdateSourcePolicy {
     }
 
     /**
+     * Validates that an initial destination URI is permitted, throwing {@link IOException} if outside policy.
+     */
+    public static void validateInitialUri(URI uri) throws IOException {
+        if (!isAllowedInitialUri(uri)) {
+            throw new IOException("Untrusted destination rejected by official source policy: " + uri);
+        }
+    }
+
+    /**
+     * Validates that a redirect hop destination URI is permitted, throwing {@link IOException} if outside policy.
+     */
+    public static void validateRedirectDestination(URI uri) throws IOException {
+        if (!isAllowedRedirectDestination(uri)) {
+            throw new IOException("Untrusted destination rejected by official source policy: " + uri);
+        }
+    }
+
+    /**
      * Validates that the URI is permitted, throwing {@link IOException} if outside policy.
      */
     public static void validateDestination(URI uri) throws IOException {
-        if (!isAllowedDestination(uri)) {
-            throw new IOException("Untrusted destination rejected by official source policy: " + uri);
-        }
+        validateInitialUri(uri);
     }
 
     /**
@@ -102,34 +130,30 @@ final class UpdateSourcePolicy {
     }
 
     /**
-     * Checks if the URI is a valid official GitHub asset delivery redirect host and path.
-     * The path must identify the official repository after decoding and normalization.
+     * Checks if the URI is a permitted redirect destination hop from an authorized origin.
+     * Allowed hops include official API URIs, official release asset URIs on github.com,
+     * and exact known GitHub delivery hosts.
+     */
+    public static boolean isAllowedRedirectDestination(URI uri) {
+        if (!isBasicHttpsValid(uri)) {
+            return false;
+        }
+        return isAllowedApiUri(uri) || isAllowedAssetUri(uri) || isAllowedDeliveryRedirectUri(uri);
+    }
+
+    /**
+     * Checks if the URI is a valid official GitHub asset delivery redirect host.
+     * Host must exactly match one of the known delivery hosts.
      */
     public static boolean isAllowedDeliveryRedirectUri(URI uri) {
         if (!isBasicHttpsValid(uri)) {
             return false;
         }
-        String host = uri.getHost().toLowerCase(Locale.ROOT);
-        List<String> segments = decodeAndNormalizeSegments(uri);
-        if (segments == null || segments.size() < 2) {
+        String host = uri.getHost();
+        if (host == null) {
             return false;
         }
-
-        boolean identifiesRepo = OFFICIAL_OWNER.equalsIgnoreCase(segments.get(0))
-                && OFFICIAL_REPO.equalsIgnoreCase(segments.get(1));
-        if (!identifiesRepo && segments.size() >= 3) {
-            identifiesRepo = "repos".equals(segments.get(0))
-                    && OFFICIAL_OWNER.equalsIgnoreCase(segments.get(1))
-                    && OFFICIAL_REPO.equalsIgnoreCase(segments.get(2));
-        }
-        if (!identifiesRepo) {
-            return false;
-        }
-
-        if ("github.com".equals(host)) {
-            return true;
-        }
-        return GITHUB_USER_CONTENT_PATTERN.matcher(host).matches();
+        return ALLOWED_DELIVERY_HOSTS.contains(host.toLowerCase(Locale.ROOT));
     }
 
     private static List<String> decodeAndNormalizeSegments(URI uri) {

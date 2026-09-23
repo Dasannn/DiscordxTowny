@@ -42,7 +42,7 @@ public final class JdkHttpTransport implements HttpTransport {
 
     @Override
     public HttpResponse executeGet(URI uri, Map<String, String> headers, Duration timeout) throws IOException, InterruptedException {
-        UpdateSourcePolicy.validateDestination(uri);
+        UpdateSourcePolicy.validateInitialUri(uri);
 
         Duration effectiveTimeout = timeout != null ? timeout : Duration.ofSeconds(15);
         Instant deadline = Instant.now().plus(effectiveTimeout);
@@ -51,7 +51,7 @@ public final class JdkHttpTransport implements HttpTransport {
         int redirectCount = 0;
 
         while (true) {
-            UpdateSourcePolicy.validateDestination(currentUri);
+            UpdateSourcePolicy.validateRedirectDestination(currentUri);
 
             Duration remaining = Duration.between(Instant.now(), deadline);
             if (remaining.isNegative() || remaining.isZero()) {
@@ -75,7 +75,7 @@ public final class JdkHttpTransport implements HttpTransport {
             );
 
             // In case a custom HttpClient followed redirects internally, validate final URI
-            UpdateSourcePolicy.validateDestination(response.uri());
+            UpdateSourcePolicy.validateRedirectDestination(response.uri());
 
             int status = response.statusCode();
             if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
@@ -85,8 +85,13 @@ public final class JdkHttpTransport implements HttpTransport {
                     if (++redirectCount > MAX_REDIRECTS) {
                         throw new IOException("Too many redirects (limit " + MAX_REDIRECTS + ") while contacting " + uri);
                     }
-                    URI nextUri = currentUri.resolve(location);
-                    UpdateSourcePolicy.validateDestination(nextUri);
+                    URI nextUri;
+                    try {
+                        nextUri = currentUri.resolve(location);
+                    } catch (IllegalArgumentException e) {
+                        throw new IOException("Invalid redirect Location header from " + currentUri + ": " + location, e);
+                    }
+                    UpdateSourcePolicy.validateRedirectDestination(nextUri);
                     currentUri = nextUri;
                     continue;
                 }
