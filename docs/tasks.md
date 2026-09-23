@@ -755,7 +755,8 @@ that section. A file with a syntax error is left byte-for-byte unchanged.
 
 ## T24 — The updater can reach the release it found
 
-- **Branch**: `fix/updater-delivery-host` · **Responsible**: agent · **Status**: pending
+- **Branch**: `fix/updater-delivery-host` · **Responsible**: agent · **Status**: integrated (sixteen rounds; reviewed eleven times)
+- **Follow-up F22**: a body line carrying a `sha256` keyword whose filename is not an artifact of the release — `invalid  sha256/other.zip` with `other.zip` unpublished — leaves no invalid outcome, so it fails to veto. It cannot authorize an unverified install: a release is accepted only when a valid checksum is bound to our jar. The keyword arm stays conjunctive with the artifact gate on purpose; making it unconditional brings back the false refusals of F19, since `Uses  sha256 checksums` has the same two fields.
 - **Zone**: `src/main/java/com/discordtowny/update/`, its tests, the `updates:`
   section of both catalogs, and the `/dt admin update` subcommands in
   `MinecraftCommands.java` together with their tests. The command is in the zone

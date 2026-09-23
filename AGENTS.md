@@ -60,4 +60,4 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0-T23. In progress: T24 updater delivery host.
+See `docs/tasks.md`. Integrated: T0-T24. Next: T25 join notice.
