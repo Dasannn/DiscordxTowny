@@ -1187,6 +1187,101 @@ Updated and added tests in `src/test/java/com/discordtowny/update/DefaultUpdateS
 4. **`checksumAssetWithLeadingUtf8BomOnBsdDeclarationLineIsAccepted` (F16)**:
    - Verifies that a dedicated checksum file beginning with a UTF-8 BOM (`\uFEFF`) on a BSD declaration line (`\uFEFFSHA256 (DiscordTowny-1.10.0.jar) = <hex>`) is parsed cleanly, passes whole-line matching, and authorizes the release (`UPDATE_AVAILABLE`).
 
+---
+
+## 17. Round 15: Artifact Name Shape Verification and Universal Leading BOM Normalization
+
+### 17.1 F17: Filename Shape Verification (Shape Plus Membership)
+
+#### The Danger of Membership Alone and Why False Refusal Is the Worse Failure
+In Round 14, `isSupportedSumFilename` was amended so that any name present in `releaseAssetNames` opened a sha256sum declaration. However, asset membership alone is insufficient evidence that a two-field body line was intended as a checksum declaration.
+
+Consider a release that publishes an asset literally named `notes` (such as a plain text release notes file or documentation asset). An ordinary body line such as:
+```text
+Release  notes
+```
+matches `SUM_DECL_PATTERN` because `Release` and `notes` are separated by two spaces. Under Round 14's gate:
+1. `file` is `notes`.
+2. `notes` matches an asset in `releaseAssetNames`.
+3. `candidateToken` is `Release`.
+4. `validateDeclaration` evaluates `Release` as a candidate SHA-256 digest, rejects it because it is not 64 hexadecimal digits, and returns `ChecksumOutcome.InvalidOrAmbiguous`.
+5. The entire release check is aborted with `CHECK_FAILED`, even when a completely valid dedicated checksum (e.g. `DiscordTowny-1.10.0.jar.sha256`) is published alongside the release. The same defect occurs with directory prefixes such as `docs/notes` because both sides are reduced to basenames.
+
+**Why a false refusal is the worse failure**:
+- A false acceptance (the case Round 14 addressed) occurs when a broken checksum declaration for a secondary artifact is ignored as prose, but the release still possesses a valid checksum for the target jar. In that situation, the server still downloads and verifies the correct binary against an authentic hash.
+- A **false refusal**, by contrast, causes a correctly published, authentic, and secure update to become completely unreachable to server administrators. Servers miss critical security patches or bug fixes because everyday English prose in the release description collided with an asset name. Making a valid update unavailable is fundamentally worse than tolerating incidental prose.
+
+#### Resolution: The Shape of a Filename
+To distinguish authentic artifact checksum declarations from ordinary prose collisions without resorting to arbitrary keyword blocklists (such as hardcoding the word `Release`), the gate now verifies the **structural shape** of the candidate filename in addition to its asset membership.
+
+Specifically, in `DefaultUpdateService.isSupportedSumFilename`, the normalized filename must possess a **valid file extension**:
+- A dot (`.`) followed by one to eight alphanumeric characters (`[a-zA-Z0-9]{1,8}`) at the end of the filename (`$`).
+- At least one character before the dot (`^.+`).
+
+Formally implemented via:
+```java
+private static final Pattern FILENAME_WITH_EXTENSION = Pattern.compile("^.+\\.[a-zA-Z0-9]{1,8}$");
+
+static boolean hasFileExtension(String filename) {
+    if (filename == null || filename.isBlank()) {
+        return false;
+    }
+    return FILENAME_WITH_EXTENSION.matcher(filename.trim()).matches();
+}
+```
+
+Once the filename satisfies this shape requirement, it must, as before, either:
+1. Match `targetJarName` (case-insensitively);
+2. End in `.jar`; or
+3. Match a published asset name in `releaseAssetNames`.
+
+#### Effects of the Shape Gate
+- `DiscordTowny-1.10.0.zip` published as an asset: has extension `.zip` (3 alphanumeric characters, preceded by filename chars), matches `releaseAssetNames` -> recognized as an artifact declaration. A malformed digest beside it (`invalid  DiscordTowny-1.10.0.zip`) immediately refuses the release (`CHECK_FAILED`). F14 stays closed.
+- `notes` published as an asset: no extension -> rejected by the shape gate and stays prose. The line `Release  notes` is not treated as a declaration, and a valid dedicated checksum succeeds (`UPDATE_AVAILABLE`).
+- `docs/notes`: normalized basename is `notes`, which has no extension -> stays prose.
+- `DiscordTowny-1.10.0.jar`: has extension `.jar`, matches target jar -> unchanged.
+- Purely structural: no specific English words (e.g. `Release`, `Version`, `Build`) are special-cased. The rule is strictly about the shape of a filename, preserving vocabulary independence.
+
+---
+
+### 17.2 F18: Universal Leading UTF-8 BOM Normalization (Release Body Coverage)
+
+#### Root Cause
+Round 14 introduced a leading UTF-8 Byte Order Mark (`\uFEFF`) strip for dedicated checksum asset content in `parseChecksumFileContent`. However, release descriptions edited in Windows environments or through certain webhooks/APIs also frequently begin with a UTF-8 BOM (`\uFEFF`).
+
+In `extractSha256FromBody`, no BOM strip was performed prior to line splitting. Consequently, a release body beginning with:
+```text
+\uFEFF<64 hex digest>  DiscordTowny-1.10.0.jar
+```
+carried the `\uFEFF` character directly into the candidate digest token. Because Java's `String.trim()` strips ASCII whitespace (`<= ' '`) and does not strip `\uFEFF`, the 65-character token failed `isValidSha256`. An otherwise valid sha256sum declaration in the body was rejected as a malformed checksum token, causing the release check to fail.
+
+#### Resolution
+`extractSha256FromBody` now mirrors `parseChecksumFileContent` by stripping a leading `\uFEFF` from the body text before splitting into lines:
+```java
+if (body.startsWith("\uFEFF")) {
+    body = body.substring(1);
+}
+```
+This ensures symmetric and uniform BOM handling across all checksum delivery surfaces (checksum files and release notes bodies).
+
+---
+
+### 17.3 Test Verification
+
+The following tests were added and verified in `src/test/java/com/discordtowny/update/DefaultUpdateServiceTest.java`:
+
+1. **`publishedAssetNamedNotesWithReleaseNotesProseBesideValidDedicatedChecksumSucceeds` (F17)**:
+   - Verifies that when an asset literally named `notes` is published in the release, the body line `Release  notes` is not treated as a checksum declaration, remains prose, and does not block release discovery when a valid dedicated checksum asset is present (`UPDATE_AVAILABLE`).
+2. **`releaseBodyWithDocsNotesBesideValidDedicatedChecksumSucceeds` (F17)**:
+   - Verifies that directory-prefixed prose lines like `Release  docs/notes` whose basename has no extension are treated as prose and do not block valid release discovery.
+3. **`hasFileExtensionRequiresAlphanumericExtensionWithCharactersBeforeDot` (F17)**:
+   - Unit tests covering the shape requirements for filename extensions: verifies acceptance of extensions like `.zip`, `.jar`, `.tar.gz`, `.12345678`, `.7z`, `.a.b`, and `.JAR`, and rejection of extensionless names (`notes`, `Release`), hidden files without stem (`.notes`), empty extensions (`file.`), extensions exceeding 8 alphanumeric characters (`file.123456789`), and non-alphanumeric extensions (`file.tar-gz`, `file.tar_gz`).
+4. **`sumLineForNonJarArtifactWithMalformedDigestIsTreatedAsProseAndDoesNotRefuseRelease` (F14 Maintained)**:
+   - Maintains the F14 inversion: when `DiscordTowny-1.10.0.zip` is published in `assets`, a malformed digest on its sum line strictly refuses the release (`CHECK_FAILED`), both beside a dedicated checksum asset and beside a valid body declaration.
+5. **`bodyWithLeadingUtf8BomFollowedByValidSumLineSucceedsAndBindsDigest` (F18)**:
+   - Verifies that a release body beginning with `\uFEFF` followed by a valid sha256sum line (`\uFEFF<64 hex>  DiscordTowny-1.10.0.jar`) is parsed cleanly, strips the BOM, binds the digest, and successfully reports `UPDATE_AVAILABLE`.
+
+
 
 
 

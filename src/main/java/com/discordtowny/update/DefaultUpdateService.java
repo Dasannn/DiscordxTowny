@@ -72,6 +72,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)");
     private static final Pattern JAR_NAME_PATTERN =
             Pattern.compile("(?i)\\b(\\S+\\.jar)\\b");
+    private static final Pattern FILENAME_WITH_EXTENSION =
+            Pattern.compile("^.+\\.[a-zA-Z0-9]{1,8}$");
 
     private enum DeclarationFormat {
         BSD,
@@ -106,12 +108,22 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return ABSORBED_DECL_PATTERN.matcher(file).find();
     }
 
+    static boolean hasFileExtension(String filename) {
+        if (filename == null || filename.isBlank()) {
+            return false;
+        }
+        return FILENAME_WITH_EXTENSION.matcher(filename.trim()).matches();
+    }
+
     private static boolean isSupportedSumFilename(String rawFile, String targetJarName, Set<String> releaseAssetNames) {
         if (rawFile == null || rawFile.isBlank()) {
             return false;
         }
         String norm = normalizeFilename(rawFile);
         if (norm == null || norm.isBlank()) {
+            return false;
+        }
+        if (!hasFileExtension(norm)) {
             return false;
         }
         if (norm.equalsIgnoreCase(targetJarName)) {
@@ -1324,6 +1336,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private ChecksumOutcome extractSha256FromBody(String body, String targetJarName, Set<String> releaseAssetNames) {
         if (body == null || body.isBlank()) {
             return new ChecksumOutcome.None();
+        }
+        if (body.startsWith("\uFEFF")) {
+            body = body.substring(1);
         }
 
         List<String> boundHashes = new ArrayList<>();

@@ -5459,4 +5459,209 @@ class DefaultUpdateServiceTest {
         assertEquals("1.10.0", service.getAvailableUpdate().get().version());
         assertEquals(validHex.toLowerCase(Locale.ROOT), service.getAvailableUpdate().get().sha256().toLowerCase(Locale.ROOT));
     }
+
+    @Test
+    @DisplayName("Published asset named 'notes' with body line 'Release  notes' beside valid dedicated checksum succeeds (F17)")
+    void publishedAssetNamedNotesWithReleaseNotesProseBesideValidDedicatedChecksumSucceeds() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String bodyText = "Release  notes";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "notes",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/notes"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String dedicatedAssetContent = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".sha256")) {
+                return new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(dedicatedAssetContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(),
+                    new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, result.status(),
+                "Ordinary prose 'Release  notes' must not be treated as a declaration even when 'notes' is a published asset");
+        assertFalse(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+        assertEquals(validHex.toLowerCase(Locale.ROOT), service.getAvailableUpdate().get().sha256().toLowerCase(Locale.ROOT));
+    }
+
+    @Test
+    @DisplayName("Release body with 'Release  docs/notes' beside valid dedicated checksum succeeds (F17)")
+    void releaseBodyWithDocsNotesBesideValidDedicatedChecksumSucceeds() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String bodyText = "Release  docs/notes";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    },
+                    {
+                      "name": "notes",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/notes"
+                    },
+                    {
+                      "name": "docs/notes",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/docs/notes"
+                    },
+                    {
+                      "name": "DiscordTowny-1.10.0.jar.sha256",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar.sha256"
+                    }
+                  ]
+                }
+                """.formatted(bodyText.replace("\"", "\\\""));
+
+        String dedicatedAssetContent = validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        HttpTransport transport = (uri, headers, timeout) -> {
+            if (uri.toString().endsWith(".sha256")) {
+                return new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(dedicatedAssetContent.getBytes(StandardCharsets.UTF_8)));
+            }
+            return new HttpTransport.HttpResponse(200, Map.of(),
+                    new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, result.status(),
+                "Ordinary prose 'Release  docs/notes' must not be treated as a declaration even when notes/docs/notes exists");
+        assertFalse(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+        assertEquals(validHex.toLowerCase(Locale.ROOT), service.getAvailableUpdate().get().sha256().toLowerCase(Locale.ROOT));
+    }
+
+    @Test
+    @DisplayName("Body whose first line is a BOM followed by a valid sum line succeeds and binds digest (F18)")
+    void bodyWithLeadingUtf8BomFollowedByValidSumLineSucceedsAndBindsDigest() {
+        String validHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        String bodyContent = "\uFEFF" + validHex + "  DiscordTowny-1.10.0.jar\n";
+
+        String releaseJson = """
+                {
+                  "tag_name": "v1.10.0",
+                  "body": "%s",
+                  "assets": [
+                    {
+                      "name": "DiscordTowny-1.10.0.jar",
+                      "browser_download_url": "https://github.com/Dasannn/DiscordxTowny/releases/download/v1.10.0/DiscordTowny-1.10.0.jar"
+                    }
+                  ]
+                }
+                """.formatted(bodyContent.replace("\n", "\\n"));
+
+        HttpTransport transport = (uri, headers, timeout) ->
+                new HttpTransport.HttpResponse(200, Map.of(),
+                        new ByteArrayInputStream(releaseJson.getBytes(StandardCharsets.UTF_8)));
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, false),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                transport,
+                testLogger,
+                auditEvents::add,
+                ForkJoinPool.commonPool(),
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(5)
+        );
+
+        UpdateService.CheckResult result = service.checkForUpdate().join();
+        assertEquals(UpdateService.CheckStatus.UPDATE_AVAILABLE, result.status(),
+                "Body whose first line is a BOM followed by a valid sum line must be accepted");
+        assertFalse(service.isLastCheckFailed());
+        assertTrue(service.getAvailableUpdate().isPresent());
+        assertEquals("1.10.0", service.getAvailableUpdate().get().version());
+        assertEquals(validHex.toLowerCase(Locale.ROOT), service.getAvailableUpdate().get().sha256().toLowerCase(Locale.ROOT));
+    }
+
+    @Test
+    @DisplayName("hasFileExtension requires a dot followed by 1 to 8 alphanumeric characters with chars before dot (F17)")
+    void hasFileExtensionRequiresAlphanumericExtensionWithCharactersBeforeDot() {
+        // Valid extensions
+        assertTrue(DefaultUpdateService.hasFileExtension("DiscordTowny-1.10.0.zip"));
+        assertTrue(DefaultUpdateService.hasFileExtension("DiscordTowny-1.10.0.jar"));
+        assertTrue(DefaultUpdateService.hasFileExtension("archive.tar.gz"));
+        assertTrue(DefaultUpdateService.hasFileExtension("file.12345678"));
+        assertTrue(DefaultUpdateService.hasFileExtension("file.7z"));
+        assertTrue(DefaultUpdateService.hasFileExtension("a.b"));
+        assertTrue(DefaultUpdateService.hasFileExtension("test.JAR"));
+
+        // Invalid: no extension or malformed
+        assertFalse(DefaultUpdateService.hasFileExtension("notes"));
+        assertFalse(DefaultUpdateService.hasFileExtension("Release"));
+        assertFalse(DefaultUpdateService.hasFileExtension("docs/notes"));
+        assertFalse(DefaultUpdateService.hasFileExtension(".notes"));
+        assertFalse(DefaultUpdateService.hasFileExtension("file."));
+        assertFalse(DefaultUpdateService.hasFileExtension("file.123456789"));
+        assertFalse(DefaultUpdateService.hasFileExtension("file.toolongext"));
+        assertFalse(DefaultUpdateService.hasFileExtension("file.tar-gz"));
+        assertFalse(DefaultUpdateService.hasFileExtension("file.tar_gz"));
+        assertFalse(DefaultUpdateService.hasFileExtension(""));
+        assertFalse(DefaultUpdateService.hasFileExtension("   "));
+        assertFalse(DefaultUpdateService.hasFileExtension(null));
+    }
 }
