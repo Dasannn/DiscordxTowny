@@ -879,8 +879,12 @@ notice is the kind of thing the next reader trips over.
 
 - **Branch**: `fix/guild-scoped-events` · **Responsible**: agent · **Status**: pending
 - **Zone**: `src/main/java/com/discordtowny/discord/TownySlashCommands.java`,
-  `src/main/java/com/discordtowny/discord/LinkSlashCommands.java`, their tests, and
-  the `discord:` section of both catalogs if a message is missing.
+  `src/main/java/com/discordtowny/discord/LinkSlashCommands.java`, their tests,
+  `src/test/java/com/discordtowny/DiscordTownyPluginTest.java`, and the `discord:`
+  section of both catalogs if a message is missing.
+- **Zone widened after round 1**: the plugin test builds interaction mocks that
+  never declared a guild, because nothing used to ask. The guard makes them direct
+  messages. A test the change invalidates is part of the change.
 
 **Why**
 
