@@ -8,6 +8,7 @@ import com.discordtowny.model.ResidentSnapshot;
 import com.discordtowny.model.TownSnapshot;
 import com.discordtowny.towny.TownyFacade;
 import com.discordtowny.towny.TownyReadException;
+import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
@@ -74,6 +75,7 @@ class TownySlashCommandsTest {
     private ReplyCallbackAction replyAction;
     private InteractionHook hook;
     private User user;
+    private Guild guild;
     @SuppressWarnings("rawtypes")
     private WebhookMessageEditAction editAction;
 
@@ -125,9 +127,12 @@ class TownySlashCommandsTest {
         replyAction = mock(ReplyCallbackAction.class);
         hook = mock(InteractionHook.class);
         user = mock(User.class);
+        guild = mock(Guild.class);
+        when(guild.getId()).thenReturn("guild");
         editAction = mock(WebhookMessageEditAction.class);
 
         when(event.getUser()).thenReturn(user);
+        when(event.getGuild()).thenReturn(guild);
         when(user.getId()).thenReturn(discordUserId);
 
         when(event.reply(anyString())).thenReturn(replyAction);
@@ -806,6 +811,7 @@ class TownySlashCommandsTest {
     void townlistInteractiveButtonUpdatesPage() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:townlist:2");
 
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -841,6 +847,7 @@ class TownySlashCommandsTest {
     void residentsInteractiveButtonUpdatesPage() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
 
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -876,6 +883,7 @@ class TownySlashCommandsTest {
     void residentsPaginationResolvesByUuidWhenTownIsRenamedBetweenClicks() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
 
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -914,6 +922,7 @@ class TownySlashCommandsTest {
     void residentsPaginationIdentifiesTownByUuidWhenOldNameIsReusedByDifferentTown() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         UUID originalTownUuid = UUID.randomUUID();
         when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + originalTownUuid);
 
@@ -973,6 +982,7 @@ class TownySlashCommandsTest {
 
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:townlist:2");
         ReplyCallbackAction btnReplyAction = mock(ReplyCallbackAction.class);
         when(btnEvent.reply(anyString())).thenReturn(btnReplyAction);
@@ -1007,6 +1017,7 @@ class TownySlashCommandsTest {
 
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
         ReplyCallbackAction btnReplyAction = mock(ReplyCallbackAction.class);
         when(btnEvent.reply(anyString())).thenReturn(btnReplyAction);
@@ -1025,6 +1036,7 @@ class TownySlashCommandsTest {
     void buttonInteractionOnCooldownIsRejectedWithoutInvokingTowny() {
         ButtonInteractionEvent firstEvent = mock(ButtonInteractionEvent.class);
         when(firstEvent.getUser()).thenReturn(user);
+        when(firstEvent.getGuild()).thenReturn(guild);
         when(firstEvent.getComponentId()).thenReturn("dt:townlist:2");
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
         when(firstEvent.deferEdit()).thenReturn(editCallback);
@@ -1044,6 +1056,7 @@ class TownySlashCommandsTest {
         // Second click immediately after by same user
         ButtonInteractionEvent secondEvent = mock(ButtonInteractionEvent.class);
         when(secondEvent.getUser()).thenReturn(user);
+        when(secondEvent.getGuild()).thenReturn(guild);
         when(secondEvent.getComponentId()).thenReturn("dt:townlist:3");
         ReplyCallbackAction btnReplyAction = mock(ReplyCallbackAction.class);
         when(secondEvent.reply(anyString())).thenReturn(btnReplyAction);
@@ -1143,6 +1156,7 @@ class TownySlashCommandsTest {
     void residentsPaginationHandlesTownShrinkageBetweenClicks() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
 
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -1177,6 +1191,7 @@ class TownySlashCommandsTest {
     void residentsPaginationWhenTownDeletedBetweenClicksReturnsTownNotFound() {
         ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
         when(btnEvent.getUser()).thenReturn(user);
+        when(btnEvent.getGuild()).thenReturn(guild);
         when(btnEvent.getComponentId()).thenReturn("dt:residents:2:" + townUuid);
 
         MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -1361,6 +1376,7 @@ class TownySlashCommandsTest {
 
             ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
             when(btnEvent.getUser()).thenReturn(user);
+            when(btnEvent.getGuild()).thenReturn(guild);
             when(btnEvent.getComponentId()).thenReturn("dt:townlist:1");
 
             MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -1413,6 +1429,7 @@ class TownySlashCommandsTest {
 
             ButtonInteractionEvent btnEvent = mock(ButtonInteractionEvent.class);
             when(btnEvent.getUser()).thenReturn(user);
+            when(btnEvent.getGuild()).thenReturn(guild);
             when(btnEvent.getComponentId()).thenReturn("dt:townlist:1");
 
             MessageEditCallbackAction editCallback = mock(MessageEditCallbackAction.class);
@@ -1535,6 +1552,7 @@ class TownySlashCommandsTest {
 
         // Second interaction: /town is now disabled and replied with disabled message
         SlashCommandInteractionEvent disabledEvent = mock(SlashCommandInteractionEvent.class);
+        when(disabledEvent.getGuild()).thenReturn(guild);
         when(disabledEvent.getName()).thenReturn("town");
         ReplyCallbackAction replyDisabledAction = mock(ReplyCallbackAction.class);
         when(disabledEvent.reply(anyString())).thenReturn(replyDisabledAction);
@@ -1547,6 +1565,135 @@ class TownySlashCommandsTest {
         verify(replyDisabledAction).queue();
         verify(disabledEvent, never()).deferReply(anyBoolean());
         verifyNoInteractions(townyFacade);
+    }
+
+    // --- T26: Guild-Scoped Event Handling ---
+
+    @Test
+    void interactionFromConfiguredGuildIsHandled() {
+        when(event.getName()).thenReturn("help");
+        commands.onSlashCommandInteraction(event);
+
+        verify(event).deferReply(true);
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
+    }
+
+    @Test
+    void interactionFromOtherGuildTouchesNothing() {
+        SlashCommandInteractionEvent foreignEvent = mock(SlashCommandInteractionEvent.class);
+        Guild foreignGuild = mock(Guild.class);
+        when(foreignGuild.getId()).thenReturn("other-guild-999");
+        when(foreignEvent.getGuild()).thenReturn(foreignGuild);
+        when(foreignEvent.getName()).thenReturn("town");
+
+        commands.onSlashCommandInteraction(foreignEvent);
+
+        verify(foreignEvent, never()).reply(anyString());
+        verify(foreignEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(townyFacade);
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void buttonInteractionFromOtherGuildTouchesNothing() {
+        ButtonInteractionEvent foreignBtnEvent = mock(ButtonInteractionEvent.class);
+        Guild foreignGuild = mock(Guild.class);
+        when(foreignGuild.getId()).thenReturn("other-guild-999");
+        when(foreignBtnEvent.getGuild()).thenReturn(foreignGuild);
+        when(foreignBtnEvent.getComponentId()).thenReturn("dt:townlist:2");
+
+        commands.onButtonInteraction(foreignBtnEvent);
+
+        verify(foreignBtnEvent, never()).reply(anyString());
+        verify(foreignBtnEvent, never()).deferReply(anyBoolean());
+        verify(foreignBtnEvent, never()).deferEdit();
+        verifyNoInteractions(townyFacade);
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void interactionWithNullGuildGetsEphemeralRefusal() {
+        SlashCommandInteractionEvent dmEvent = mock(SlashCommandInteractionEvent.class);
+        when(dmEvent.getName()).thenReturn("town");
+        when(dmEvent.getGuild()).thenReturn(null);
+
+        ReplyCallbackAction dmReply = mock(ReplyCallbackAction.class);
+        when(dmEvent.reply(anyString())).thenReturn(dmReply);
+        when(dmReply.setEphemeral(anyBoolean())).thenReturn(dmReply);
+
+        commands.onSlashCommandInteraction(dmEvent);
+
+        verify(dmEvent, times(1)).reply(anyString());
+        verify(dmReply, times(1)).setEphemeral(true);
+        verify(dmReply, times(1)).queue();
+        verify(dmEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(townyFacade);
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void buttonInteractionWithNullGuildGetsEphemeralRefusal() {
+        ButtonInteractionEvent dmBtnEvent = mock(ButtonInteractionEvent.class);
+        when(dmBtnEvent.getComponentId()).thenReturn("dt:townlist:2");
+        when(dmBtnEvent.getGuild()).thenReturn(null);
+
+        ReplyCallbackAction dmReply = mock(ReplyCallbackAction.class);
+        when(dmBtnEvent.reply(anyString())).thenReturn(dmReply);
+        when(dmReply.setEphemeral(anyBoolean())).thenReturn(dmReply);
+
+        commands.onButtonInteraction(dmBtnEvent);
+
+        verify(dmBtnEvent, times(1)).reply(anyString());
+        verify(dmReply, times(1)).setEphemeral(true);
+        verify(dmReply, times(1)).queue();
+        verify(dmBtnEvent, never()).deferEdit();
+        verify(dmBtnEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(townyFacade);
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void afterConfigChangesGuildIdHandlerFollowsNewValue() {
+        PluginConfig newGuildConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "new-guild-id", Optional.empty()),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        commands.updateConfig(newGuildConfig);
+        assertEquals("new-guild-id", commands.getConfig().discord().guildId());
+
+        // Interaction from the old guild is now ignored
+        SlashCommandInteractionEvent oldGuildEvent = mock(SlashCommandInteractionEvent.class);
+        Guild oldGuild = mock(Guild.class);
+        when(oldGuild.getId()).thenReturn("guild");
+        when(oldGuildEvent.getGuild()).thenReturn(oldGuild);
+        when(oldGuildEvent.getName()).thenReturn("help");
+
+        commands.onSlashCommandInteraction(oldGuildEvent);
+
+        verify(oldGuildEvent, never()).reply(anyString());
+        verify(oldGuildEvent, never()).deferReply(anyBoolean());
+
+        // Interaction from the new guild is processed
+        SlashCommandInteractionEvent newGuildEvent = mock(SlashCommandInteractionEvent.class);
+        Guild newGuild = mock(Guild.class);
+        when(newGuild.getId()).thenReturn("new-guild-id");
+        when(newGuildEvent.getGuild()).thenReturn(newGuild);
+        when(newGuildEvent.getUser()).thenReturn(user);
+        when(newGuildEvent.getName()).thenReturn("help");
+        ReplyCallbackAction newReplyAction = mock(ReplyCallbackAction.class);
+        when(newGuildEvent.deferReply(anyBoolean())).thenReturn(newReplyAction);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(newReplyAction).queue(any());
+
+        commands.onSlashCommandInteraction(newGuildEvent);
+
+        verify(newGuildEvent).deferReply(true);
+        verify(hook).editOriginalEmbeds(any(MessageEmbed.class));
     }
 
     /**

@@ -48,6 +48,7 @@ class LinkSlashCommandsTest {
     private ReplyCallbackAction replyAction;
     private InteractionHook hook;
     private User user;
+    private Guild guild;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -81,8 +82,11 @@ class LinkSlashCommandsTest {
         replyAction = mock(ReplyCallbackAction.class);
         hook = mock(InteractionHook.class);
         user = mock(User.class);
+        guild = mock(Guild.class);
+        when(guild.getId()).thenReturn("guild");
 
         when(event.getUser()).thenReturn(user);
+        when(event.getGuild()).thenReturn(guild);
         when(user.getId()).thenReturn("123456789012345678");
 
         when(event.deferReply(anyBoolean())).thenReturn(replyAction);
@@ -373,6 +377,7 @@ class LinkSlashCommandsTest {
         // Step 2: Same user with same code tries again in the right channel
         SlashCommandInteractionEvent rightEvent = mock(SlashCommandInteractionEvent.class);
         when(rightEvent.getUser()).thenReturn(user);
+        when(rightEvent.getGuild()).thenReturn(guild);
         when(rightEvent.getName()).thenReturn("link");
         when(rightEvent.getChannelId()).thenReturn("111222333444555666");
         when(rightEvent.getOption("code")).thenReturn(opt);
@@ -435,6 +440,7 @@ class LinkSlashCommandsTest {
         // Step 2: /unlink in right channel
         SlashCommandInteractionEvent rightEvent = mock(SlashCommandInteractionEvent.class);
         when(rightEvent.getUser()).thenReturn(user);
+        when(rightEvent.getGuild()).thenReturn(guild);
         when(rightEvent.getName()).thenReturn("unlink");
         when(rightEvent.getChannelId()).thenReturn("111222333444555666");
 
@@ -620,6 +626,7 @@ class LinkSlashCommandsTest {
         // Interaction in the wrong channel is now immediately refused
         SlashCommandInteractionEvent wrongEvent = mock(SlashCommandInteractionEvent.class);
         when(wrongEvent.getUser()).thenReturn(user);
+        when(wrongEvent.getGuild()).thenReturn(guild);
         when(wrongEvent.getName()).thenReturn("link");
         when(wrongEvent.getChannelId()).thenReturn("999888777666555444");
         when(wrongEvent.getOption("code")).thenReturn(codeOption);
@@ -646,6 +653,7 @@ class LinkSlashCommandsTest {
         when(rightUser.getId()).thenReturn("987654321098765432");
         SlashCommandInteractionEvent rightEvent = mock(SlashCommandInteractionEvent.class);
         when(rightEvent.getUser()).thenReturn(rightUser);
+        when(rightEvent.getGuild()).thenReturn(guild);
         when(rightEvent.getName()).thenReturn("link");
         when(rightEvent.getChannelId()).thenReturn("111222333444555666");
         when(rightEvent.getOption("code")).thenReturn(codeOption);
@@ -672,4 +680,105 @@ class LinkSlashCommandsTest {
         verify(rightHook).editOriginal("Linked successfully");
         verify(rightEvent, never()).reply(anyString());
     }
+
+    // --- T26: Guild-Scoped Event Handling ---
+
+    @Test
+    void interactionFromOtherGuildTouchesNothing() {
+        SlashCommandInteractionEvent foreignEvent = mock(SlashCommandInteractionEvent.class);
+        Guild foreignGuild = mock(Guild.class);
+        when(foreignGuild.getId()).thenReturn("other-guild-999");
+        when(foreignEvent.getGuild()).thenReturn(foreignGuild);
+        when(foreignEvent.getName()).thenReturn("link");
+
+        commands.onSlashCommandInteraction(foreignEvent);
+
+        verify(foreignEvent, never()).reply(anyString());
+        verify(foreignEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void unlinkInteractionFromOtherGuildTouchesNothing() {
+        SlashCommandInteractionEvent foreignEvent = mock(SlashCommandInteractionEvent.class);
+        Guild foreignGuild = mock(Guild.class);
+        when(foreignGuild.getId()).thenReturn("other-guild-999");
+        when(foreignEvent.getGuild()).thenReturn(foreignGuild);
+        when(foreignEvent.getName()).thenReturn("unlink");
+
+        commands.onSlashCommandInteraction(foreignEvent);
+
+        verify(foreignEvent, never()).reply(anyString());
+        verify(foreignEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void interactionWithNullGuildGetsEphemeralRefusal() {
+        SlashCommandInteractionEvent dmEvent = mock(SlashCommandInteractionEvent.class);
+        when(dmEvent.getName()).thenReturn("link");
+        when(dmEvent.getGuild()).thenReturn(null);
+
+        when(messages.plain(eq("discord.server-only"), any())).thenReturn("This command only works inside a server.");
+
+        ReplyCallbackAction dmReply = mock(ReplyCallbackAction.class);
+        when(dmEvent.reply(anyString())).thenReturn(dmReply);
+        when(dmReply.setEphemeral(anyBoolean())).thenReturn(dmReply);
+
+        commands.onSlashCommandInteraction(dmEvent);
+
+        verify(dmEvent, times(1)).reply(anyString());
+        verify(dmReply, times(1)).setEphemeral(true);
+        verify(dmReply, times(1)).queue();
+        verify(dmEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(linkService);
+    }
+
+    @Test
+    void afterConfigChangesGuildIdHandlerFollowsNewValue() {
+        PluginConfig newGuildConfig = new PluginConfig(
+                new PluginConfig.Discord("token", "new-guild-id", Optional.empty()),
+                config.database(), config.structure(), config.roles(),
+                config.limits(), config.lifecycle(), config.sync(), config.linking(),
+                config.logging(), config.updates(), config.commands()
+        );
+        commands.updateConfig(newGuildConfig);
+        assertEquals("new-guild-id", commands.getConfig().discord().guildId());
+
+        // Interaction from old guild is ignored
+        SlashCommandInteractionEvent oldGuildEvent = mock(SlashCommandInteractionEvent.class);
+        Guild oldGuild = mock(Guild.class);
+        when(oldGuild.getId()).thenReturn("guild");
+        when(oldGuildEvent.getGuild()).thenReturn(oldGuild);
+        when(oldGuildEvent.getName()).thenReturn("unlink");
+
+        commands.onSlashCommandInteraction(oldGuildEvent);
+
+        verify(oldGuildEvent, never()).reply(anyString());
+        verify(oldGuildEvent, never()).deferReply(anyBoolean());
+        verifyNoInteractions(linkService);
+
+        // Interaction from new guild is handled
+        SlashCommandInteractionEvent newGuildEvent = mock(SlashCommandInteractionEvent.class);
+        Guild newGuild = mock(Guild.class);
+        when(newGuild.getId()).thenReturn("new-guild-id");
+        when(newGuildEvent.getGuild()).thenReturn(newGuild);
+        when(newGuildEvent.getUser()).thenReturn(user);
+        when(newGuildEvent.getName()).thenReturn("unlink");
+        ReplyCallbackAction newDeferAction = mock(ReplyCallbackAction.class);
+        when(newGuildEvent.deferReply(anyBoolean())).thenReturn(newDeferAction);
+        doAnswer(inv -> {
+            Consumer<InteractionHook> cb = inv.getArgument(0);
+            cb.accept(hook);
+            return null;
+        }).when(newDeferAction).queue(any());
+        when(linkService.findByDiscordId("123456789012345678"))
+                .thenReturn(CompletableFuture.completedFuture(Optional.empty()));
+
+        commands.onSlashCommandInteraction(newGuildEvent);
+
+        verify(newGuildEvent).deferReply(true);
+        verify(linkService).findByDiscordId("123456789012345678");
+    }
 }
+

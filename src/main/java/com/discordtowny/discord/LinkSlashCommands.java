@@ -31,6 +31,7 @@ import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
+import net.dv8tion.jda.api.interactions.callbacks.IReplyCallback;
 
 /**
  * Discord adapter for the linking slash commands (/link and /unlink).
@@ -110,10 +111,26 @@ public final class LinkSlashCommands extends ListenerAdapter {
         return getCommandData(null);
     }
 
+    private boolean isGuildAllowed(IReplyCallback event) {
+        Guild guild = event.getGuild();
+        if (guild == null) {
+            String msg = messages.plain("discord.server-only", Map.of());
+            event.reply(msg).setEphemeral(true).queue();
+            return false;
+        }
+
+        String configuredGuildId = config.discord().guildId();
+        return configuredGuildId != null && configuredGuildId.equals(guild.getId());
+    }
+
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
         String name = event.getName().toLowerCase(Locale.ROOT);
         if (!"link".equals(name) && !"unlink".equals(name)) {
+            return;
+        }
+
+        if (!isGuildAllowed(event)) {
             return;
         }
 
