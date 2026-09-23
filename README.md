@@ -23,10 +23,33 @@ Each installation connects one Minecraft server to a single Discord server.
 
 The portal steps can be consulted in the [official Discord guide](https://docs.discord.com/developers/quick-start/getting-started).
 
+## Downloads
+
+The plugin updates itself: an administrator can run `/dt admin update` instead of
+downloading anything by hand. These links are for the first install, or for a
+server that keeps updates disabled.
+
+| Version | Date | Download | Checksum | Notes |
+|---|---|---|---|---|
+| **1.3.0** — latest | 2026-09-23 | [DiscordTowny-1.3.0.jar](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.3.0/DiscordTowny-1.3.0.jar) | [.sha256](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.3.0/DiscordTowny-1.3.0.jar.sha256) | Admin command to change the chat prefix |
+| **1.2.0** | 2026-09-23 | [DiscordTowny-1.2.0.jar](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.2.0/DiscordTowny-1.2.0.jar) | [.sha256](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.2.0/DiscordTowny-1.2.0.jar.sha256) | One bot across several Discord servers; the archive loop |
+| **1.1.1** | 2026-09-23 | [DiscordTowny-1.1.1.jar](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.1.1/DiscordTowny-1.1.1.jar) | [.sha256](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.1.1/DiscordTowny-1.1.1.jar.sha256) |  |
+| **1.1.0** | 2026-09-23 | [DiscordTowny-1.1.0.jar](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.1.0/DiscordTowny-1.1.0.jar) | [.sha256](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.1.0/DiscordTowny-1.1.0.jar.sha256) | The updater reaches the release it finds |
+| **1.0.0** | 2026-09-21 | [DiscordTowny-1.0.0.jar](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar) | [.sha256](https://github.com/Dasannn/DiscordxTowny/releases/download/v1.0.0/DiscordTowny-1.0.0.jar.sha256) | First public release |
+
+Every release publishes a SHA-256 beside its jar, and the updater refuses any
+release that does not. To check a download by hand:
+
+```
+sha256sum -c DiscordTowny-1.3.0.jar.sha256
+```
+
+All releases, with their full notes: <https://github.com/Dasannn/DiscordxTowny/releases>
+
 ## Installation
 
 1. Prepare Paper and Java with the specified versions. Install Towny Advanced and verify that it works.
-2. Download the DiscordTowny JAR file from the official releases.
+2. Download the JAR from the table above, or from the [releases page](https://github.com/Dasannn/DiscordxTowny/releases).
 3. Stop Minecraft and place the JAR into the server's `plugins` folder.
 4. Start the server once so that Paper automatically generates the `plugins/DiscordTowny/` folder and the default `config.yml` file.
 5. Open `plugins/DiscordTowny/config.yml` and fill in the token, the Discord server ID, and the database as explained below.
