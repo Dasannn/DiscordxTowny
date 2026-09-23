@@ -269,6 +269,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     private final Set<String> consoleNotifiedVersions = ConcurrentHashMap.newKeySet();
     private final Set<String> logChannelNotifiedVersions = ConcurrentHashMap.newKeySet();
     private final Set<String> downloadNotifiedVersions = ConcurrentHashMap.newKeySet();
+    // Staged update indicator cached in memory for zero-I/O join notices (F2)
+    private final AtomicBoolean stagedUpdatePending = new AtomicBoolean(false);
 
     private ScheduledFuture<?> periodicTask = null;
 
@@ -390,6 +392,55 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         this.requestTimeout = requestTimeout != null ? requestTimeout : DEFAULT_TIMEOUT;
     }
 
+    private CompletableFuture<Boolean> seedFuture;
+
+    /**
+     * Seeds the cached staged update indicator asynchronously on a background worker thread (F4).
+     *
+     * <p>Zero filesystem access is performed on the calling thread. If a download publishes a jar
+     * before this probe completes, the seed will not clear the flag back to false.
+     *
+     * @return a future completing with true if a staged jar was found on disk, false otherwise
+     */
+    public synchronized CompletableFuture<Boolean> seedStagedUpdatePendingAsync() {
+        if (stopped.get()) {
+            return CompletableFuture.completedFuture(false);
+        }
+        if (seedFuture != null) {
+            return seedFuture;
+        }
+        ScheduledExecutorService s = this.scheduler;
+        Executor exec = (s != null && !s.isShutdown()) ? s : this.executor;
+        try {
+            seedFuture = CompletableFuture.supplyAsync(() -> {
+                if (stopped.get()) {
+                    return false;
+                }
+                boolean staged = probeDiskForStagedUpdate();
+                applySeedProbeResult(staged);
+                return staged;
+            }, exec);
+        } catch (RejectedExecutionException e) {
+            seedFuture = CompletableFuture.completedFuture(false);
+        }
+        return seedFuture;
+    }
+
+    void applySeedProbeResult(boolean stagedOnDisk) {
+        if (stagedOnDisk && !stopped.get()) {
+            stagedUpdatePending.set(true);
+        }
+    }
+
+    boolean probeDiskForStagedUpdate() {
+        try {
+            Path target = updateFolder.resolve(targetJarName);
+            return Files.isRegularFile(target) && Files.size(target) > 0;
+        } catch (IOException | SecurityException e) {
+            return false;
+        }
+    }
+
     private boolean isDestinationActiveJar(Path destination) {
         Path normalizedFolder = updateFolder.toAbsolutePath().normalize();
         Path normalizedDest = destination.toAbsolutePath().normalize();
@@ -436,6 +487,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
      * Starts background periodic checks if {@code check-enabled} is true.
      */
     public synchronized void start() {
+        seedStagedUpdatePendingAsync();
         if (!config.checkEnabled() || scheduler == null) {
             return;
         }
@@ -473,6 +525,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 scheduler.shutdownNow();
             }
         }
+        synchronized (this) {
+            if (seedFuture != null && !seedFuture.isDone()) {
+                seedFuture.complete(false);
+            }
+        }
     }
 
     @Override
@@ -489,10 +546,17 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     public boolean isUpdatePending() {
         try {
             Path target = updateFolder.resolve(targetJarName);
-            return Files.isRegularFile(target) && Files.size(target) > 0;
-        } catch (IOException e) {
+            boolean exists = Files.isRegularFile(target) && Files.size(target) > 0;
+            stagedUpdatePending.set(exists);
+            return exists;
+        } catch (IOException | SecurityException e) {
+            stagedUpdatePending.set(false);
             return false;
         }
+    }
+
+    boolean isCachedUpdatePending() {
+        return stagedUpdatePending.get();
     }
 
     @Override
@@ -726,7 +790,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         CheckResult lastResult = getLastCheckResult();
         boolean checkFailed = lastResult.status() == CheckStatus.CHECK_FAILED;
         Release available = lastResult.release().orElse(null);
-        if (isUpdatePending()) {
+        if (stagedUpdatePending.get()) {
             String ver = available != null ? available.version() : "new";
             messageSender.accept(msgs.plain("updates.downloaded", Map.of("latest", ver)));
             if (checkFailed) {
@@ -1722,6 +1786,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     }
 
                     publishExecutable(tempFile, destination);
+                    stagedUpdatePending.set(true);
                     tempFile = null; // Successfully published
                 }
 
@@ -1807,6 +1872,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                     moveError.addSuppressed(restoreError);
                 }
             }
+            stagedUpdatePending.set(probeDiskForStagedUpdate());
             throw (moveError instanceof IOException ioe ? ioe : new IOException("Failed to publish executable", moveError));
         } finally {
             if (published && backup != null) {

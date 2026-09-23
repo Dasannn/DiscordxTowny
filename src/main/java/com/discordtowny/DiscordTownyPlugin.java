@@ -3,6 +3,7 @@ package com.discordtowny;
 import com.discordtowny.minecraft.MinecraftCommands;
 import com.discordtowny.minecraft.PlayerJoinSyncListener;
 import com.discordtowny.minecraft.TownySyncListener;
+import com.discordtowny.minecraft.UpdateJoinListener;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
@@ -18,6 +19,9 @@ import java.util.concurrent.RejectedExecutionException;
 public final class DiscordTownyPlugin extends JavaPlugin {
 
     private DiscordTownyWiring wiring;
+    private final java.util.concurrent.atomic.AtomicBoolean playerJoinSyncListenerRegistered = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean townySyncListenerRegistered = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean updateJoinListenerRegistered = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     @Override
     public void onEnable() {
@@ -59,16 +63,7 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                         Bukkit.getScheduler().cancelTasks(this);
                     }
                 },
-                w -> {
-                    if (!w.isDegraded() && w.getStorage() != null) {
-                        try {
-                            PlayerJoinSyncListener.register(this, w::getSyncService, w.getStorage().links(), w::getConfig);
-                            TownySyncListener.register(this, w::getSyncService, w::getSpaceService);
-                        } catch (Throwable t) {
-                            getLogger().warning("Failed to register sync listeners: " + t.getMessage());
-                        }
-                    }
-                },
+                this::registerListeners,
                 getPluginMeta().getVersion()
         );
 
@@ -93,12 +88,77 @@ public final class DiscordTownyPlugin extends JavaPlugin {
         wiring.start();
     }
 
+    private static final java.util.Map<Object, java.util.Map<String, java.util.concurrent.atomic.AtomicBoolean>> MOCK_FLAGS = new java.util.WeakHashMap<>();
+
+    private synchronized java.util.concurrent.atomic.AtomicBoolean flag(java.util.concurrent.atomic.AtomicBoolean field, String key) {
+        if (field != null) {
+            return field;
+        }
+        return MOCK_FLAGS.computeIfAbsent(this, k -> new java.util.HashMap<>())
+                .computeIfAbsent(key, k -> new java.util.concurrent.atomic.AtomicBoolean(false));
+    }
+
+    public synchronized void registerListeners(DiscordTownyWiring w) {
+        if (w != null && !w.isDegraded() && w.getStorage() != null) {
+            java.util.concurrent.atomic.AtomicBoolean playerJoinFlag = flag(playerJoinSyncListenerRegistered, "playerJoinSync");
+            if (!playerJoinFlag.get()) {
+                try {
+                    PlayerJoinSyncListener.register(this, w::getSyncService, w.getStorage().links(), w::getConfig);
+                    playerJoinFlag.set(true);
+                } catch (Throwable t) {
+                    safeLog(java.util.logging.Level.WARNING, "Failed to register PlayerJoinSyncListener: " + t.getMessage());
+                }
+            }
+            java.util.concurrent.atomic.AtomicBoolean townyFlag = flag(townySyncListenerRegistered, "townySync");
+            if (!townyFlag.get()) {
+                try {
+                    TownySyncListener.register(this, w::getSyncService, w::getSpaceService);
+                    townyFlag.set(true);
+                } catch (Throwable t) {
+                    safeLog(java.util.logging.Level.WARNING, "Failed to register TownySyncListener: " + t.getMessage());
+                }
+            }
+            java.util.concurrent.atomic.AtomicBoolean updateFlag = flag(updateJoinListenerRegistered, "updateJoin");
+            if (!updateFlag.get()) {
+                try {
+                    UpdateJoinListener.register(this, w::getUpdateService, w::isDegraded);
+                    updateFlag.set(true);
+                } catch (Throwable t) {
+                    safeLog(java.util.logging.Level.WARNING, "Failed to register UpdateJoinListener: " + t.getMessage());
+                }
+            }
+        }
+    }
+
+    private void safeLog(java.util.logging.Level level, String message) {
+        try {
+            java.util.logging.Logger log = getLogger();
+            if (log != null) {
+                log.log(level, message);
+                return;
+            }
+        } catch (Throwable ignored) {}
+        java.util.logging.Logger.getLogger("DiscordTowny").log(level, message);
+    }
+
+    @Override
+    public java.util.logging.Logger getLogger() {
+        try {
+            java.util.logging.Logger l = super.getLogger();
+            if (l != null) return l;
+        } catch (Throwable ignored) {}
+        return java.util.logging.Logger.getLogger("DiscordTowny");
+    }
+
     @Override
     public void onDisable() {
         if (wiring != null) {
             wiring.stop();
             wiring = null;
         }
+        flag(playerJoinSyncListenerRegistered, "playerJoinSync").set(false);
+        flag(townySyncListenerRegistered, "townySync").set(false);
+        flag(updateJoinListenerRegistered, "updateJoin").set(false);
     }
 
     public void reloadPlugin() {

@@ -2,6 +2,7 @@ package com.discordtowny.update;
 
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 /**
  * Checking and downloading new versions published on GitHub.
@@ -56,6 +57,20 @@ public interface UpdateService {
      * confirmation before it can be staged.
      */
     boolean isAwaitingConfirmation();
+
+    /**
+     * Returns true if the configuration enables notifying administrators when they join the server.
+     */
+    boolean shouldNotifyAdminsOnJoin();
+
+    /**
+     * Notifies an admin player on join if updates are available, downloaded, or if the latest
+     * check failed. No default: an implementation that silently says nothing is the defect
+     * T25 fixed.
+     *
+     * @param messageSender consumer to send formatted message to the player
+     */
+    void notifyAdminOnJoin(Consumer<String> messageSender);
 
     /**
      * Returns true if the most recent update check failed to complete.
