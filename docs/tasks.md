@@ -940,7 +940,10 @@ If it is a snapshot, say so in the report rather than reaching outside the zone.
 - **Zone**: `src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java`
   and its tests, `src/main/java/com/discordtowny/sync/DefaultSyncService.java` and
   its tests, and `src/main/java/com/discordtowny/space/DefaultSpaceService.java`
-  with its tests for the purge visibility below.
+  with its tests for the purge visibility below, and
+  `src/main/java/com/discordtowny/minecraft/MinecraftCommands.java` with its tests,
+  because that is where the operator is answered — an omission in the zone the
+  architect first wrote, not an agent leaving it.
 
 **Why**
 
