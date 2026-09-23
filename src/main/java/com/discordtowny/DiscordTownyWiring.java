@@ -15,6 +15,7 @@ import com.discordtowny.model.AuditEvent;
 import com.discordtowny.space.DefaultSpaceService;
 import com.discordtowny.space.SpaceService;
 import com.discordtowny.storage.HikariStorage;
+import com.discordtowny.storage.SettingsRepository;
 import com.discordtowny.storage.Storage;
 import com.discordtowny.sync.DefaultSyncService;
 import com.discordtowny.sync.PeriodicSyncJob;
@@ -220,6 +221,14 @@ public final class DiscordTownyWiring {
                 return;
             }
             this.storage = newStorage;
+            if (this.messages != null && newStorage != null) {
+                try {
+                    newStorage.settings().get(SettingsRepository.KEY_CHAT_PREFIX)
+                            .ifPresent(this.messages::setCustomPrefix);
+                } catch (Throwable t) {
+                    safeLog(Level.WARNING, "Failed to load custom prefix from settings: " + t.getMessage());
+                }
+            }
         }
 
         // 4. Discord Gateway: only when storage succeeded
@@ -521,6 +530,14 @@ public final class DiscordTownyWiring {
 
             // When storage is ready, genuinely update the domain services and reschedule the periodic job
             if (!degraded && storage != null) {
+                if (this.messages != null) {
+                    try {
+                        storage.settings().get(SettingsRepository.KEY_CHAT_PREFIX)
+                                .ifPresent(this.messages::setCustomPrefix);
+                    } catch (Throwable t) {
+                        safeLog(Level.WARNING, "Failed to restore custom prefix during reload: " + t.getMessage());
+                    }
+                }
                 if (discordGateway == null && testDiscordGateway == null) {
                     try {
                         discordGateway = new JdaDiscordGateway(newConfig, storage.spaces(), storage.settings(), logger);
@@ -686,6 +703,10 @@ public final class DiscordTownyWiring {
 
     public Storage getStorage() {
         return storage;
+    }
+
+    public SettingsRepository getSettingsRepository() {
+        return storage != null ? storage.settings() : null;
     }
 
     public JdaDiscordGateway getDiscordGateway() {

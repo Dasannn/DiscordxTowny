@@ -20,6 +20,10 @@ public interface Messages {
     /** Plain-text version, for Discord and for the console. Carries the prefix. */
     String plain(String key, Map<String, String> placeholders);
 
+    default String plain(String key) {
+        return plain(key, Map.of());
+    }
+
     /**
      * The text on its own: no prefix, no formatting.
      *
@@ -34,5 +38,80 @@ public interface Messages {
 
     default String label(String key) {
         return label(key, Map.of());
+    }
+
+    /**
+     * Raw prefix currently in effect, including formatting codes (e.g. &amp;8[&amp;bDiscordTowny&amp;8] &amp;r).
+     */
+    default String rawPrefix() {
+        Messages target = unwrap(this);
+        if (target != this && target != null) {
+            return target.rawPrefix();
+        }
+        return "";
+    }
+
+    /**
+     * Default prefix from the catalog (file/resource), ignoring custom store.
+     */
+    default String catalogPrefix() {
+        Messages target = unwrap(this);
+        if (target != this && target != null) {
+            return target.catalogPrefix();
+        }
+        return "";
+    }
+
+    /**
+     * Rendered prefix as an Adventure Component, with formatting codes parsed.
+     */
+    default Component renderedPrefix() {
+        return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacyAmpersand().deserialize(rawPrefix());
+    }
+
+    /**
+     * Updates the in-memory custom prefix.
+     */
+    default void setCustomPrefix(String prefix) {
+        Messages target = unwrap(this);
+        if (target != this && target != null) {
+            target.setCustomPrefix(prefix);
+        }
+    }
+
+    /**
+     * Resets the custom prefix, reverting to the catalog default.
+     */
+    default void resetPrefix() {
+        Messages target = unwrap(this);
+        if (target != this && target != null) {
+            target.resetPrefix();
+        }
+    }
+
+    /**
+     * Invalidates the cached prefix so it re-reads from storage on next access.
+     */
+    default void invalidatePrefix() {
+        Messages target = unwrap(this);
+        if (target != this && target != null) {
+            target.invalidatePrefix();
+        }
+    }
+
+    private static Messages unwrap(Messages messages) {
+        if (messages == null) return null;
+        try {
+            for (java.lang.reflect.Field f : messages.getClass().getDeclaredFields()) {
+                if (Messages.class.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    Object val = f.get(messages);
+                    if (val instanceof Messages inner && inner != messages) {
+                        return unwrap(inner);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return messages;
     }
 }

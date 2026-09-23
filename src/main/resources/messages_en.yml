@@ -183,6 +183,13 @@ admin:
   channel-deleted: "deleted"
   list-page: "&7Page &f{current}&7 of &f{total}&7."
   list-next: "&7Use &f/dt admin list {next}&7 to see the next page."
+  prefix-set: "&aPrefix changed to: {prefix}&r"
+  prefix-reset: "&aPrefix restored to catalog default."
+  prefix-rendered: "&7Rendered: {prefix}&r"
+  prefix-raw: "&7Raw: &f{raw}"
+  prefix-placeholders: "&cThe prefix cannot contain placeholders or braces."
+  prefix-line-break: "&cThe prefix cannot contain line breaks."
+  prefix-too-long: "&cThe prefix cannot be longer than {max} characters."
 
 # Labels for the embeds the bot publishes in Discord. Spec 9.1: the language
 # setting covers these too, so they are not hard-coded in the code.

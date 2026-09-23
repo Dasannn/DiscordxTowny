@@ -79,6 +79,7 @@ public final class DiscordTownyPlugin extends JavaPlugin {
                     () -> wiring != null ? wiring.getTownyFacade() : null,
                     () -> wiring != null ? wiring.getDiscordGateway() : null,
                     () -> wiring != null ? wiring.getUpdateService() : null,
+                    () -> wiring != null ? wiring.getSettingsRepository() : null,
                     () -> { if (wiring != null) wiring.reload(); }
             );
         } catch (Throwable t) {
@@ -174,6 +175,10 @@ public final class DiscordTownyPlugin extends JavaPlugin {
     // Accessors delegating to wiring for diagnostics
     public com.discordtowny.storage.Storage getStorage() {
         return wiring != null ? wiring.getStorage() : null;
+    }
+
+    public com.discordtowny.storage.SettingsRepository getSettingsRepository() {
+        return wiring != null ? wiring.getSettingsRepository() : null;
     }
 
     public com.discordtowny.discord.JdaDiscordGateway getDiscordGateway() {

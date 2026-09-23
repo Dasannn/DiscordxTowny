@@ -33,4 +33,26 @@ class SettingsRepositoryTest extends StorageTestBase {
         storage.settings().delete("temporal");
         assertTrue(storage.settings().get("temporal").isEmpty());
     }
+
+    @Test
+    void savesAndRetrievesChatPrefix() {
+        storage.settings().put(SettingsRepository.KEY_CHAT_PREFIX, "&8[&cServer&8] &r");
+        assertEquals("&8[&cServer&8] &r",
+                storage.settings().get(SettingsRepository.KEY_CHAT_PREFIX).orElseThrow());
+    }
+
+    @Test
+    void savingEmptyChatPrefixIsPreservedAndDistinctFromNonexistent() {
+        storage.settings().put(SettingsRepository.KEY_CHAT_PREFIX, "");
+        var opt = storage.settings().get(SettingsRepository.KEY_CHAT_PREFIX);
+        assertTrue(opt.isPresent(), "Empty string setting must be present");
+        assertEquals("", opt.get(), "Value must be the empty string, not null or missing");
+    }
+
+    @Test
+    void deletingChatPrefixRestoresEmptyOptional() {
+        storage.settings().put(SettingsRepository.KEY_CHAT_PREFIX, "&6[Custom] ");
+        storage.settings().delete(SettingsRepository.KEY_CHAT_PREFIX);
+        assertTrue(storage.settings().get(SettingsRepository.KEY_CHAT_PREFIX).isEmpty());
+    }
 }
