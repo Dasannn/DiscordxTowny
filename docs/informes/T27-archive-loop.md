@@ -288,7 +288,7 @@ During live operation, when the archive loop occurred, the operator executed `/d
 1. **The Discarded Note Defect**:
    - `OperationOutcome` in [`JdaGuildOperationExecutor`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L405-L408) correctly carries the note: `already missing in Discord: text channel <id>...`.
    - In [`DefaultSpaceService.archive`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/space/DefaultSpaceService.java#L288-L304), when `outcome.succeeded()` was true, `outcome.reason()` was previously discarded. The audit event recorded only the Towny reason (e.g. `"Town testeo is ruined"`).
-   - Because the Discord log channel (`JdaDiscordGateway` via `LogQueue`) and `/dt admin info` consume `AuditEvent`, the server owner watching the Discord log channel never learned what was missing. The note survived only in the server console log.
+   - Because the Discord log channel (`JdaDiscordGateway` via `LogQueue`) consumes `AuditEvent`, the server owner watching the Discord log channel never learned what was missing. The note survived only in the server console log.
 2. **Carrying the Note**:
    - In [`DefaultSpaceService.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/space/DefaultSpaceService.java#L288-L304), when `outcome.succeeded()` is true:
      - If `outcome.reason()` is present and non-blank:
@@ -299,7 +299,7 @@ During live operation, when the archive loop occurred, the operator executed `/d
    - This populates the existing `detail` column on the audit table without adding new columns, event types, or sinks.
    - The Discord log channel embed directly renders this detail:
      `ℹ️ **space_archive** testeo — Town testeo is ruined (already missing in Discord: text channel 1551261398644957207) 14:32:00`
-   - `/dt admin info <town>` and database audit queries now retain the missing resource notice in audit history.
+   - Database audit queries (`AuditRepository.recent`) and the Discord log channel embed now retain the missing resource notice in audit history. (Note: `/dt admin info` displays current `TownSpace` fields and detected discrepancies against Discord; it never queries `AuditRepository`).
 3. **Architectural Boundary Regarding `/dt sync`**:
    - As directed by the card ("Work within the zone the card names. If carrying it requires touching something outside, say so in the report and stop there rather than reaching"), propagating the note into `/dt sync` was evaluated:
      - `DefaultSyncService.executeArchive` delegates to `spaceService.archive(space.townUuid(), reason)`.
@@ -325,3 +325,71 @@ During live operation, when the archive loop occurred, the operator executed `/d
      Verifies that when Towny reason is `null`, the missing resource note is written as the audit detail: `"already missing in Discord: voice channel 99887766"`.
    - `archiveSpaceWritesItsRowToDatabase`:
      Verifies that an archive without missing resources writes the row with Towny reason unchanged: `"Town inactive for 30 days"`.
+
+---
+
+## 11. Round 5: Do Not Guess, Retry
+
+### A. F3: Eliminating the JDA Cache Guess & Making the Failure Retryable
+1. **The Flaw in the Round 4 Disambiguation**:
+   In Round 4, when `channel.getManager().setParent(archive).complete()` threw `UNKNOWN_CHANNEL`, the implementation attempted to disambiguate by checking:
+   ```java
+   if (guild.getTextChannelById(textCh.getId()) != null) {
+       throw e;
+   }
+   ```
+   As identified in Review 2 (F3), `getTextChannelById` and `getVoiceChannelById` query **JDA's local in-memory cache**, not the Discord REST API. The local cache can be wrong in both directions:
+   - **Cache says present, channel really gone**: If the deletion event has not yet arrived over the Discord gateway (or the gateway is temporarily disconnected), the re-check returns the cached channel object. Rethrowing causes `classifyError` to treat it as a `PERMANENT_FAILURE`, marking the space `INCONSISTENT`. The periodic sync detects an unarchived space and enqueues the archive again 30 minutes later, reopening the exact archive loop T27 was meant to resolve.
+   - **Cache says absent, channel really present**: If channel visibility was lost through permission changes or cache invalidation, the cache returns `null`. Treating that as proof of deletion records absence and marks the space `ARCHIVED` in the database while the live channel still sits in Discord, unmanaged and unarchived.
+
+2. **The Principle: Do Not Disambiguate. Make It Retryable**:
+   - Both cache re-checks and optimistic `missing.add` additions in the move catch blocks were deleted.
+   - When `setParent` raises `UNKNOWN_CHANNEL` and it cannot be determined whether the source channel or the destination category vanished, the executor returns `OperationOutcome.transientFailure(...)` immediately and stops execution of `archiveSpace`.
+   - The operation does not mark the space `ARCHIVED`, nor does it mark it `INCONSISTENT`.
+   - The transient failure is returned to [`GuildOperationQueue`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/GuildOperationQueue.java).
+
+3. **Settling the Truth on Retry**:
+   - When `GuildOperationQueue` retries `ArchiveSpace`, execution restarts at the top of [`archiveSpace`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L290).
+   - By the time the retry executes (after the queue backoff delay), Discord gateway state has settled:
+     - If the source channel was genuinely deleted, the pre-check at the top of `archiveSpace` sees `guild.getTextChannelById(chId) == null`, correctly records absence in `missing`, skips moving that channel, and archives the space cleanly with the missing resource note.
+     - If the destination archive category disappeared, the source channel remains present (`channelsNeeded > 0`). The call to `ensureCategoryWithCapacity` ensures or creates a new archive category. If an archive category cannot be created, the guard added in Round 4 safely halts with `PERMANENT_FAILURE` and marks `INCONSISTENT`.
+   - Neither false positive nor false negative occurs; no space is marked `ARCHIVED` on a guess.
+
+4. **Codebase Verification of Invariants**:
+   - **Invariant 1: A transient failure does NOT call `onOperationFailed`, so it does not mark the space `INCONSISTENT`**:
+     - In [`JdaGuildOperationExecutor.execute`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java#L70-L107), `onOperationFailed` is explicitly conditioned on `outcome.status() == OperationOutcome.Status.PERMANENT_FAILURE`. `OperationOutcome.transientFailure` returned from `archiveSpace` bypasses `onOperationFailed` entirely.
+     - In [`GuildOperationQueue.executeWithRetries`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/GuildOperationQueue.java#L152-L214), during attempts 1 through `maxRetries` (5), `executor.onOperationFailed` is not called.
+     - Result: During retryable transient failures, the space remains in its existing state (`ACTIVE` or whatever state it entered with) and is never prematurely marked `INCONSISTENT`.
+   - **Invariant 2: The queue actually retries a transient failure, and handles exhaustion appropriately**:
+     - In [`GuildOperationQueue.executeWithRetries`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/discord/GuildOperationQueue.java#L190-L213), when `outcome.status() == TRANSIENT_FAILURE`:
+       - `attempt` is incremented.
+       - While `attempt <= maxRetries`: the queue calculates exponential backoff delay `delayMs = baseDelay * (backoffMultiplier ^ (attempt - 1))`, logs `[Queue] Retry {attempt}/{maxRetries} for '{op}' in {delayMs}ms`, sleeps for `delayMs`, and loops back to execute `executor.execute(operation)` again from the top.
+       - When retries are exhausted (`attempt > maxRetries`): the queue logs `[Queue] Exhausted retries for '{op}': {reason}`, calls `executor.onOperationFailed(operation, lastOutcome)` (which extracts the town UUID and marks the space `INCONSISTENT` in the database), and returns `lastOutcome`.
+
+### B. F4: Correction of Report Regarding `/dt admin info`
+- In the Round 4 report, Section 10.B claimed that `/dt admin info <town>` exposes the audit note.
+- An inspection of [`MinecraftCommands.java:850-915`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java#L850-L915) confirmed this was incorrect: `/dt admin info` inspects current fields of `TownSpace` and queries live Discord existence via `existingResourceIds`. It never queries `AuditRepository.recent` or inspects `AuditEvent.detail`.
+- The report has been corrected. The audit note is retained in the database table (`dt_audit_log` via `AuditRepository`) and rendered in the Discord log channel embed (`JdaDiscordGateway` / `LogQueue`). As instructed, no query was added to `/dt admin info`.
+
+### C. F5: Localisation Note (Deferred)
+- Per the reviewer's verdict, localising the success note (`already missing in Discord: ...`) in the message catalogs is deferred to a future localization pass and does not block this round.
+
+### D. Test Verification
+In [`JdaGuildOperationExecutorTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t27-archive-loop/src/test/java/com/discordtowny/discord/JdaGuildOperationExecutorTest.java):
+1. **`archiveSpaceWhenTextChannelSetParentThrowsUnknownChannelReturnsTransientFailure`**:
+   - `setParent` on text channel raises `UNKNOWN_CHANNEL`.
+   - Outcome is `TRANSIENT_FAILURE`. Space is **not** saved `ARCHIVED` and **not** marked `INCONSISTENT`.
+2. **`archiveSpaceWhenVoiceChannelSetParentThrowsUnknownChannelReturnsTransientFailure`**:
+   - `setParent` on voice channel raises `UNKNOWN_CHANNEL`.
+   - Outcome is `TRANSIENT_FAILURE`. Space is **not** saved `ARCHIVED` and **not** marked `INCONSISTENT`.
+3. **`archiveSpaceRetryAfterTransientFailureWithSourceChannelAbsentCompletesArchive`**:
+   - First attempt: `setParent` raises `UNKNOWN_CHANNEL` -> returns `TRANSIENT_FAILURE`, state unchanged.
+   - Second attempt (retry): source channel is absent from lookup (`getTextChannelById` returns `null`) -> completes archive successfully, records note `"already missing in Discord: text channel ..."`, and saves space as `ARCHIVED` (never `INCONSISTENT`).
+4. **`archiveSpaceQueueRetriesTransientFailureAndCompletesArchive`**:
+   - Verifies end-to-end integration with `GuildOperationQueue`: the queue catches the transient failure from `archiveSpace`, waits, retries, and completes the archive once the channel absence is settled, reaching `ARCHIVED` with the note.
+5. **`archiveSpaceWhenDestinationCategoryUnavailableFailsPermanentlyAndMarksInconsistent`**:
+   - When destination category is unavailable (`ensureCategoryWithCapacity` returns `null`), the operation fails permanently with `PERMANENT_FAILURE`, calls `onOperationFailed`, and marks the space `INCONSISTENT` (never `ARCHIVED`).
+6. **`archiveSpaceWithUncaughtUnknownChannelOrRoleFailsAndMarksInconsistent`**:
+   - Uncaught `UNKNOWN_CHANNEL` (e.g. during category creation in `ensureCategoryWithCapacity`) bubbles to `classifyError`, which returns `PERMANENT_FAILURE` and marks `INCONSISTENT`.
+7. **Initially-Absent Channel Tests**:
+   - Existing tests (`archiveSpaceWithMissingTextChannelSucceedsAndMarksArchivedNotDeleted`, `archiveSpaceWithMissingVoiceChannelSucceedsAndMarksArchived`, `archiveSpaceWithMissingCategorySucceedsAndMarksArchived`, `archiveSpaceWithMissingRoleSucceedsAndMarksArchived`, `archiveSpaceWithBothChannelsMissingCreatesNoArchiveCategoryAndSucceeds`) remain intact and verify the initially absent channel paths.

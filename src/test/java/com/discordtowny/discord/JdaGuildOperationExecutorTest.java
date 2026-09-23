@@ -27,12 +27,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -1276,13 +1278,13 @@ class JdaGuildOperationExecutorTest {
     }
 
     @Test
-    @DisplayName("T27: When source text channel is deleted during move, absence is recorded, archive completes and marks ARCHIVED")
+    @DisplayName("T27: When setParent raises UNKNOWN_CHANNEL on text channel, outcome is transient failure, not saved ARCHIVED, not marked INCONSISTENT")
     @SuppressWarnings("unchecked")
-    void archiveSpaceWhenSourceTextChannelGoneDuringMoveCompletesArchive() {
+    void archiveSpaceWhenTextChannelSetParentThrowsUnknownChannelReturnsTransientFailure() {
         UUID townUuid = UUID.randomUUID();
-        String townName = "VanishedDuringMoveTown";
-        String textChId = "txt-vanish-1";
-        String roleId = "role-vanish-1";
+        String townName = "UnknownTextTransientTown";
+        String textChId = "txt-transient-1";
+        String roleId = "role-transient-1";
 
         TownSpace activeSpace = new TownSpace(
                 townUuid, townName,
@@ -1305,60 +1307,6 @@ class JdaGuildOperationExecutorTest {
 
         TextChannel textCh = mock(TextChannel.class);
         when(textCh.getId()).thenReturn(textChId);
-        // Initially present in Discord, but when checked after UNKNOWN_CHANNEL error, returns null (channel gone)
-        when(guild.getTextChannelById(textChId)).thenReturn(textCh, (TextChannel) null);
-
-        TextChannelManager textManager = mock(TextChannelManager.class);
-        when(textCh.getManager()).thenReturn(textManager);
-        when(textManager.setParent(archiveCat)).thenReturn(textManager);
-
-        ErrorResponseException unknownChEx = mock(ErrorResponseException.class);
-        when(unknownChEx.getErrorResponse()).thenReturn(ErrorResponse.UNKNOWN_CHANNEL);
-        when(textManager.complete()).thenThrow(unknownChEx);
-
-        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
-        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
-
-        assertTrue(outcome.succeeded());
-        assertTrue(outcome.reason().isPresent());
-        assertTrue(outcome.reason().get().contains("text channel " + textChId));
-
-        // State in DB is ARCHIVED and never marked INCONSISTENT
-        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
-        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
-    }
-
-    @Test
-    @DisplayName("T27: When source text channel is alive and move raises UNKNOWN_CHANNEL (destination vanished), archive fails and marks INCONSISTENT")
-    @SuppressWarnings("unchecked")
-    void archiveSpaceWhenSourceTextChannelAliveAndMoveThrowsUnknownChannelFailsAndMarksInconsistent() {
-        UUID townUuid = UUID.randomUUID();
-        String townName = "AliveTextFailTown";
-        String textChId = "txt-alive-1";
-        String roleId = "role-alive-1";
-
-        TownSpace activeSpace = new TownSpace(
-                townUuid, townName,
-                Optional.of("cat-active"), Optional.of(textChId), Optional.empty(),
-                Optional.of(roleId), SpaceState.ACTIVE,
-                Instant.now(), Optional.empty(), Optional.empty());
-        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
-
-        Role townRole = mock(Role.class);
-        when(townRole.getId()).thenReturn(roleId);
-        when(guild.getRoleById(roleId)).thenReturn(townRole);
-        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
-        when(townRole.delete()).thenReturn(roleDeleteAction);
-
-        Category archiveCat = mock(Category.class);
-        when(archiveCat.getId()).thenReturn("cat-archive");
-        when(archiveCat.getName()).thenReturn("Archivo");
-        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
-        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
-
-        TextChannel textCh = mock(TextChannel.class);
-        when(textCh.getId()).thenReturn(textChId);
-        // Source channel is ALIVE in Discord both before and after the move error
         when(guild.getTextChannelById(textChId)).thenReturn(textCh);
 
         TextChannelManager textManager = mock(TextChannelManager.class);
@@ -1373,21 +1321,21 @@ class JdaGuildOperationExecutorTest {
         OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
 
         assertFalse(outcome.succeeded());
-        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+        assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, outcome.status());
 
-        // Marked INCONSISTENT, never ARCHIVED
-        verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+        // Space is NOT saved ARCHIVED and NOT marked INCONSISTENT
         verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
     }
 
     @Test
-    @DisplayName("T27: When source voice channel is alive and move raises UNKNOWN_CHANNEL (destination vanished), archive fails and marks INCONSISTENT")
+    @DisplayName("T27: When setParent raises UNKNOWN_CHANNEL on voice channel, outcome is transient failure, not saved ARCHIVED, not marked INCONSISTENT")
     @SuppressWarnings("unchecked")
-    void archiveSpaceWhenSourceVoiceChannelAliveAndMoveThrowsUnknownChannelFailsAndMarksInconsistent() {
+    void archiveSpaceWhenVoiceChannelSetParentThrowsUnknownChannelReturnsTransientFailure() {
         UUID townUuid = UUID.randomUUID();
-        String townName = "AliveVoiceFailTown";
-        String voiceChId = "vc-alive-1";
-        String roleId = "role-voice-1";
+        String townName = "UnknownVoiceTransientTown";
+        String voiceChId = "vc-transient-1";
+        String roleId = "role-vc-transient-1";
 
         TownSpace activeSpace = new TownSpace(
                 townUuid, townName,
@@ -1410,7 +1358,6 @@ class JdaGuildOperationExecutorTest {
 
         VoiceChannel voiceCh = mock(VoiceChannel.class);
         when(voiceCh.getId()).thenReturn(voiceChId);
-        // Source voice channel is ALIVE in Discord both before and after the move error
         when(guild.getVoiceChannelById(voiceChId)).thenReturn(voiceCh);
 
         VoiceChannelManager voiceManager = mock(VoiceChannelManager.class);
@@ -1425,9 +1372,169 @@ class JdaGuildOperationExecutorTest {
         OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
 
         assertFalse(outcome.succeeded());
-        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+        assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, outcome.status());
 
-        // Marked INCONSISTENT, never ARCHIVED
+        // Space is NOT saved ARCHIVED and NOT marked INCONSISTENT
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Retry after setParent transient failure, with source channel now absent from lookup, completes archive with note and reaches ARCHIVED")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceRetryAfterTransientFailureWithSourceChannelAbsentCompletesArchive() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "RetryArchiveTown";
+        String textChId = "txt-retry-1";
+        String roleId = "role-retry-1";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.empty(),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        TextChannel textCh = mock(TextChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        // On attempt 1 (before deletion event is processed), lookup returns the channel.
+        // On attempt 2 (retry, cache updated), lookup returns null (channel absent).
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh, (TextChannel) null);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(textManager.setParent(archiveCat)).thenReturn(textManager);
+
+        ErrorResponseException unknownChEx = mock(ErrorResponseException.class);
+        when(unknownChEx.getErrorResponse()).thenReturn(ErrorResponse.UNKNOWN_CHANNEL);
+        when(textManager.complete()).thenThrow(unknownChEx);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+
+        // Attempt 1: setParent throws UNKNOWN_CHANNEL -> transient failure, state unchanged
+        OperationOutcome outcome1 = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+        assertFalse(outcome1.succeeded());
+        assertEquals(OperationOutcome.Status.TRANSIENT_FAILURE, outcome1.status());
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+
+        // Attempt 2 (Retry): channel is now absent from lookup -> succeeds, note recorded, state is ARCHIVED
+        OperationOutcome outcome2 = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+        assertTrue(outcome2.succeeded());
+        assertTrue(outcome2.reason().isPresent());
+        assertTrue(outcome2.reason().get().contains("text channel " + textChId));
+
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Queue automatically retries after setParent transient failure, completing archive when source channel is absent on retry")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceQueueRetriesTransientFailureAndCompletesArchive() throws Exception {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "QueueRetryTown";
+        String textChId = "txt-queue-retry-1";
+        String roleId = "role-queue-retry-1";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.empty(),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        Category archiveCat = mock(Category.class);
+        when(archiveCat.getId()).thenReturn("cat-archive");
+        when(archiveCat.getName()).thenReturn("Archivo");
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(List.of(archiveCat));
+
+        TextChannel textCh = mock(TextChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        // First attempt returns textCh, second attempt (retry) returns null
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh, (TextChannel) null);
+
+        TextChannelManager textManager = mock(TextChannelManager.class);
+        when(textCh.getManager()).thenReturn(textManager);
+        when(textManager.setParent(archiveCat)).thenReturn(textManager);
+
+        ErrorResponseException unknownChEx = mock(ErrorResponseException.class);
+        when(unknownChEx.getErrorResponse()).thenReturn(ErrorResponse.UNKNOWN_CHANNEL);
+        when(textManager.complete()).thenThrow(unknownChEx);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        var queue = new GuildOperationQueue(executor, LOGGER, 3, Duration.ofMillis(10), 1.0);
+        queue.start();
+
+        OperationOutcome outcome = queue.submit(new GuildOperation.ArchiveSpace(townUuid, townName))
+                .get(5, TimeUnit.SECONDS);
+        queue.shutdown();
+
+        assertTrue(outcome.succeeded());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("text channel " + textChId));
+
+        verify(spaces).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
+        verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
+    }
+
+    @Test
+    @DisplayName("T27: Missing destination archive category refusal fails permanently and marks INCONSISTENT")
+    @SuppressWarnings("unchecked")
+    void archiveSpaceWhenDestinationCategoryUnavailableFailsPermanentlyAndMarksInconsistent() {
+        UUID townUuid = UUID.randomUUID();
+        String townName = "NoArchiveCatTown";
+        String textChId = "txt-no-cat-1";
+        String roleId = "role-no-cat-1";
+
+        TownSpace activeSpace = new TownSpace(
+                townUuid, townName,
+                Optional.of("cat-active"), Optional.of(textChId), Optional.empty(),
+                Optional.of(roleId), SpaceState.ACTIVE,
+                Instant.now(), Optional.empty(), Optional.empty());
+        when(spaces.findByTownUuid(townUuid)).thenReturn(Optional.of(activeSpace));
+
+        Role townRole = mock(Role.class);
+        when(townRole.getId()).thenReturn(roleId);
+        when(guild.getRoleById(roleId)).thenReturn(townRole);
+        AuditableRestAction<Void> roleDeleteAction = mock(AuditableRestAction.class);
+        when(townRole.delete()).thenReturn(roleDeleteAction);
+
+        when(structureConfig.archiveCategoryName()).thenReturn("Archivo");
+        when(guild.getCategoriesByName("Archivo", true)).thenReturn(Collections.emptyList());
+        when(guild.createCategory("Archivo")).thenReturn(null);
+
+        TextChannel textCh = mock(TextChannel.class);
+        when(textCh.getId()).thenReturn(textChId);
+        when(guild.getTextChannelById(textChId)).thenReturn(textCh);
+
+        var executor = new JdaGuildOperationExecutor(guild, config, spaces, settings, LOGGER);
+        OperationOutcome outcome = executor.execute(new GuildOperation.ArchiveSpace(townUuid, townName));
+
+        assertFalse(outcome.succeeded());
+        assertEquals(OperationOutcome.Status.PERMANENT_FAILURE, outcome.status());
+        assertTrue(outcome.reason().isPresent());
+        assertTrue(outcome.reason().get().contains("Archive category unavailable in Discord"));
+
         verify(spaces, atLeastOnce()).save(argThat(s -> s.state() == SpaceState.INCONSISTENT));
         verify(spaces, never()).save(argThat(s -> s.state() == SpaceState.ARCHIVED));
     }

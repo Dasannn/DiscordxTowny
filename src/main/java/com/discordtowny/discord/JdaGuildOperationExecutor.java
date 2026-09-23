@@ -369,10 +369,10 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                     if (e.getErrorResponse() != ErrorResponse.UNKNOWN_CHANNEL) {
                         throw e;
                     }
-                    if (guild.getTextChannelById(textCh.getId()) != null) {
-                        throw e;
-                    }
-                    missing.add("text channel " + space.textChannelId().orElse(""));
+                    logger.warning("[Executor] Channel or category disappeared during archive move for town '"
+                            + op.townName() + "': " + e.getMessage());
+                    return OperationOutcome.transientFailure(
+                            "Channel or category disappeared during archive for town " + op.townUuid());
                 }
             }
 
@@ -394,10 +394,10 @@ final class JdaGuildOperationExecutor implements GuildOperationExecutor {
                     if (e.getErrorResponse() != ErrorResponse.UNKNOWN_CHANNEL) {
                         throw e;
                     }
-                    if (guild.getVoiceChannelById(voiceCh.getId()) != null) {
-                        throw e;
-                    }
-                    missing.add("voice channel " + space.voiceChannelId().orElse(""));
+                    logger.warning("[Executor] Channel or category disappeared during archive move for town '"
+                            + op.townName() + "': " + e.getMessage());
+                    return OperationOutcome.transientFailure(
+                            "Channel or category disappeared during archive for town " + op.townUuid());
                 }
             }
         }
