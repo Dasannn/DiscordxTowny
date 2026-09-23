@@ -919,9 +919,13 @@ wins and the second fails with "Interaction has already been acknowledged".
   interactions, which carry the same exposure through their component ids.
 - An interaction with no guild at all — a direct message — is refused, not ignored:
   these are guild commands and a user deserves an answer saying so.
-- The comparison survives `/dt admin reload` changing `guild-id`: whatever the
-  handler compares against must be the current configuration, not a value captured
-  when the listener was built.
+- The handler compares against the current configuration, not a value captured
+  when the listener was built: whatever `JdaDiscordGateway.updateConfig` delivers
+  is what the guard uses.
+- **Corrected after the first review.** This bullet first demanded that the guard
+  follow a `guild-id` changed by `/dt admin reload`. It cannot, and must not: T21
+  made a changed token or guild id require a restart, and `reload()` refuses the
+  change and says so. The card was wrong about the system, not the code.
 - Ignoring is silent at normal log levels. A bot in twenty guilds must not fill the
   console with a line per foreign interaction.
 
