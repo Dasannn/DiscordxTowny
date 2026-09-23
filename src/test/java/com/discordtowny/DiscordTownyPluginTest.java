@@ -374,6 +374,7 @@ class DiscordTownyPluginTest {
 
         JDA jda = mock(JDA.class);
         Guild guild = mock(Guild.class);
+        when(guild.getId()).thenReturn("guild");
         CommandListUpdateAction action = mock(CommandListUpdateAction.class);
         when(guild.updateCommands()).thenReturn(action);
         when(action.addCommands(anyCollection())).thenReturn(action);
@@ -408,6 +409,7 @@ class DiscordTownyPluginTest {
 
         // Before reload: /link in channel 999888 is NOT confined by link-channel-id
         SlashCommandInteractionEvent event1 = mock(SlashCommandInteractionEvent.class);
+        when(event1.getGuild()).thenReturn(guild);
         net.dv8tion.jda.api.entities.User user = mock(net.dv8tion.jda.api.entities.User.class);
         when(user.getId()).thenReturn("123456789012345678");
         when(event1.getUser()).thenReturn(user);
@@ -429,6 +431,7 @@ class DiscordTownyPluginTest {
 
         // Interaction in wrong channel: immediately refused ephemerally, linkService never touched
         SlashCommandInteractionEvent wrongChannelEvent = mock(SlashCommandInteractionEvent.class);
+        when(wrongChannelEvent.getGuild()).thenReturn(guild);
         when(wrongChannelEvent.getUser()).thenReturn(user);
         when(wrongChannelEvent.getName()).thenReturn("link");
         when(wrongChannelEvent.getChannelId()).thenReturn("999888777666555444");
@@ -445,6 +448,7 @@ class DiscordTownyPluginTest {
 
         // Interaction in configured channel: allowed to proceed
         SlashCommandInteractionEvent rightChannelEvent = mock(SlashCommandInteractionEvent.class);
+        when(rightChannelEvent.getGuild()).thenReturn(guild);
         when(rightChannelEvent.getUser()).thenReturn(user);
         when(rightChannelEvent.getName()).thenReturn("link");
         when(rightChannelEvent.getChannelId()).thenReturn("111222333444555666");

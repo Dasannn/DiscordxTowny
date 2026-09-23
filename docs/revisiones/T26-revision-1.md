@@ -1,0 +1,18 @@
+# T26 — first review
+
+Scope: `main..8600223` (`fix/guild-scoped-events`). Verdict: **blocked**.
+
+## Findings
+
+- **F1 — blocking — `src/main/java/com/discordtowny/DiscordTownyWiring.java:465-478`.** The T26 card requires the comparison to follow `/dt admin reload` when `guild-id` changes. In a connected instance, `reload()` detects that change and throws before publishing `newConfig` or calling `JdaDiscordGateway.updateConfig` (lines 494 and 544). The handlers' volatile fields are current after `updateConfig`, but the real reload path never delivers the changed ID. The new tests call `commands.updateConfig(...)` directly, so they do not prove the stated reload criterion. Correct outcome: the owner and architect must reconcile the T26 card with the existing restart requirement, then make the accepted reload behavior verifiable through the wiring path. This is an existing lifecycle restriction exposed by T26, outside the author's file zone; it is not a defect introduced in the two handlers.
+
+## Contract checks
+
+- **Guard placement and foreign guild silence:** `TownySlashCommands.java:245-251,292-305` and `LinkSlashCommands.java:127-135` read only the command name or component ID before the guard. A foreign guild returns before enabled checks, cooldown mutation, channel checks, replies, deferrals, Towny, link service, and audit work. The guard itself performs only guild and config reads and emits no log. No foreign interaction path above it touches those collaborators.
+- **Direct messages:** Both slash and button events implement JDA's `IReplyCallback`; `reply(...).setEphemeral(true).queue()` is a supported callback for either event ([JDA reply API](https://docs.jda.wiki/net/dv8tion/jda/api/interactions/callbacks/IReplyCallback.html), [JDA button API](https://docs.jda.wiki/net/dv8tion/jda/api/interactions/components/buttons/ButtonInteraction.html)). A synchronous failure while constructing the reply would escape the listener; an asynchronous REST failure would be handled by JDA's default queue failure handling. Neither changes the foreign guild path. The new Mockito tests verify the call chain, not Discord delivery.
+- **Configuration:** Both handlers use volatile config fields refreshed by `JdaDiscordGateway.updateConfig` (`JdaDiscordGateway.java:513-524`), so a delivered config value is not stale. The YAML loader requires a nonempty valid guild snowflake (`YamlConfigLoader.java:1022-1035,1058`); blank or null `guild-id` is rejected during loading. If an invalid `PluginConfig` is constructed directly, the guard refuses every non-DM guild, which fails closed.
+- **Duplication:** The two private helpers are identical and acceptable within T26's exclusive zone. Sharing would require a new file or coupling the sibling listeners and would not fix F1.
+- **Tests:** The new foreign guild tests verify no reply, no relevant defer, and no Towny or link service interaction; they are more than no-throw tests. Button tests also verify no `deferEdit()`. DM tests verify a single reply and ephemeral flag. There is no end-to-end guild-ID reload test, which is the gap in F1.
+- **Other checklist items:** No new Towny, database, Discord operation, identity selection, or failure-to-absence conversion occurs after a foreign guild return. The added `discord.server-only` key exists in both catalogs with matching placeholders. Changed files stay within the T26 zone, including its test-zone expansion.
+
+Gradle and tests were not run for this review, as instructed. The architect reported 778 passing tests on this tip. JDA behavior was checked against its API documentation and the local JDA 6.6.0 class interfaces; live Discord delivery was not verified.

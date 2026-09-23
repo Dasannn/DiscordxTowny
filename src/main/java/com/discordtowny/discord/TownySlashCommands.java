@@ -9,12 +9,14 @@ import com.discordtowny.model.TownSnapshot;
 import com.discordtowny.towny.TownyFacade;
 import com.discordtowny.towny.TownyReadException;
 import net.dv8tion.jda.api.EmbedBuilder;
+import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.interactions.DiscordLocale;
 import net.dv8tion.jda.api.interactions.InteractionHook;
+import net.dv8tion.jda.api.interactions.callbacks.IReplyCallback;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
@@ -221,10 +223,26 @@ public final class TownySlashCommands extends ListenerAdapter {
         return "mytown".equals(name) || "help".equals(name);
     }
 
+    private boolean isGuildAllowed(IReplyCallback event) {
+        Guild guild = event.getGuild();
+        if (guild == null) {
+            String msg = messages.plain("discord.server-only", Map.of());
+            event.reply(msg).setEphemeral(true).queue();
+            return false;
+        }
+
+        String configuredGuildId = config.discord().guildId();
+        return configuredGuildId != null && configuredGuildId.equals(guild.getId());
+    }
+
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
         String name = event.getName().toLowerCase(Locale.ROOT);
         if (!SUPPORTED_COMMANDS.contains(name)) {
+            return;
+        }
+
+        if (!isGuildAllowed(event)) {
             return;
         }
 
@@ -279,6 +297,10 @@ public final class TownySlashCommands extends ListenerAdapter {
         } else if (id.startsWith("dt:residents:")) {
             commandName = "residents";
         } else {
+            return;
+        }
+
+        if (!isGuildAllowed(event)) {
             return;
         }
 

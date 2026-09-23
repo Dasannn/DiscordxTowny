@@ -254,3 +254,6 @@ status:
   space-archived: "&7The space of &f{town}&7 is archived."
   space-inconsistent: "&e The space of &f{town}&e is inconsistent. It will be repaired on the next pass."
 
+discord:
+  server-only: "&cThis command only works inside a server."
+
