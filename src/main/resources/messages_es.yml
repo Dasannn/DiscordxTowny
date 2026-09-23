@@ -183,6 +183,19 @@ admin:
   channel-deleted: "borrado"
   list-page: "&7Página &f{current}&7 de &f{total}&7."
   list-next: "&7Usa &f/dt admin list {next}&7 para ver la página siguiente."
+  prefix-set: "&aPrefijo cambiado a: {prefix}&r"
+  prefix-reset: "&aPrefijo restaurado al valor por defecto del catálogo."
+  prefix-rendered: "&7Renderizado: {prefix}&r"
+  prefix-raw: "&7Original: &f{raw}"
+  prefix-placeholders: "&cEl prefijo no puede contener marcadores ni llaves."
+  prefix-line-break: "&cEl prefijo no puede contener saltos de línea."
+  prefix-too-long: "&cEl prefijo no puede tener más de {max} caracteres visibles."
+  prefix-raw-too-long: "&cEl prefijo sin formato no puede tener más de {max} caracteres."
+  prefix-starting: "&cLa auditoría no está disponible, por lo que no se realizó el cambio. Inténtalo de nuevo más tarde."
+  prefix-saved-incomplete: "&eEl prefijo se guardó en la base de datos ({target}), pero falló {stage}. El cambio tendrá efecto tras reiniciar el servidor."
+  prefix-stage-audit: "el registro de auditoría"
+  prefix-stage-live: "la aplicación en vivo"
+  prefix-reset-target: "el valor por defecto del catálogo"
 
 # Etiquetas de los embeds que el bot publica en Discord. Spec 9.1: el ajuste de
 # idioma también las cubre, por eso no van escritas en el código.

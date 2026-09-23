@@ -39,10 +39,17 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import com.discordtowny.config.YamlMessages;
+import com.discordtowny.model.AuditEvent;
+import com.discordtowny.storage.SettingsRepository;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 /**
  * Unified registration and handling of all in-game commands under {@code /dt} (alias {@code /discordtowny}).
@@ -62,6 +69,9 @@ public final class MinecraftCommands {
     public static final String PERMISSION_USE = "discordtowny.use";
     public static final String PERMISSION_ADMIN = "discordtowny.admin";
     public static final int PAGE_SIZE = 10;
+    public static final int MAX_VISIBLE_PREFIX_LENGTH = 32;
+    public static final int MAX_RAW_PREFIX_LENGTH = 255;
+    public static final int MAX_PREFIX_LENGTH = MAX_VISIBLE_PREFIX_LENGTH;
 
     private static final Logger LOGGER = Logger.getLogger("DiscordTowny");
     private static final long CONFIRMATION_EXPIRY_SECONDS = 30L;
@@ -72,96 +82,9 @@ public final class MinecraftCommands {
 
     private MinecraftCommands() {}
 
-    /**
-     * Builds the Brigadier command node using static instances and default scheduler.
-     */
-    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
-            LinkService linkService,
-            SpaceService spaceService,
-            SyncService syncService,
-            TownyFacade townyFacade,
-            DiscordGateway discordGateway,
-            PluginConfig config,
-            Messages messages,
-            Messages consoleMessages,
-            Runnable reloadAction,
-            Consumer<Runnable> syncScheduler) {
-        return createCommandNode(
-                linkService,
-                spaceService,
-                syncService,
-                townyFacade,
-                discordGateway,
-                null,
-                config,
-                messages,
-                consoleMessages,
-                reloadAction,
-                syncScheduler
-        );
-    }
 
     /**
-     * Builds the Brigadier command node using static instances including UpdateService and default scheduler.
-     */
-    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
-            LinkService linkService,
-            SpaceService spaceService,
-            SyncService syncService,
-            TownyFacade townyFacade,
-            DiscordGateway discordGateway,
-            UpdateService updateService,
-            PluginConfig config,
-            Messages messages,
-            Messages consoleMessages,
-            Runnable reloadAction,
-            Consumer<Runnable> syncScheduler) {
-        return createCommandNode(
-                linkService != null ? () -> linkService : () -> null,
-                spaceService != null ? () -> spaceService : () -> null,
-                syncService != null ? () -> syncService : () -> null,
-                townyFacade != null ? () -> townyFacade : () -> null,
-                discordGateway != null ? () -> discordGateway : () -> null,
-                updateService != null ? () -> updateService : () -> null,
-                config != null ? () -> config : () -> null,
-                messages != null ? () -> messages : () -> null,
-                consoleMessages != null ? () -> consoleMessages : EnglishMessages::bundled,
-                reloadAction,
-                syncScheduler
-        );
-    }
-
-    /**
-     * Builds the complete Brigadier command tree for /dt using suppliers.
-     */
-    public static LiteralCommandNode<CommandSourceStack> createCommandNode(
-            Supplier<LinkService> linkServiceSupplier,
-            Supplier<SpaceService> spaceServiceSupplier,
-            Supplier<SyncService> syncServiceSupplier,
-            Supplier<TownyFacade> townyFacadeSupplier,
-            Supplier<DiscordGateway> discordGatewaySupplier,
-            Supplier<PluginConfig> configSupplier,
-            Supplier<Messages> messagesSupplier,
-            Supplier<Messages> consoleMessagesSupplier,
-            Runnable reloadAction,
-            Consumer<Runnable> syncScheduler) {
-        return createCommandNode(
-                linkServiceSupplier,
-                spaceServiceSupplier,
-                syncServiceSupplier,
-                townyFacadeSupplier,
-                discordGatewaySupplier,
-                () -> null,
-                configSupplier,
-                messagesSupplier,
-                consoleMessagesSupplier,
-                reloadAction,
-                syncScheduler
-        );
-    }
-
-    /**
-     * Builds the complete Brigadier command tree for /dt including UpdateService using suppliers.
+     * Builds the complete Brigadier command tree for /dt including Settings, Audit Supplier, and explicit Executor.
      */
     public static LiteralCommandNode<CommandSourceStack> createCommandNode(
             Supplier<LinkService> linkServiceSupplier,
@@ -170,11 +93,14 @@ public final class MinecraftCommands {
             Supplier<TownyFacade> townyFacadeSupplier,
             Supplier<DiscordGateway> discordGatewaySupplier,
             Supplier<UpdateService> updateServiceSupplier,
+            Supplier<SettingsRepository> settingsSupplier,
+            Supplier<Consumer<AuditEvent>> auditConsumerSupplier,
             Supplier<PluginConfig> configSupplier,
             Supplier<Messages> messagesSupplier,
             Supplier<Messages> consoleMessagesSupplier,
             Runnable reloadAction,
-            Consumer<Runnable> syncScheduler) {
+            Consumer<Runnable> syncScheduler,
+            Executor asyncExecutor) {
         Objects.requireNonNull(messagesSupplier, "messagesSupplier cannot be null");
         Consumer<Runnable> scheduler = syncScheduler != null ? syncScheduler : defaultScheduler();
 
@@ -207,7 +133,8 @@ public final class MinecraftCommands {
 
         // 8. /dt admin ...
         dt.then(createAdminNode(linkServiceSupplier, spaceServiceSupplier, syncServiceSupplier, townyFacadeSupplier,
-                discordGatewaySupplier, updateServiceSupplier, configSupplier, messagesSupplier, consoleMessagesSupplier, reloadAction, scheduler));
+                discordGatewaySupplier, updateServiceSupplier, settingsSupplier, auditConsumerSupplier, configSupplier,
+                messagesSupplier, consoleMessagesSupplier, reloadAction, scheduler, asyncExecutor));
 
         return dt.build();
     }
@@ -716,38 +643,6 @@ public final class MinecraftCommands {
                 });
     }
 
-    /**
-     * Builds /dt admin tree: reload, list, info <town>, purge, unlink <jugador>, sync [town].
-     */
-    public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
-            Supplier<LinkService> linkServiceSupplier,
-            Supplier<SpaceService> spaceServiceSupplier,
-            Supplier<SyncService> syncServiceSupplier,
-            Supplier<TownyFacade> townyFacadeSupplier,
-            Supplier<DiscordGateway> discordGatewaySupplier,
-            Supplier<PluginConfig> configSupplier,
-            Supplier<Messages> messagesSupplier,
-            Supplier<Messages> consoleMessagesSupplier,
-            Runnable reloadAction,
-            Consumer<Runnable> scheduler) {
-        return createAdminNode(
-                linkServiceSupplier,
-                spaceServiceSupplier,
-                syncServiceSupplier,
-                townyFacadeSupplier,
-                discordGatewaySupplier,
-                () -> null,
-                configSupplier,
-                messagesSupplier,
-                consoleMessagesSupplier,
-                reloadAction,
-                scheduler
-        );
-    }
-
-    /**
-     * Builds /dt admin tree including update subcommands: reload, list, info <town>, purge, unlink <jugador>, sync [town], update.
-     */
     public static LiteralArgumentBuilder<CommandSourceStack> createAdminNode(
             Supplier<LinkService> linkServiceSupplier,
             Supplier<SpaceService> spaceServiceSupplier,
@@ -755,11 +650,14 @@ public final class MinecraftCommands {
             Supplier<TownyFacade> townyFacadeSupplier,
             Supplier<DiscordGateway> discordGatewaySupplier,
             Supplier<UpdateService> updateServiceSupplier,
+            Supplier<SettingsRepository> settingsSupplier,
+            Supplier<Consumer<AuditEvent>> auditConsumerSupplier,
             Supplier<PluginConfig> configSupplier,
             Supplier<Messages> messagesSupplier,
             Supplier<Messages> consoleMessagesSupplier,
             Runnable reloadAction,
-            Consumer<Runnable> scheduler) {
+            Consumer<Runnable> scheduler,
+            Executor asyncExecutor) {
         LiteralArgumentBuilder<CommandSourceStack> admin = Commands.literal("admin")
                 .requires(source -> source.getSender().hasPermission(PERMISSION_ADMIN));
 
@@ -1006,6 +904,17 @@ public final class MinecraftCommands {
                 scheduler
         ));
 
+        // /dt admin prefix
+        admin.then(createAdminPrefixNode(
+                settingsSupplier,
+                auditConsumerSupplier,
+                spaceServiceSupplier,
+                messagesSupplier,
+                consoleMessagesSupplier,
+                scheduler,
+                asyncExecutor
+        ));
+
         return admin;
     }
 
@@ -1220,37 +1129,9 @@ public final class MinecraftCommands {
         return update;
     }
 
-    /**
-     * Registers commands in Paper's lifecycle manager.
-     */
-    public static void register(
-            Plugin plugin,
-            Supplier<PluginConfig> configSupplier,
-            Supplier<Messages> messagesSupplier,
-            Supplier<Messages> consoleMessagesSupplier,
-            Supplier<LinkService> linkServiceSupplier,
-            Supplier<SpaceService> spaceServiceSupplier,
-            Supplier<SyncService> syncServiceSupplier,
-            Supplier<TownyFacade> townyFacadeSupplier,
-            Supplier<DiscordGateway> discordGatewaySupplier,
-            Runnable reloadAction) {
-        register(
-                plugin,
-                configSupplier,
-                messagesSupplier,
-                consoleMessagesSupplier,
-                linkServiceSupplier,
-                spaceServiceSupplier,
-                syncServiceSupplier,
-                townyFacadeSupplier,
-                discordGatewaySupplier,
-                () -> null,
-                reloadAction
-        );
-    }
 
     /**
-     * Registers commands in Paper's lifecycle manager including UpdateService.
+     * Registers commands in Paper's lifecycle manager with audit consumer supplier.
      */
     public static void register(
             Plugin plugin,
@@ -1263,6 +1144,8 @@ public final class MinecraftCommands {
             Supplier<TownyFacade> townyFacadeSupplier,
             Supplier<DiscordGateway> discordGatewaySupplier,
             Supplier<UpdateService> updateServiceSupplier,
+            Supplier<SettingsRepository> settingsSupplier,
+            Supplier<Consumer<AuditEvent>> auditConsumerSupplier,
             Runnable reloadAction) {
         Consumer<Runnable> scheduler = task -> Bukkit.getScheduler().runTask(plugin, task);
         plugin.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
@@ -1274,17 +1157,21 @@ public final class MinecraftCommands {
                     townyFacadeSupplier,
                     discordGatewaySupplier,
                     updateServiceSupplier,
+                    settingsSupplier,
+                    auditConsumerSupplier,
                     configSupplier,
                     messagesSupplier,
                     consoleMessagesSupplier,
                     reloadAction,
-                    scheduler
+                    scheduler,
+                    null
             );
             Messages m = messagesSupplier != null ? messagesSupplier.get() : null;
             String description = (m != null) ? m.label("help.description") : "DiscordTowny in-game commands";
             registrar.register(node, description, List.of("discordtowny"));
         });
     }
+
 
     private static Messages resolveMessages(CommandSender sender, Supplier<Messages> messagesSupplier, Supplier<Messages> consoleMessagesSupplier) {
         if (sender instanceof Player) {
@@ -1594,5 +1481,283 @@ public final class MinecraftCommands {
         });
 
         return 1;
+    }
+
+
+    public static LiteralArgumentBuilder<CommandSourceStack> createAdminPrefixNode(
+            Supplier<SettingsRepository> settingsSupplier,
+            Supplier<Consumer<AuditEvent>> auditConsumerSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Consumer<Runnable> scheduler,
+            Executor asyncExecutor) {
+        LiteralArgumentBuilder<CommandSourceStack> prefix = Commands.literal("prefix");
+
+        // 1. /dt admin prefix (no argument) -> show prefix twice: rendered and raw
+        prefix.executes(ctx -> executeShowPrefix(ctx, messagesSupplier, consoleMessagesSupplier));
+
+        // 3. /dt admin prefix reset -> restore catalog prefix
+        prefix.then(Commands.literal("reset")
+                .executes(ctx -> executeResetPrefix(
+                        ctx,
+                        settingsSupplier,
+                        auditConsumerSupplier,
+                        spaceServiceSupplier,
+                        messagesSupplier,
+                        consoleMessagesSupplier,
+                        scheduler,
+                        asyncExecutor
+                )));
+
+        // 2. /dt admin prefix <texto...> -> greedy string captures the rest of the line
+        prefix.then(Commands.argument("texto", StringArgumentType.greedyString())
+                .executes(ctx -> executeSetPrefix(
+                        ctx,
+                        StringArgumentType.getString(ctx, "texto"),
+                        settingsSupplier,
+                        auditConsumerSupplier,
+                        spaceServiceSupplier,
+                        messagesSupplier,
+                        consoleMessagesSupplier,
+                        scheduler,
+                        asyncExecutor
+                )));
+
+        return prefix;
+    }
+
+    private static Consumer<AuditEvent> resolveAuditConsumer(Supplier<Consumer<AuditEvent>> auditConsumerSupplier) {
+        if (auditConsumerSupplier == null) {
+            return null;
+        }
+        try {
+            return auditConsumerSupplier.get();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static int executeShowPrefix(
+            CommandContext<CommandSourceStack> ctx,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier) {
+        CommandSender sender = ctx.getSource().getSender();
+        Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+        Messages activeMessages = messagesSupplier != null ? messagesSupplier.get() : msg;
+
+        String rawPrefix = activeMessages != null ? activeMessages.rawPrefix() : "";
+        Component renderedPrefix = LegacyComponentSerializer.legacyAmpersand().deserialize(rawPrefix);
+
+        Component renderedBase = msg.get("admin.prefix-rendered");
+        Component renderedLine = renderedBase.replaceText(b -> b.matchLiteral("{prefix}").replacement(renderedPrefix));
+
+        Component rawLine = msg.get("admin.prefix-raw", Map.of("raw", rawPrefix));
+
+        sender.sendMessage(renderedLine);
+        sender.sendMessage(rawLine);
+        return 1;
+    }
+
+    private static int executeResetPrefix(
+            CommandContext<CommandSourceStack> ctx,
+            Supplier<SettingsRepository> settingsSupplier,
+            Supplier<Consumer<AuditEvent>> auditConsumerSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Consumer<Runnable> scheduler,
+            Executor asyncExecutor) {
+        CommandSender sender = ctx.getSource().getSender();
+        Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+
+        Consumer<AuditEvent> auditConsumer = resolveAuditConsumer(auditConsumerSupplier);
+        if (auditConsumer == null) {
+            sender.sendMessage(msg.get("admin.prefix-starting"));
+            return 1;
+        }
+
+        Executor exec = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
+        CompletableFuture.runAsync(() -> {
+            SettingsRepository settings = resolveSettings(settingsSupplier);
+            if (settings == null) {
+                throw new IllegalStateException("Database settings repository unavailable");
+            }
+            settings.delete(SettingsRepository.KEY_CHAT_PREFIX);
+        }, exec).thenRun(() -> {
+            String target = resolveStage(msg, "admin.prefix-reset-target", "catalog default");
+            String failedStage = null;
+            try {
+                failedStage = resolveStage(msg, "admin.prefix-stage-audit", "audit dispatch");
+                String catPrefix = (messagesSupplier != null && messagesSupplier.get() != null)
+                        ? messagesSupplier.get().catalogPrefix()
+                        : "";
+                auditConsumer.accept(new AuditEvent(
+                        Instant.now(),
+                        AuditEvent.Severity.INFO,
+                        sender.getName(),
+                        "prefix",
+                        catPrefix.isEmpty() ? "reset" : catPrefix,
+                        true,
+                        Optional.of("reset")
+                ));
+
+                failedStage = resolveStage(msg, "admin.prefix-stage-live", "live application");
+                if (messagesSupplier != null && messagesSupplier.get() != null) {
+                    messagesSupplier.get().resetPrefix();
+                }
+                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-reset")));
+            } catch (Throwable t) {
+                final String stage = failedStage != null ? failedStage : resolveStage(msg, "admin.prefix-stage-live", "live application");
+                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete", Map.of(
+                        "target", target,
+                        "stage", stage
+                ))));
+            }
+        }).exceptionally(ex -> {
+            scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
+            return null;
+        });
+
+        return 1;
+    }
+
+    private static int executeSetPrefix(
+            CommandContext<CommandSourceStack> ctx,
+            String inputTexto,
+            Supplier<SettingsRepository> settingsSupplier,
+            Supplier<Consumer<AuditEvent>> auditConsumerSupplier,
+            Supplier<SpaceService> spaceServiceSupplier,
+            Supplier<Messages> messagesSupplier,
+            Supplier<Messages> consoleMessagesSupplier,
+            Consumer<Runnable> scheduler,
+            Executor asyncExecutor) {
+        CommandSender sender = ctx.getSource().getSender();
+        Messages msg = resolveMessages(sender, messagesSupplier, consoleMessagesSupplier);
+
+        String targetPrefix = inputTexto;
+        if ("\"\"".equals(targetPrefix) || "''".equals(targetPrefix)) {
+            targetPrefix = "";
+        }
+
+        // Refusals:
+        // 1. Placeholder delimiters
+        if (targetPrefix.contains("{") || targetPrefix.contains("}")) {
+            sender.sendMessage(msg.get("admin.prefix-placeholders"));
+            return 1;
+        }
+
+        // 2. Line breaks
+        if (targetPrefix.contains("\n") || targetPrefix.contains("\r")) {
+            sender.sendMessage(msg.get("admin.prefix-line-break"));
+            return 1;
+        }
+
+        // 3. Raw cap limit
+        if (targetPrefix.length() > MAX_RAW_PREFIX_LENGTH) {
+            sender.sendMessage(msg.get("admin.prefix-raw-too-long", Map.of("max", String.valueOf(MAX_RAW_PREFIX_LENGTH))));
+            return 1;
+        }
+
+        // 4. Visible length limit (counting characters with & codes removed)
+        int visLen = visibleLength(targetPrefix);
+        if (visLen > MAX_VISIBLE_PREFIX_LENGTH) {
+            sender.sendMessage(msg.get("admin.prefix-too-long", Map.of("max", String.valueOf(MAX_VISIBLE_PREFIX_LENGTH))));
+            return 1;
+        }
+
+        // 5. Startup window: audit sink unavailable
+        Consumer<AuditEvent> auditConsumer = resolveAuditConsumer(auditConsumerSupplier);
+        if (auditConsumer == null) {
+            sender.sendMessage(msg.get("admin.prefix-starting"));
+            return 1;
+        }
+
+        final String finalPrefix = targetPrefix;
+        Executor exec = asyncExecutor != null ? asyncExecutor : ForkJoinPool.commonPool();
+
+        CompletableFuture.runAsync(() -> {
+            SettingsRepository settings = resolveSettings(settingsSupplier);
+            if (settings == null) {
+                throw new IllegalStateException("Database settings repository unavailable");
+            }
+            settings.put(SettingsRepository.KEY_CHAT_PREFIX, finalPrefix);
+        }, exec).thenRun(() -> {
+            String failedStage = null;
+            try {
+                failedStage = resolveStage(msg, "admin.prefix-stage-audit", "audit dispatch");
+                auditConsumer.accept(new AuditEvent(
+                        Instant.now(),
+                        AuditEvent.Severity.INFO,
+                        sender.getName(),
+                        "prefix",
+                        finalPrefix,
+                        true,
+                        Optional.empty()
+                ));
+
+                failedStage = resolveStage(msg, "admin.prefix-stage-live", "live application");
+                if (messagesSupplier != null && messagesSupplier.get() != null) {
+                    messagesSupplier.get().setCustomPrefix(finalPrefix);
+                }
+                scheduler.accept(() -> {
+                    Component base = msg.get("admin.prefix-set");
+                    Component rendered = LegacyComponentSerializer.legacyAmpersand().deserialize(finalPrefix);
+                    Component reply = base.replaceText(b -> b.matchLiteral("{prefix}").replacement(rendered));
+                    sender.sendMessage(reply);
+                });
+            } catch (Throwable t) {
+                final String stage = failedStage != null ? failedStage : resolveStage(msg, "admin.prefix-stage-live", "live application");
+                scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete", Map.of(
+                        "target", finalPrefix,
+                        "stage", stage
+                ))));
+            }
+        }).exceptionally(ex -> {
+            scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
+            return null;
+        });
+
+        return 1;
+    }
+
+    public static String stripFormatting(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        return PlainTextComponentSerializer.plainText().serialize(
+                LegacyComponentSerializer.legacyAmpersand().deserialize(input)
+        );
+    }
+
+    public static int visibleLength(String input) {
+        String stripped = stripFormatting(input);
+        return stripped.codePointCount(0, stripped.length());
+    }
+
+    private static SettingsRepository resolveSettings(
+            Supplier<SettingsRepository> settingsSupplier) {
+        if (settingsSupplier != null) {
+            try {
+                SettingsRepository sr = settingsSupplier.get();
+                if (sr != null) return sr;
+            } catch (Throwable t) {
+                if (t instanceof RuntimeException re) throw re;
+                throw new RuntimeException(t);
+            }
+        }
+        return null;
+    }
+
+    private static String resolveStage(Messages msg, String key, String fallback) {
+        if (msg != null) {
+            try {
+                String label = msg.label(key);
+                if (label != null && !label.isBlank() && !label.startsWith("[missing message")) {
+                    return label;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return fallback;
     }
 }

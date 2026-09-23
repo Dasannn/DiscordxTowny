@@ -16,7 +16,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import java.util.stream.Stream;
 
 class YamlConfigLoaderTest {
     private static final String TOKEN = "token-secreto-de-prueba";
@@ -541,5 +543,36 @@ class YamlConfigLoaderTest {
         loader.load();
 
         assertTrue(handler.reply().contains("No tienes permiso"));
+    }
+
+    @Test
+    void productionReloadableMessagesWrapperDelegatesPrefixMethodsExplicitlyWithoutReflection() {
+        loader.load();
+        Messages messages = loader.messages();
+
+        // Initial catalog prefix through production wrapper
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+
+        // Update custom prefix through the production wrapper that wiring builds
+        messages.setCustomPrefix("&9[CustomServer]&r ");
+        assertEquals("&9[CustomServer]&r ", messages.rawPrefix());
+
+        // What a player sees is updated through the wrapper
+        Component comp = messages.get("linking.code-invalid");
+        String rendered = LegacyComponentSerializer.legacySection().serialize(comp);
+        assertTrue(rendered.contains("\u00a79[CustomServer]"), "Player rendered message must reflect custom prefix");
+
+        // Plain text for console/Discord retains catalog prefix
+        String plain = messages.plain("linking.code-invalid");
+        assertTrue(plain.contains("[DiscordTowny]"));
+        assertFalse(plain.contains("[CustomServer]"));
+
+        // Reset prefix through wrapper restores catalog default
+        messages.resetPrefix();
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+        Component resetComp = messages.get("linking.code-invalid");
+        String resetRendered = LegacyComponentSerializer.legacySection().serialize(resetComp);
+        assertTrue(resetRendered.contains("\u00a7bDiscordTowny"));
+        assertFalse(resetRendered.contains("[CustomServer]"));
     }
 }

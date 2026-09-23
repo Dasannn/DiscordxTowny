@@ -171,15 +171,39 @@ class MinecraftCommandsTest {
 
     private LiteralCommandNode<CommandSourceStack> createRoot(java.util.function.Consumer<Runnable> scheduler) {
         return MinecraftCommands.createCommandNode(
-                linkService, spaceService, syncService, townyFacade, discordGateway,
-                config, messages, consoleMessages, reloadAction, scheduler
+                () -> linkService,
+                () -> spaceService,
+                () -> syncService,
+                () -> townyFacade,
+                () -> discordGateway,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> config,
+                () -> messages,
+                () -> consoleMessages,
+                reloadAction,
+                scheduler,
+                null
         );
     }
 
     private LiteralCommandNode<CommandSourceStack> createRoot(UpdateService updateService) {
         return MinecraftCommands.createCommandNode(
-                linkService, spaceService, syncService, townyFacade, discordGateway,
-                updateService, config, messages, consoleMessages, reloadAction, Runnable::run
+                () -> linkService,
+                () -> spaceService,
+                () -> syncService,
+                () -> townyFacade,
+                () -> discordGateway,
+                () -> updateService,
+                () -> null,
+                () -> null,
+                () -> config,
+                () -> messages,
+                () -> consoleMessages,
+                reloadAction,
+                Runnable::run,
+                null
         );
     }
 
@@ -1227,8 +1251,20 @@ class MinecraftCommandsTest {
         doThrow(new RuntimeException("Configuration syntax error")).when(failingReload).run();
 
         LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
-                linkService, spaceService, syncService, townyFacade, discordGateway,
-                config, messages, consoleMessages, failingReload, Runnable::run
+                () -> linkService,
+                () -> spaceService,
+                () -> syncService,
+                () -> townyFacade,
+                () -> discordGateway,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> config,
+                () -> messages,
+                () -> consoleMessages,
+                failingReload,
+                Runnable::run,
+                null
         );
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
@@ -1364,8 +1400,20 @@ class MinecraftCommandsTest {
         );
 
         LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
-                linkService, spaceService, syncService, townyFacade, discordGateway,
-                reportConfig, messages, consoleMessages, reloadAction, Runnable::run
+                () -> linkService,
+                () -> spaceService,
+                () -> syncService,
+                () -> townyFacade,
+                () -> discordGateway,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> reportConfig,
+                () -> messages,
+                () -> consoleMessages,
+                reloadAction,
+                Runnable::run,
+                null
         );
 
         Player mayor = mock(Player.class);
@@ -2043,8 +2091,20 @@ class MinecraftCommandsTest {
             throw new RuntimeException((String) null);
         };
         LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
-                linkService, spaceService, syncService, townyFacade, discordGateway,
-                config, messages, consoleMessages, failingReload, Runnable::run
+                () -> linkService,
+                () -> spaceService,
+                () -> syncService,
+                () -> townyFacade,
+                () -> discordGateway,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> config,
+                () -> messages,
+                () -> consoleMessages,
+                failingReload,
+                Runnable::run,
+                null
         );
         Player admin = mock(Player.class);
         when(admin.hasPermission("discordtowny.admin")).thenReturn(true);
@@ -2062,8 +2122,20 @@ class MinecraftCommandsTest {
             throw new RuntimeException((String) null);
         };
         LiteralCommandNode<CommandSourceStack> root = MinecraftCommands.createCommandNode(
-                linkService, spaceService, syncService, townyFacade, discordGateway,
-                config, messages, consoleMessages, failingReload, Runnable::run
+                () -> linkService,
+                () -> spaceService,
+                () -> syncService,
+                () -> townyFacade,
+                () -> discordGateway,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> config,
+                () -> messages,
+                () -> consoleMessages,
+                failingReload,
+                Runnable::run,
+                null
         );
         ConsoleCommandSender console = mock(ConsoleCommandSender.class);
         when(console.hasPermission("discordtowny.admin")).thenReturn(true);
@@ -2231,6 +2303,20 @@ class MinecraftCommandsTest {
         when(spaceService.findAll()).thenReturn(CompletableFuture.completedFuture(List.of()));
         root.getChild("admin").getChild("list").getCommand().run(ctx);
         verify(admin).sendMessage(messages.get("admin.list-empty"));
+    }
+
+    @Test
+    void adminPrefixNodeExistsUnderAdminTreeWithSubcommands() {
+        LiteralCommandNode<CommandSourceStack> root = createRoot();
+        var adminNode = root.getChild("admin");
+        assertNotNull(adminNode, "admin node must exist");
+        var prefixNode = adminNode.getChild("prefix");
+        assertNotNull(prefixNode, "prefix node must exist under admin");
+        assertNotNull(prefixNode.getCommand(), "prefix node must have an executor (show prefix)");
+        assertNotNull(prefixNode.getChild("reset"), "reset subcommand must exist under prefix");
+        assertNotNull(prefixNode.getChild("reset").getCommand(), "reset subcommand must have an executor");
+        assertNotNull(prefixNode.getChild("texto"), "texto argument must exist under prefix");
+        assertNotNull(prefixNode.getChild("texto").getCommand(), "texto argument must have an executor");
     }
 
     @Test

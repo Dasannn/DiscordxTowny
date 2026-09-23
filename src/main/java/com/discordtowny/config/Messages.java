@@ -20,6 +20,10 @@ public interface Messages {
     /** Plain-text version, for Discord and for the console. Carries the prefix. */
     String plain(String key, Map<String, String> placeholders);
 
+    default String plain(String key) {
+        return plain(key, Map.of());
+    }
+
     /**
      * The text on its own: no prefix, no formatting.
      *
@@ -35,4 +39,40 @@ public interface Messages {
     default String label(String key) {
         return label(key, Map.of());
     }
+
+    /**
+     * Raw prefix currently in effect, including formatting codes (e.g. &amp;8[&amp;bDiscordTowny&amp;8] &amp;r).
+     */
+    default String rawPrefix() {
+        return "";
+    }
+
+    /**
+     * Default prefix from the catalog (file/resource), ignoring custom store.
+     */
+    default String catalogPrefix() {
+        return "";
+    }
+
+    /**
+     * Rendered prefix as an Adventure Component, with formatting codes parsed.
+     */
+    default Component renderedPrefix() {
+        return net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacyAmpersand().deserialize(rawPrefix());
+    }
+
+    /**
+     * Updates the in-memory custom prefix.
+     */
+    default void setCustomPrefix(String prefix) {}
+
+    /**
+     * Resets the custom prefix, reverting to the catalog default.
+     */
+    default void resetPrefix() {}
+
+    /**
+     * Invalidates the cached prefix so it re-reads from storage on next access.
+     */
+    default void invalidatePrefix() {}
 }

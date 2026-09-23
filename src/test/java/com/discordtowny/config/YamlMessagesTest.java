@@ -6,8 +6,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.discordtowny.storage.SettingsRepository;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.junit.jupiter.api.Test;
+import net.kyori.adventure.text.Component;
 
 class YamlMessagesTest {
     @Test
@@ -142,5 +144,233 @@ class YamlMessagesTest {
         assertEquals("[missing message: saludo]", messages.plain("saludo", Map.of()));
         assertEquals(1, warnings.size());
         assertEquals("messages_es.yml: missing message saludo", warnings.getFirst());
+    }
+
+    @Test
+    void customPrefixAppliesToGetWhilePlainRetainsCatalogPrefix() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&8[Catalog] &r", "hello", "Hello {name}!"),
+                warning -> {}
+        );
+        messages.setCustomPrefix("&c[Custom] &r");
+
+        // get() carries custom prefix
+        String rendered = LegacyComponentSerializer.legacySection().serialize(messages.get("hello", Map.of("name", "Ana")));
+        assertTrue(rendered.contains("\u00a7c[Custom]"));
+        assertEquals("&c[Custom] &r", messages.rawPrefix());
+
+        // plain() still carries catalog prefix
+        String plain = messages.plain("hello", Map.of("name", "Ana"));
+        assertTrue(plain.startsWith("[Catalog]"));
+        assertFalse(plain.contains("[Custom]"));
+        assertEquals("[Catalog] Hello Ana!", plain);
+    }
+
+    @Test
+    void emptyPrefixResultsInNoPrefixForGetWhilePlainRetainsCatalogPrefix() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&8[Catalog] &r", "hello", "Hello {name}!"),
+                warning -> {}
+        );
+        messages.setCustomPrefix("");
+
+        // get() has no prefix
+        String rendered = LegacyComponentSerializer.legacySection().serialize(messages.get("hello", Map.of("name", "Ana")));
+        assertFalse(rendered.contains("[Catalog]"));
+        assertEquals("", messages.rawPrefix());
+
+        // plain() still carries catalog prefix
+        String plain = messages.plain("hello", Map.of("name", "Ana"));
+        assertTrue(plain.startsWith("[Catalog]"));
+
+        // Reset restores catalog prefix
+        messages.resetPrefix();
+        String resetRendered = LegacyComponentSerializer.legacySection().serialize(messages.get("hello", Map.of("name", "Ana")));
+        assertTrue(resetRendered.contains("[Catalog]"));
+        assertEquals("&8[Catalog] &r", messages.rawPrefix());
+    }
+
+    @Test
+    void storedPrefixSurvivesSimulatedRestart() {
+        com.discordtowny.storage.SettingsRepository settings = new com.discordtowny.storage.SettingsRepository() {
+            private String prefix = "&e[Stored] ";
+            @Override
+            public java.util.Optional<String> get(String key) {
+                return com.discordtowny.storage.SettingsRepository.KEY_CHAT_PREFIX.equals(key)
+                        ? java.util.Optional.ofNullable(prefix) : java.util.Optional.empty();
+            }
+            @Override
+            public void put(String key, String value) {
+                if (com.discordtowny.storage.SettingsRepository.KEY_CHAT_PREFIX.equals(key)) prefix = value;
+            }
+            @Override
+            public void delete(String key) {
+                if (com.discordtowny.storage.SettingsRepository.KEY_CHAT_PREFIX.equals(key)) prefix = null;
+            }
+        };
+
+        var messages1 = new YamlMessages(Map.of("prefix", "[Catalog] ", "hello", "World"), warning -> {}, settings);
+        assertEquals("&e[Stored] ", messages1.rawPrefix());
+
+        // Update prefix through messages
+        messages1.setCustomPrefix("&a[NewStored] ");
+        settings.put(com.discordtowny.storage.SettingsRepository.KEY_CHAT_PREFIX, "&a[NewStored] ");
+
+        // Simulated restart: construct a fresh YamlMessages pointing to the same store
+        var messages2 = new YamlMessages(Map.of("prefix", "[Catalog] ", "hello", "World"), warning -> {}, settings);
+        assertEquals("&a[NewStored] ", messages2.rawPrefix());
+        String rendered = LegacyComponentSerializer.legacySection().serialize(messages2.get("hello"));
+        assertTrue(rendered.contains("\u00a7a[NewStored]"));
+    }
+
+    @Test
+    void failingSettingsStoreFallsBackToCatalogPrefixWithoutFailing() {
+        com.discordtowny.storage.SettingsRepository failingSettings = new com.discordtowny.storage.SettingsRepository() {
+            @Override
+            public java.util.Optional<String> get(String key) {
+                throw new com.discordtowny.storage.StorageException("Database unreachable");
+            }
+            @Override
+            public void put(String key, String value) {
+                throw new com.discordtowny.storage.StorageException("Database unreachable");
+            }
+            @Override
+            public void delete(String key) {
+                throw new com.discordtowny.storage.StorageException("Database unreachable");
+            }
+        };
+
+        var messages = new YamlMessages(Map.of("prefix", "[Catalog] ", "hello", "World"), warning -> {}, failingSettings);
+        assertEquals("[Catalog] ", messages.rawPrefix());
+
+        // Messages still print with catalog prefix
+        String plain = messages.plain("hello");
+        assertEquals("[Catalog] World", plain);
+        assertDoesNotThrow(() -> messages.get("hello"));
+    }
+
+    private static SettingsRepository inMemorySettings(String initialPrefix) {
+        return new SettingsRepository() {
+            private String prefix = initialPrefix;
+            @Override
+            public java.util.Optional<String> get(String key) {
+                return SettingsRepository.KEY_CHAT_PREFIX.equals(key)
+                        ? java.util.Optional.ofNullable(prefix) : java.util.Optional.empty();
+            }
+            @Override
+            public void put(String key, String value) {
+                if (SettingsRepository.KEY_CHAT_PREFIX.equals(key)) prefix = value;
+            }
+            @Override
+            public void delete(String key) {
+                if (SettingsRepository.KEY_CHAT_PREFIX.equals(key)) prefix = null;
+            }
+        };
+    }
+
+    @Test
+    void messagesRenderWithStoredPrefixWhenSettingsRepositorySuppliedThroughConstruction() {
+        SettingsRepository settings = inMemorySettings("&6[StoredPrefix] ");
+
+        var messages = new YamlMessages(
+                Map.of("prefix", "[CatalogPrefix] ", "greeting", "Hello {name}!"),
+                warning -> {},
+                settings
+        );
+
+        assertEquals("&6[StoredPrefix] ", messages.rawPrefix());
+        String rendered = LegacyComponentSerializer.legacySection().serialize(
+                messages.get("greeting", Map.of("name", "Alice"))
+        );
+        assertTrue(rendered.contains("\u00a76[StoredPrefix]"));
+        assertTrue(rendered.contains("Hello Alice!"));
+        assertFalse(rendered.contains("[CatalogPrefix]"));
+    }
+
+    @Test
+    void twoYamlMessagesBuiltWithDifferentSettingsRepositoriesDoNotAffectEachOther() {
+        SettingsRepository settingsA = inMemorySettings("&c[PrefixA] ");
+        SettingsRepository settingsB = inMemorySettings("&9[PrefixB] ");
+
+        var messagesA = new YamlMessages(
+                Map.of("prefix", "[Catalog] ", "test", "Message A"),
+                warning -> {},
+                settingsA
+        );
+        var messagesB = new YamlMessages(
+                Map.of("prefix", "[Catalog] ", "test", "Message B"),
+                warning -> {},
+                settingsB
+        );
+
+        // Verify independent initial prefixes
+        assertEquals("&c[PrefixA] ", messagesA.rawPrefix());
+        assertEquals("&9[PrefixB] ", messagesB.rawPrefix());
+
+        String renderedA = LegacyComponentSerializer.legacySection().serialize(messagesA.get("test"));
+        String renderedB = LegacyComponentSerializer.legacySection().serialize(messagesB.get("test"));
+        assertTrue(renderedA.contains("\u00a7c[PrefixA]"));
+        assertFalse(renderedA.contains("[PrefixB]"));
+        assertTrue(renderedB.contains("\u00a79[PrefixB]"));
+        assertFalse(renderedB.contains("[PrefixA]"));
+
+        // Mutating messagesA does not bleed into messagesB
+        messagesA.setCustomPrefix("&e[UpdatedA] ");
+        assertEquals("&e[UpdatedA] ", messagesA.rawPrefix());
+        assertEquals("&9[PrefixB] ", messagesB.rawPrefix());
+        String updatedRenderedB = LegacyComponentSerializer.legacySection().serialize(messagesB.get("test"));
+        assertTrue(updatedRenderedB.contains("\u00a79[PrefixB]"));
+        assertFalse(updatedRenderedB.contains("[UpdatedA]"));
+
+        // Resetting messagesA does not affect messagesB
+        messagesA.resetPrefix();
+        assertEquals("[Catalog] ", messagesA.rawPrefix());
+        assertEquals("&9[PrefixB] ", messagesB.rawPrefix());
+    }
+
+    @Test
+    void prefixEndingInObfuscationCodeDoesNotBleedIntoMessageBody() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&8[&bDT&8]&k ", "saludo", "&aHello {name}!"),
+                warning -> {}
+        );
+        Component component = messages.get("saludo", Map.of("name", "Bob"));
+        String legacy = LegacyComponentSerializer.legacySection().serialize(component);
+        assertTrue(legacy.contains("\u00a7k"));
+        int greenIndex = legacy.indexOf("\u00a7a");
+        assertTrue(greenIndex >= 0);
+        String bodyPart = legacy.substring(greenIndex);
+        assertFalse(bodyPart.contains("\u00a7k"), "Message body must not carry obfuscation from prefix");
+        assertTrue(bodyPart.contains("Hello Bob!"));
+    }
+
+    @Test
+    void prefixWithColorAndNoResetDoesNotBleedIntoMessageBody() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&c[Admin] ", "saludo", "&eHello {name}!"),
+                warning -> {}
+        );
+        Component component = messages.get("saludo", Map.of("name", "Bob"));
+        String legacy = LegacyComponentSerializer.legacySection().serialize(component);
+        assertTrue(legacy.startsWith("\u00a7c[Admin] "));
+        int yellowIndex = legacy.indexOf("\u00a7e");
+        assertTrue(yellowIndex >= 0);
+        String bodyPart = legacy.substring(yellowIndex);
+        assertTrue(bodyPart.contains("Hello Bob!"));
+    }
+
+    @Test
+    void prefixWithColorAndNoResetDoesNotColorUncoloredMessageBody() {
+        var messages = new YamlMessages(
+                Map.of("prefix", "&c[Admin] ", "info", "Plain message"),
+                warning -> {}
+        );
+        Component component = messages.get("info");
+        String legacy = LegacyComponentSerializer.legacySection().serialize(component);
+        assertTrue(legacy.startsWith("\u00a7c[Admin] "));
+        int adminEnd = legacy.indexOf("[Admin] ") + "[Admin] ".length();
+        String afterPrefix = legacy.substring(adminEnd);
+        assertTrue(afterPrefix.startsWith("\u00a7r") || !afterPrefix.startsWith("\u00a7c"));
+        assertTrue(afterPrefix.contains("Plain message"));
     }
 }

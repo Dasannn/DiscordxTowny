@@ -943,6 +943,48 @@ public final class YamlConfigLoader implements ConfigLoader {
         public String label(String key) {
             return current.label(key);
         }
+
+        @Override
+        public String rawPrefix() {
+            Messages m = current;
+            return m != null ? m.rawPrefix() : "";
+        }
+
+        @Override
+        public String catalogPrefix() {
+            Messages m = current;
+            return m != null ? m.catalogPrefix() : "";
+        }
+
+        @Override
+        public Component renderedPrefix() {
+            Messages m = current;
+            return m != null ? m.renderedPrefix() : Component.empty();
+        }
+
+        @Override
+        public void setCustomPrefix(String prefix) {
+            Messages m = current;
+            if (m != null) {
+                m.setCustomPrefix(prefix);
+            }
+        }
+
+        @Override
+        public void resetPrefix() {
+            Messages m = current;
+            if (m != null) {
+                m.resetPrefix();
+            }
+        }
+
+        @Override
+        public void invalidatePrefix() {
+            Messages m = current;
+            if (m != null) {
+                m.invalidatePrefix();
+            }
+        }
     }
 
     private static final class Values {

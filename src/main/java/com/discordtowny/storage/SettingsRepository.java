@@ -19,6 +19,9 @@ public interface SettingsRepository {
     /** ID of the global mayor role. */
     String KEY_MAYOR_ROLE_ID = "mayor_role_id";
 
+    /** Custom chat prefix set by administrators. */
+    String KEY_CHAT_PREFIX = "chat_prefix";
+
     Optional<String> get(String key);
 
     /** Inserts or replaces. */

@@ -11,6 +11,8 @@ import com.discordtowny.space.SpaceService;
 import com.discordtowny.storage.HikariStorage;
 import com.discordtowny.storage.Storage;
 import com.discordtowny.towny.TownyFacade;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -346,5 +348,52 @@ class DiscordTownyWiringAuditTest {
                         && record.getMessage().contains("dropped")
                         && record.getMessage().contains("1 queued audit event"));
         assertTrue(warningFound, "A warning stating the dropped event count must be logged on timeout");
+    }
+
+    @Test
+    @DisplayName("Production messages wrapper built by wiring updates what players see without reflection")
+    void productionWiringMessagesWrapperUpdatesPlayerMessage() throws Exception {
+        YamlConfigLoader realLoader = new YamlConfigLoader(tempFolder, warning -> {});
+        YamlConfigLoader loader = mock(YamlConfigLoader.class);
+        when(loader.load()).thenReturn(config);
+        when(loader.messages()).thenReturn(realLoader.messages());
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(tempFolder, Logger.getLogger("Test"), Runnable::run, null, () -> {}, null, "1.0.0");
+        wiring.setConfigLoaderForTest(loader);
+        wiring.setConfigForTest(config);
+        wiring.setStorageForTest(storage);
+        wiring.setTownyFacadeForTest(mock(TownyFacade.class));
+        wiring.setDiscordGatewayForTest(discordGateway);
+
+        wiring.reload();
+
+        Messages liveMessages = wiring.getMessages();
+        assertNotNull(liveMessages, "Wiring must expose live Messages wrapper");
+
+        // Verify initial catalog prefix
+        assertEquals("&8[&bDiscordTowny&8] &r", liveMessages.rawPrefix());
+
+        // Mutate prefix through the live Messages instance (as done by /dt admin prefix)
+        liveMessages.setCustomPrefix("&e[WiringCustom]&r ");
+        assertEquals("&e[WiringCustom]&r ", liveMessages.rawPrefix());
+
+        // Verify that what a player sees changes
+        Component playerMsg = liveMessages.get("linking.code-invalid");
+        String rendered = LegacyComponentSerializer.legacySection().serialize(playerMsg);
+        assertTrue(rendered.contains("\u00a7e[WiringCustom]"), "Player message must carry new prefix");
+        assertFalse(rendered.contains("\u00a7bDiscordTowny"));
+
+        // Verify plain retains catalog prefix
+        String plainMsg = liveMessages.plain("linking.code-invalid");
+        assertTrue(plainMsg.contains("[DiscordTowny]"));
+        assertFalse(plainMsg.contains("[WiringCustom]"));
+
+        // Verify reset restores catalog default
+        liveMessages.resetPrefix();
+        assertEquals("&8[&bDiscordTowny&8] &r", liveMessages.rawPrefix());
+        Component restoredMsg = liveMessages.get("linking.code-invalid");
+        String restoredRendered = LegacyComponentSerializer.legacySection().serialize(restoredMsg);
+        assertTrue(restoredRendered.contains("\u00a7bDiscordTowny"));
+        assertFalse(restoredRendered.contains("[WiringCustom]"));
     }
 }
