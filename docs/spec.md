@@ -110,6 +110,7 @@ Prefix `/dt`, alias `/discordtowny`.
 | `/dt admin purge` | Admin | Permanently deletes archived spaces, with confirmation |
 | `/dt admin update` | Admin | Checks and downloads the latest version right now, without waiting for the automatic cycle |
 | `/dt admin update status` | Admin | Indicates the current version, available version, and whether a download is pending |
+| `/dt admin prefix [texto\|reset]` | Admin | Shows, changes or restores the prefix the plugin puts before its chat messages |
 
 `/dt help` only shows the commands that the person executing it can use: a player
 without a town does not see mayor commands, and no one without permission sees
@@ -348,6 +349,27 @@ without `discordtowny.admin` never sees the administration block.
 Holding `discordtowny.admin` does not imply `discordtowny.use`: an operator who
 was explicitly denied the player commands keeps that denial. Inheritance between
 the two is the server owner's decision to configure, not ours to assume.
+
+## 9.1 The chat prefix
+
+Every message the plugin writes in the game begins with a prefix, defined in both
+catalogs as `prefix` and rendered with Essentials-style `&` colour codes.
+
+An administrator can change it from the game with `/dt admin prefix`, so a server
+can put its own name and colours in front of the plugin's messages without editing
+a file or restarting:
+
+- with no argument, it shows the prefix in use, both as it looks and as it is
+  written, so the administrator can copy and adapt it;
+- with an argument, it becomes the new prefix, immediately and for everyone;
+- with `reset`, the catalog's prefix returns.
+
+A changed prefix is stored, survives a restart and a reload, and is not undone by
+a catalog upgrade. It applies to what players read in chat. The console and the
+plugin's Discord messages keep the catalog prefix, for the same reason the console
+stays in English whatever the players read: a log has to remain identifiable.
+
+Changing the prefix is a privileged action and is audited like the rest.
 
 ## 10. Errors and failures
 
