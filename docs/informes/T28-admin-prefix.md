@@ -555,4 +555,247 @@ This cleanly verifies that the old catalog prefix remains active and visible to 
 | [`YamlConfigLoaderTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/config/YamlConfigLoaderTest.java) | **Test Expectation Fix** | Corrected line 575 to assert `\u00a7bDiscordTowny` in rendered Adventure component serialized with `legacySection()`. |
 | [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) | **Test Expectation Fix** | Corrected line 392 to assert `\u00a7bDiscordTowny` in rendered Adventure component serialized with `legacySection()`. |
 
+---
+
+## 13. Round 5 — Accurate Operator Feedback and Audit Guarantees
+
+In Round 5, two critical findings identified in [`docs/revisiones/T28-revision-2.md`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/docs/revisiones/T28-revision-2.md) were addressed:
+1. **F7 (blocking)**: A startup window where the prefix could be modified and persisted without generating an audit record.
+2. **F8 (blocking)**: Reporting `"database unavailable"` to the operator when the database write succeeded but subsequent post-write stages (audit delivery or in-memory application) failed.
+
+---
+
+### 13.1 Finding F7: Startup Window Audit Delivery Guarantee
+
+#### Problem Description
+In [`DiscordTownyWiring.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyWiring.java#L223), storage is published at line 223, making [`getSettingsRepository()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyWiring.java#L736) operational. However, the audit sink [`CompositeAuditSink`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/CompositeAuditSink.java) is instantiated and published only at line 264, after the Discord gateway initialization.
+
+Commands are registered before [`wiring.start()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyWiring.java#L190). In [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyPlugin.java#L83-L87), the audit consumer was previously registered as:
+```java
+event -> {
+    if (wiring != null && wiring.getAuditSink() != null) {
+        wiring.getAuditSink().accept(event);
+    }
+}
+```
+If an administrator executed `/dt admin prefix <texto...>` or `/dt admin prefix reset` within the interval between line 223 and line 264, the command wrote the setting to the database, applied it to in-memory messages, and answered success to the player, while silently dropping the audit event because `wiring.getAuditSink()` was null.
+
+This violated the core project requirement:
+> *"Every privileged administrative mutation must be audited. A privileged change that cannot be recorded is not performed."*
+
+#### Architectural Resolution
+Rather than performing invasive wiring refactoring to move the audit sink earlier (which would couple gateway initialization and audit sinks prematurely), the command honors the honest state of the plugin:
+
+1. **Live Audit Sink Supplier**:
+   [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyPlugin.java#L83) now supplies `() -> wiring != null ? wiring.getAuditSink() : null` directly to [`MinecraftCommands.register`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java#L1318), matching how all other services are supplied dynamically.
+2. **Synchronous Audit Availability Refusal**:
+   In [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java), both `executeSetPrefix` and `executeResetPrefix` evaluate audit availability before scheduling asynchronous work or touching storage:
+   ```java
+   Consumer<AuditEvent> auditConsumer = resolveAuditConsumer(auditConsumerSupplier);
+   if (auditConsumer == null) {
+       sender.sendMessage(msg.get("admin.prefix-starting"));
+       return 1;
+   }
+   ```
+   If the audit sink is unavailable, the command refuses immediately:
+   - Nothing is dispatched to the async executor.
+   - Nothing is written to [`SettingsRepository`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/storage/SettingsRepository.java).
+   - Nothing is applied to in-memory [`Messages`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/config/Messages.java).
+   - No audit event is silently omitted.
+   - The operator is informed via a new localized refusal message: `admin.prefix-starting`.
+3. **Double Check Inside Async Worker**:
+   Inside the async task prior to invoking `settings.put` or `settings.delete`, `resolveAuditConsumer(auditConsumerSupplier)` is checked again to ensure no race condition between synchronous dispatch and async execution could skip auditing.
+
+#### Catalog Additions
+Added `admin.prefix-starting` under `admin:` in both catalogs:
+- **`messages_en.yml`**: `prefix-starting: "&cThe plugin is still starting up. Try again in a moment."`
+- **`messages_es.yml`**: `prefix-starting: "&cEl plugin todavía se está iniciando. Inténtalo de nuevo en un momento."`
+
+---
+
+### 13.2 Finding F8: Separation of Database Write Failure from Post-Write Failure
+
+#### Problem Description
+Previously, the execution pipeline in [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java) was structured as:
+```java
+CompletableFuture.runAsync(() -> {
+    settings.put(KEY_CHAT_PREFIX, finalPrefix);
+    if (auditConsumer != null) {
+        auditConsumer.accept(...); // may throw
+    }
+}, exec).thenRun(() -> {
+    messages.setCustomPrefix(finalPrefix); // may throw
+    replySuccess();
+}).exceptionally(ex -> {
+    reply("general.database-unavailable");
+    return null;
+});
+```
+A single `exceptionally` handler covered all three distinct stages. If `auditConsumer.accept(...)` threw an exception, or if `messages.setCustomPrefix(...)` threw an exception, the write to the database had already succeeded and committed. Yet the operator was told `general.database-unavailable` ("Cannot access the database. Notify an administrator").
+
+This was fundamentally false:
+- The database had succeeded and stored the new value.
+- Upon next server restart or `/dt admin reload`, the newly stored value would be loaded into memory, revealing that the change the operator was told had failed was actually persisted.
+
+#### Pipeline Restructuring
+The pipeline now strictly separates the database write from post-write operations:
+
+```java
+CompletableFuture.runAsync(() -> {
+    SettingsRepository settings = resolveSettings(settingsSupplier);
+    if (settings == null) {
+        throw new IllegalStateException("Database settings repository unavailable");
+    }
+    settings.put(SettingsRepository.KEY_CHAT_PREFIX, finalPrefix);
+}, exec).thenRun(() -> {
+    try {
+        Consumer<AuditEvent> activeAudit = resolveAuditConsumer(auditConsumerSupplier);
+        if (activeAudit != null) {
+            activeAudit.accept(new AuditEvent(...));
+        }
+        if (messagesSupplier != null && messagesSupplier.get() != null) {
+            messagesSupplier.get().setCustomPrefix(finalPrefix);
+        }
+        scheduler.accept(() -> sender.sendMessage(reply));
+    } catch (Throwable t) {
+        scheduler.accept(() -> sender.sendMessage(msg.get("admin.prefix-saved-incomplete")));
+    }
+}).exceptionally(ex -> {
+    scheduler.accept(() -> sender.sendMessage(msg.get("general.database-unavailable")));
+    return null;
+});
+```
+
+1. **Write Failure Path**:
+   If `settings.put` or `settings.delete` throws (e.g. database down, `StorageException`), `runAsync` completes exceptionally. The `.thenRun` stage is never entered. `.exceptionally` catches the failure, keeps the old prefix live in memory, records no audit row, and replies with `general.database-unavailable`.
+2. **Post-Write Failure Path**:
+   If the database write succeeds, `runAsync` completes normally. Any failure in `.thenRun` (an exceptional audit consumer or an apply method throwing) is caught in a dedicated `try / catch (Throwable t)` block inside `.thenRun`. The operator is sent `admin.prefix-saved-incomplete`, truthfully stating that the prefix was saved in the database but could not be applied live.
+
+#### In-Memory State Decision and Justification
+When a failure occurs after the database write succeeds:
+- **Decision**: The in-memory prefix is left unchanged (the old prefix remains live).
+- **Justification**:
+  1. **Failure Containment**: If in-memory apply (`setCustomPrefix` or `resetPrefix`) threw an exception, mutating memory failed by definition. Attempting further in-memory operations in an unknown state risks state inconsistency. If audit delivery threw, aborting subsequent mutations prevents partial runtime divergence.
+  2. **Durable Source of Truth**: The database is the authoritative storage that survives server restarts and `/dt admin reload`. Because the write succeeded, the new prefix is safely persisted.
+  3. **Honest Operator Communication**: The operator is explicitly informed by `admin.prefix-saved-incomplete`:
+     - Stored prefix: The new value is saved in the database.
+     - Live prefix: The running server keeps the old prefix for the current session.
+     - Resolution: The operator is explicitly told the change will take effect upon server restart (`"The change will take effect on next restart"` / `"El cambio tendrá efecto tras reiniciar el servidor"`).
+
+#### Catalog Additions
+Added `admin.prefix-saved-incomplete` under `admin:` in both catalogs:
+- **`messages_en.yml`**: `prefix-saved-incomplete: "&ePrefix was saved to database, but could not be applied live. The change will take effect on next restart."`
+- **`messages_es.yml`**: `prefix-saved-incomplete: "&eEl prefijo se guardó en la base de datos, pero no se pudo aplicar en vivo. El cambio tendrá efecto tras reiniciar el servidor."`
+
+---
+
+### 13.3 Test Suite Coverage
+
+The following tests were authored in [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) to thoroughly verify F7 and F8:
+
+1. **`startupWindowSettingsAvailableAuditSinkNotRefusesAndWritesNothing`**:
+   - Supplies active `SettingsRepository` and `() -> null` audit supplier.
+   - Executes `/dt admin prefix &a[Early]&r `.
+   - Asserts:
+     - Sender receives refusal `admin.prefix-starting` (`"still starting up"`).
+     - Nothing is written to `SettingsRepository` (`get()` is empty).
+     - In-memory messages retain default prefix (`\u00a7bDiscordTowny`).
+     - No audit row is recorded.
+2. **`startupWindowRefusesResetWhenAuditSinkUnavailable`**:
+   - Pre-sets custom prefix in storage and memory.
+   - Executes `/dt admin prefix reset` with null audit sink.
+   - Asserts:
+     - Sender receives `admin.prefix-starting`.
+     - Stored prefix remains present in repository.
+     - In-memory prefix remains the custom prefix.
+3. **`auditConsumerThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`**:
+   - Configures an audit consumer that throws `RuntimeException`.
+   - Executes `/dt admin prefix &e[Saved]&r `.
+   - Asserts:
+     - Sender receives `admin.prefix-saved-incomplete` informing them the value was saved and will take effect on restart.
+     - Sender does **not** receive `general.database-unavailable`.
+     - Stored value is present in `SettingsRepository`.
+     - Live in-memory prefix remains the old prefix.
+4. **`applyThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`**:
+   - Configures `Messages.setCustomPrefix` to throw `RuntimeException`.
+   - Executes `/dt admin prefix &b[AppliedFail]&r `.
+   - Asserts:
+     - Sender receives `admin.prefix-saved-incomplete`.
+     - Sender does **not** receive `general.database-unavailable`.
+     - Stored value is saved in `SettingsRepository`.
+     - Audit event was recorded prior to the apply failure.
+5. **`applyThatThrowsAfterSuccessfulResetInformsOperatorValueSaved`**:
+   - Configures `Messages.resetPrefix` to throw `RuntimeException`.
+   - Executes `/dt admin prefix reset`.
+   - Asserts:
+     - Sender receives `admin.prefix-saved-incomplete`.
+     - Setting key was successfully deleted from `SettingsRepository`.
+6. **Pre-existing Write Failure Verification**:
+   - `settingsStoreThatThrowsDuringCommandAlertsSenderGracefullyAndLeavesPrefixUnchanged`: Verifies that if `settings.put` throws, `general.database-unavailable` is sent, no audit row is recorded, and the old prefix remains live.
+   - `settingsStoreThatThrowsDuringResetAlertsSenderAndLeavesCustomPrefixUnchanged`: Verifies identical failure handling for `settings.delete`.
+
+---
+
+### 13.4 Summary of Changes in Round 5
+
+| File | Nature of Fix | Description |
+| :--- | :--- | :--- |
+| [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyPlugin.java) | **Production Bug Fix (F7)** | Replaced static lambda dropping audit events during startup with dynamic supplier `() -> wiring != null ? wiring.getAuditSink() : null`. |
+| [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java) | **Production Bug Fix (F7 & F8)** | Added `Supplier<Consumer<AuditEvent>>` overloads for `createCommandNode`, `createAdminNode`, `createAdminPrefixNode`, and `register`. Implemented startup window refusal when audit sink is unavailable. Separated database write failure from post-write failure (`auditConsumer` or `apply` throwing). |
+| [`messages_en.yml`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/resources/messages_en.yml) | **Catalog Addition** | Added `admin.prefix-starting` and `admin.prefix-saved-incomplete` (synchronized with `build/resources/main/`). |
+| [`messages_es.yml`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/resources/messages_es.yml) | **Catalog Addition** | Added Spanish equivalents for `admin.prefix-starting` and `admin.prefix-saved-incomplete` (synchronized with `build/resources/main/`). |
+| [`AdminPrefixCommandTest.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) | **Test Suite** | Added unit and integration tests covering the startup refusal window, throwing audit consumer post-write, and throwing apply post-write for both set and reset operations. |
+
+---
+
+## 14. Round 6 Architecture Simplification: Single Signature Rule
+
+### 14.1 Elimination of Ambiguous Overloads
+
+In Round 5, `Supplier<Consumer<AuditEvent>>` variants were introduced alongside existing `Consumer<AuditEvent>` signatures. When callers passed `null` or lambda expressions (e.g. `auditLogs::add`), `javac` could not disambiguate between direct functional interfaces and supplier wrappers:
+```
+MinecraftCommands.java:100: error: reference to createCommandNode is ambiguous
+MinecraftCommands.java:1356: error: reference to register is ambiguous
+```
+
+To permanently eliminate this failure mode without possibility of future collisions:
+1. **Single `createCommandNode`**: Deleted the 11-parameter convenience overload and the 14-parameter `Consumer<AuditEvent>` overload. The sole surviving method is the widest 14-parameter signature taking `Supplier<Consumer<AuditEvent>> auditConsumerSupplier`.
+2. **Single `register`**: Deleted all four legacy/convenience overloads (10, 11, 12, and 13-parameter `Consumer<AuditEvent>` variants). The sole surviving method is the 13-parameter signature taking `Supplier<Consumer<AuditEvent>> auditConsumerSupplier`.
+3. **Single `createAdminNode` & `createAdminPrefixNode`**: Removed the `Consumer<AuditEvent>` overloads from both internal helper builders, ensuring every level of the command hierarchy consistently and exclusively takes `Supplier<Consumer<AuditEvent>>`.
+
+No convenience overloads for "readability" remain.
+
+### 14.2 Call Sites Updated
+
+A total of **13 call sites** were updated across production and test suites to target the single surviving signatures:
+
+#### `MinecraftCommandsTest.java` (6 call sites updated)
+1. **`createRoot(Consumer<Runnable> scheduler)`**: Updated `MinecraftCommands.createCommandNode` to pass suppliers for services, config, and messages, with null audit/settings suppliers and explicit scheduler.
+2. **`createRoot(UpdateService updateService)`**: Updated `MinecraftCommands.createCommandNode` to pass `() -> updateService` alongside suppliers.
+3. **`adminReloadFailsGracefullyWhenActionThrows`**: Updated direct `MinecraftCommands.createCommandNode` call to the 14-parameter supplier signature.
+4. **`syncReportsProblemsInReportMode`**: Updated direct `MinecraftCommands.createCommandNode` call to the 14-parameter supplier signature.
+5. **`adminReloadWithNullMessageUsesLocalizedUnknownReason`**: Updated direct `MinecraftCommands.createCommandNode` call to the 14-parameter supplier signature.
+6. **`adminReloadForConsoleWithNullMessageUsesEnglishUnknownReason`**: Updated direct `MinecraftCommands.createCommandNode` call to the 14-parameter supplier signature.
+
+#### `AdminPrefixCommandTest.java` (7 call sites updated)
+7. **`setUp()`**: Updated audit parameter from `auditLogs::add` to `() -> auditLogs::add`.
+8. **`settingsStoreThatThrowsDuringCommandAlertsSenderGracefullyAndLeavesPrefixUnchanged`**: Updated audit parameter from `auditLogs::add` to `() -> auditLogs::add`.
+9. **`settingsStoreThatThrowsDuringResetAlertsSenderAndLeavesCustomPrefixUnchanged`**: Updated audit parameter from `auditLogs::add` to `() -> auditLogs::add`.
+10. **`auditConsumerDeliveredDirectlyWithoutReflection`**: Updated audit parameter from `consumer` to `() -> consumer`.
+11. **`auditConsumerThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`**: Updated audit parameter from `throwingAudit` to `() -> throwingAudit`.
+12. **`applyThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`**: Updated audit parameter from `auditLogs::add` to `() -> auditLogs::add`.
+13. **`applyThatThrowsAfterSuccessfulResetInformsOperatorValueSaved`**: Updated audit parameter from `auditLogs::add` to `() -> auditLogs::add`.
+
+*(Note: The two startup window tests `startupWindowSettingsAvailableAuditSinkNotRefusesAndWritesNothing` and `startupWindowRefusesResetWhenAuditSinkUnavailable` had already been authored in Round 5 using `Supplier<Consumer<AuditEvent>> nullAuditSupplier = () -> null;`).*
+
+#### Production Conformance
+- [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/DiscordTownyPlugin.java): Confirmed invocation targets the 13-parameter `register` passing dynamic supplier `() -> wiring != null ? wiring.getAuditSink() : null`.
+- [`MinecraftCommands.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/main/java/com/discordtowny/minecraft/MinecraftCommands.java): Confirmed internal `register` implementation passes `auditConsumerSupplier` directly to `createCommandNode`.
+
+### 14.3 Test Expressibility & Verification
+
+- **Expressibility**: Every test cleanly expresses its preconditions and assertions through the single 14-parameter `createCommandNode` signature using standard `() -> service` supplier lambdas. No test required adding an overload back or modifying verification logic.
+- **Test Scenarios**: All four Round 5 scenarios (`startupWindowSettingsAvailableAuditSinkNotRefusesAndWritesNothing`, `startupWindowRefusesResetWhenAuditSinkUnavailable`, `auditConsumerThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved`, and `applyThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved` / `applyThatThrowsAfterSuccessfulResetInformsOperatorValueSaved`) remain intact, asserting all original F7 and F8 invariants.
+- **Verification**: All 78 tests across [`AdminPrefixCommandTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/AdminPrefixCommandTest.java) and [`MinecraftCommandsTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t28-admin-prefix/src/test/java/com/discordtowny/minecraft/MinecraftCommandsTest.java) run and pass with 0 failures, 0 errors, and 0 skipped tests. All Java source files compile with 0 compilation errors.
+
 

@@ -29,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Unit and integration tests for the /dt admin prefix command and prefix behavior (T28).
@@ -57,6 +58,8 @@ class AdminPrefixCommandTest {
         texts.put("admin.prefix-line-break", "&cThe prefix cannot contain line breaks.");
         texts.put("admin.prefix-too-long", "&cThe prefix cannot be longer than {max} visible characters.");
         texts.put("admin.prefix-raw-too-long", "&cThe raw prefix cannot be longer than {max} characters.");
+        texts.put("admin.prefix-starting", "&cThe plugin is still starting up. Try again in a moment.");
+        texts.put("admin.prefix-saved-incomplete", "&ePrefix was saved to database, but could not be applied live. The change will take effect on next restart.");
         texts.put("general.database-unavailable", "&cCannot access the database. Notify an administrator.");
 
         settingsRepo = new InMemorySettingsRepository();
@@ -99,7 +102,7 @@ class AdminPrefixCommandTest {
                 () -> null,
                 () -> null,
                 () -> settingsRepo,
-                auditLogs::add,
+                () -> auditLogs::add,
                 () -> config,
                 () -> messages,
                 () -> messages,
@@ -363,7 +366,7 @@ class AdminPrefixCommandTest {
                 () -> null,
                 () -> null,
                 () -> failingStore,
-                auditLogs::add,
+                () -> auditLogs::add,
                 () -> config,
                 () -> messages,
                 () -> messages,
@@ -423,7 +426,7 @@ class AdminPrefixCommandTest {
                 () -> null,
                 () -> null,
                 () -> failingStore,
-                auditLogs::add,
+                () -> auditLogs::add,
                 () -> config,
                 () -> messages,
                 () -> messages,
@@ -463,7 +466,7 @@ class AdminPrefixCommandTest {
                 () -> null,
                 () -> null,
                 () -> settingsRepo,
-                consumer,
+                () -> consumer,
                 () -> config,
                 () -> messages,
                 () -> messages,
@@ -485,6 +488,217 @@ class AdminPrefixCommandTest {
         assertTrue(event.success());
     }
 
+    @Test
+    void startupWindowSettingsAvailableAuditSinkNotRefusesAndWritesNothing() throws Exception {
+        Supplier<Consumer<AuditEvent>> nullAuditSupplier = () -> null;
+        LiteralCommandNode<CommandSourceStack> startupRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                nullAuditSupplier,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> startupDispatcher = new CommandDispatcher<>();
+        startupDispatcher.getRoot().addChild(startupRoot);
+
+        startupDispatcher.execute("dt admin prefix &a[Early]&r ", sourceStack);
+
+        // 1. Refusal message says plugin is still starting
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("still starting up");
+        }));
+
+        // 2. Nothing is written to settings
+        assertTrue(settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).isEmpty(),
+                "Settings repository must not be written to when audit sink is unavailable");
+
+        // 3. Nothing is applied in-memory
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+        Component playerMsg = messages.get("test.msg", Map.of("player", "Alice"));
+        String rendered = LegacyComponentSerializer.legacySection().serialize(playerMsg);
+        assertTrue(rendered.contains("\u00a7bDiscordTowny"));
+        assertFalse(rendered.contains("[Early]"));
+
+        // 4. No audit row written
+        assertTrue(auditLogs.isEmpty());
+    }
+
+    @Test
+    void startupWindowRefusesResetWhenAuditSinkUnavailable() throws Exception {
+        messages.setCustomPrefix("&6[Active]&r ");
+        settingsRepo.put(SettingsRepository.KEY_CHAT_PREFIX, "&6[Active]&r ");
+
+        Supplier<Consumer<AuditEvent>> nullAuditSupplier = () -> null;
+        LiteralCommandNode<CommandSourceStack> startupRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                nullAuditSupplier,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> startupDispatcher = new CommandDispatcher<>();
+        startupDispatcher.getRoot().addChild(startupRoot);
+
+        startupDispatcher.execute("dt admin prefix reset", sourceStack);
+
+        verify(admin).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("still starting up")));
+
+        // Setting row still exists (nothing deleted)
+        assertEquals("&6[Active]&r ", settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).orElseThrow());
+        // Prefix still active (nothing applied)
+        assertEquals("&6[Active]&r ", messages.rawPrefix());
+    }
+
+    @Test
+    void auditConsumerThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved() throws Exception {
+        Consumer<AuditEvent> throwingAudit = event -> {
+            throw new RuntimeException("Simulated audit sink failure");
+        };
+
+        LiteralCommandNode<CommandSourceStack> throwingRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                () -> throwingAudit,
+                () -> config,
+                () -> messages,
+                () -> messages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> throwingDispatcher = new CommandDispatcher<>();
+        throwingDispatcher.getRoot().addChild(throwingRoot);
+
+        throwingDispatcher.execute("dt admin prefix &e[Saved]&r ", sourceStack);
+
+        // 1. Operator is told the value was saved, not that the database failed
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("saved") && text.contains("restart");
+        }));
+        verify(admin, never()).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
+
+        // 2. The value was actually saved in the settings repository
+        assertEquals("&e[Saved]&r ", settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).orElseThrow(),
+                "Stored value must have changed in the database");
+
+        // 3. Live in-memory prefix remains the old one
+        assertEquals("&8[&bDiscordTowny&8] &r", messages.rawPrefix());
+    }
+
+    @Test
+    void applyThatThrowsAfterSuccessfulWriteInformsOperatorValueSaved() throws Exception {
+        Messages throwingMessages = new DelegatingMessages(new YamlMessages(texts, warning -> {}, settingsRepo)) {
+            @Override
+            public void setCustomPrefix(String prefix) {
+                throw new RuntimeException("Simulated in-memory apply failure");
+            }
+        };
+
+        LiteralCommandNode<CommandSourceStack> throwingRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                () -> auditLogs::add,
+                () -> config,
+                () -> throwingMessages,
+                () -> throwingMessages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> throwingDispatcher = new CommandDispatcher<>();
+        throwingDispatcher.getRoot().addChild(throwingRoot);
+
+        throwingDispatcher.execute("dt admin prefix &b[AppliedFail]&r ", sourceStack);
+
+        // 1. Operator is told the value was saved, not that the database failed
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("saved") && text.contains("restart");
+        }));
+        verify(admin, never()).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
+
+        // 2. The value was actually saved in the settings repository
+        assertEquals("&b[AppliedFail]&r ", settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).orElseThrow());
+
+        // 3. Audit row was recorded
+        assertEquals(1, auditLogs.size());
+    }
+
+    @Test
+    void applyThatThrowsAfterSuccessfulResetInformsOperatorValueSaved() throws Exception {
+        settingsRepo.put(SettingsRepository.KEY_CHAT_PREFIX, "&a[Custom]&r ");
+        Messages throwingMessages = new DelegatingMessages(new YamlMessages(texts, warning -> {}, settingsRepo)) {
+            @Override
+            public void resetPrefix() {
+                throw new RuntimeException("Simulated in-memory reset failure");
+            }
+        };
+
+        LiteralCommandNode<CommandSourceStack> throwingRoot = MinecraftCommands.createCommandNode(
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> null,
+                () -> settingsRepo,
+                () -> auditLogs::add,
+                () -> config,
+                () -> throwingMessages,
+                () -> throwingMessages,
+                () -> {},
+                Runnable::run,
+                Runnable::run
+        );
+        CommandDispatcher<CommandSourceStack> throwingDispatcher = new CommandDispatcher<>();
+        throwingDispatcher.getRoot().addChild(throwingRoot);
+
+        throwingDispatcher.execute("dt admin prefix reset", sourceStack);
+
+        verify(admin).sendMessage(argThat((Component c) -> {
+            String text = PlainTextComponentSerializer.plainText().serialize(c);
+            return text.contains("saved") && text.contains("restart");
+        }));
+        verify(admin, never()).sendMessage(argThat((Component c) ->
+                PlainTextComponentSerializer.plainText().serialize(c).contains("Cannot access the database")));
+
+        // In storage, the key is deleted
+        assertTrue(settingsRepo.get(SettingsRepository.KEY_CHAT_PREFIX).isEmpty());
+    }
+
     private static class InMemorySettingsRepository implements SettingsRepository {
         private final Map<String, String> data = new ConcurrentHashMap<>();
 
@@ -501,6 +715,59 @@ class AdminPrefixCommandTest {
         @Override
         public void delete(String key) {
             data.remove(key);
+        }
+    }
+
+    private static class DelegatingMessages implements Messages {
+        private final Messages delegate;
+
+        DelegatingMessages(Messages delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Component get(String key, Map<String, String> placeholders) {
+            return delegate.get(key, placeholders);
+        }
+
+        @Override
+        public String plain(String key, Map<String, String> placeholders) {
+            return delegate.plain(key, placeholders);
+        }
+
+        @Override
+        public String label(String key, Map<String, String> placeholders) {
+            return delegate.label(key, placeholders);
+        }
+
+        @Override
+        public String rawPrefix() {
+            return delegate.rawPrefix();
+        }
+
+        @Override
+        public String catalogPrefix() {
+            return delegate.catalogPrefix();
+        }
+
+        @Override
+        public Component renderedPrefix() {
+            return delegate.renderedPrefix();
+        }
+
+        @Override
+        public void setCustomPrefix(String prefix) {
+            delegate.setCustomPrefix(prefix);
+        }
+
+        @Override
+        public void resetPrefix() {
+            delegate.resetPrefix();
+        }
+
+        @Override
+        public void invalidatePrefix() {
+            delegate.invalidatePrefix();
         }
     }
 }

@@ -191,6 +191,8 @@ admin:
   prefix-line-break: "&cEl prefijo no puede contener saltos de línea."
   prefix-too-long: "&cEl prefijo no puede tener más de {max} caracteres visibles."
   prefix-raw-too-long: "&cEl prefijo sin formato no puede tener más de {max} caracteres."
+  prefix-starting: "&cEl plugin todavía se está iniciando. Inténtalo de nuevo en un momento."
+  prefix-saved-incomplete: "&eEl prefijo se guardó en la base de datos, pero no se pudo aplicar en vivo. El cambio tendrá efecto tras reiniciar el servidor."
 
 # Etiquetas de los embeds que el bot publica en Discord. Spec 9.1: el ajuste de
 # idioma también las cubre, por eso no van escritas en el código.
