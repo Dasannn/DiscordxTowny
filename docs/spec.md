@@ -371,6 +371,12 @@ stays in English whatever the players read: a log has to remain identifiable.
 
 Changing the prefix is a privileged action and is audited like the rest.
 
+The prefix is read when the plugin starts and when it reloads, not on every
+message. Two servers sharing one database can therefore show different prefixes
+until each is reloaded. That is accepted: the constitution excludes multi-server
+networks, so a shared database is not a supported deployment, and reading the
+database for every line of chat would be the worse trade.
+
 ## 10. Errors and failures
 
 - If the bot cannot connect, the Minecraft server operates
