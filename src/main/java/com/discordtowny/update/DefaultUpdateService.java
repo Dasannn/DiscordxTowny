@@ -72,8 +72,8 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             Pattern.compile("(?<![/\\\\])(?i)\\bsha-?256(?:sum)?(?:\\s*[:=\\(]|\\s+\\S+)");
     private static final Pattern JAR_NAME_PATTERN =
             Pattern.compile("(?i)\\b(\\S+\\.jar)\\b");
-    private static final Pattern FILENAME_WITH_EXTENSION =
-            Pattern.compile("^.+\\.[a-zA-Z0-9]{1,8}$");
+    private static final Pattern ANY_SHA256_KEYWORD =
+            Pattern.compile("(?i)\\bsha-?256(?:sum)?\\b");
 
     private enum DeclarationFormat {
         BSD,
@@ -108,11 +108,24 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         return ABSORBED_DECL_PATTERN.matcher(file).find();
     }
 
-    static boolean hasFileExtension(String filename) {
-        if (filename == null || filename.isBlank()) {
+    static boolean isHashShaped(String token) {
+        if (token == null) {
             return false;
         }
-        return FILENAME_WITH_EXTENSION.matcher(filename.trim()).matches();
+        int len = token.length();
+        if (len < 32 || len > 128) {
+            return false;
+        }
+        int hexCount = 0;
+        for (int i = 0; i < len; i++) {
+            char c = token.charAt(i);
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+                hexCount++;
+            } else if (!((c >= 'g' && c <= 'z') || (c >= 'G' && c <= 'Z'))) {
+                return false;
+            }
+        }
+        return hexCount * 4 >= len * 3;
     }
 
     private static boolean isSupportedSumFilename(String rawFile, String targetJarName, Set<String> releaseAssetNames) {
@@ -121,9 +134,6 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
         String norm = normalizeFilename(rawFile);
         if (norm == null || norm.isBlank()) {
-            return false;
-        }
-        if (!hasFileExtension(norm)) {
             return false;
         }
         if (norm.equalsIgnoreCase(targetJarName)) {
@@ -1349,6 +1359,9 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
         for (String rawLine : body.split("\\r?\\n")) {
             String line = rawLine.trim();
+            if (line.startsWith("\uFEFF")) {
+                line = line.substring(1).trim();
+            }
             if (line.isEmpty()) {
                 continue;
             }
@@ -1358,6 +1371,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             boolean stripped;
             do {
                 stripped = false;
+                if (line.startsWith("\uFEFF")) {
+                    line = line.substring(1).trim();
+                    stripped = true;
+                }
                 if (line.startsWith("`") && line.endsWith("`") && line.length() >= 2) {
                     line = line.substring(1, line.length() - 1).trim();
                     stripped = true;
@@ -1405,7 +1422,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
 
                 // If candidateToken is a checksum label keyword (e.g. SHA-256:, SHA-256=<H>), this is a labeled line, not a sha256sum line
                 if (!candidateToken.matches("(?i)^sha-?256(?:sum)?(?:[:=].*)?$")) {
-                    if (isSupportedSumFilename(file, targetJarName, releaseAssetNames)) {
+                    boolean carriesKeyword = ANY_SHA256_KEYWORD.matcher(line).find();
+                    boolean supportedFile = isSupportedSumFilename(file, targetJarName, releaseAssetNames);
+                    boolean isDeclaration = (carriesKeyword || isHashShaped(candidateToken)) && supportedFile;
+
+                    if (isDeclaration) {
                         ChecksumDeclaration decl = new ChecksumDeclaration(DeclarationFormat.SUM, candidateToken, file);
                         ChecksumOutcome validation = validateDeclaration(decl, "body");
                         if (validation != null) {

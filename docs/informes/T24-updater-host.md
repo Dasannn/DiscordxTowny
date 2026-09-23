@@ -1281,8 +1281,63 @@ The following tests were added and verified in `src/test/java/com/discordtowny/u
 5. **`bodyWithLeadingUtf8BomFollowedByValidSumLineSucceedsAndBindsDigest` (F18)**:
    - Verifies that a release body beginning with `\uFEFF` followed by a valid sha256sum line (`\uFEFF<64 hex>  DiscordTowny-1.10.0.jar`) is parsed cleanly, strips the BOM, binds the digest, and successfully reports `UPDATE_AVAILABLE`.
 
+---
 
+## 18. Round 16: A Broken Digest, Not a Broken Word
 
+### 18.1 The Contract Decision
 
+Codex is right that no rule about the *shape of a filename* can separate `Release  notes.txt` from `invalid  notes.txt`. They are the same two fields. Four rounds have tried and each one traded a false acceptance for a false refusal.
 
+The architect has decided the contract. **The updater recognizes a broken digest, not a broken word.** A body line is a sha256sum declaration when, and only when:
 
+1. the line carries a `sha256` / `sha-256` / `sha256sum` keyword anywhere — including inside a directory prefix of its filename field, which is how `invalid  sha256/DiscordTowny-1.10.0.jar` announces itself; **or**
+2. its first field is **hash-shaped** — 32 to 128 characters, alphanumeric only, and at least three quarters of them hexadecimal digits — **and** its second field is an artifact of the release, by the gate that already exists.
+
+Anything else is prose.
+
+#### Why This Is Safe
+A release is only ever accepted when a **valid** checksum is bound to our jar. A line the parser now reads as prose cannot authorize anything; it can only fail to veto. Nothing is ever installed unverified. What we give up is the ability to veto on a line that neither names a checksum nor contains anything resembling a digest — and that is exactly the line we cannot tell from a sentence.
+
+### 18.2 Case-by-Case Contract Application
+
+- **`invalid  sha256/DiscordTowny-1.10.0.jar`**: Recognized under Rule 1 because the line carries the `sha256` keyword in the directory path prefix. Strictly refused (`CHECK_FAILED`). This test must stay green.
+- **`0123…abcdefHg  DiscordTowny-1.10.0.jar`**: Recognized under Rule 2 because its first field is hash-shaped (66 alphanumeric characters, 64 hex digits $\ge 75\%$) and its second field is the target jar. Strictly refused (`CHECK_FAILED`). This test must stay green.
+- **`<64 hex>  DiscordTowny-1.10.0.jar`**: Recognized under Rule 2 (hash-shaped and target jar artifact), validated as 64-hex SHA-256, and bound to the release (`UPDATE_AVAILABLE`).
+- **`Release  notes.txt`**, **`Version  1.2`**, **`See  docs/notes.txt`**, **`Download  https://example.test/notes.txt`**: First fields (`Release`, `Version`, `See`, `Download`) are English words ($< 32$ characters) and no `sha256` keyword is present. Treated as prose regardless of what assets the release publishes. **F19 closed.**
+- **`invalid  DiscordTowny-1.10.0.zip`**: The first field `invalid` is a word ($< 32$ characters), not a hash-shaped digest, and the line carries no checksum keyword. It is prose now. The inverted F14 test is inverted back with a comment and test name stating that a word where a digest belongs is not evidence of a declaration, and that the release is still only accepted because a valid checksum for the jar exists. Meanwhile, `0123…abcdefHg  DiscordTowny-1.10.0.zip` remains refused under Rule 2 because its digest is hash-shaped and names a published release asset.
+- **`invalid  launcher`** for an extensionless published artifact: `invalid` is a word, not a digest. Stays prose. **F20 is answered by the contract**, not by widening the gate. Meanwhile, a broken hash-shaped digest for `launcher` (`0123…abcdefHg  launcher`) is recognized under Rule 2 and strictly refuses the release.
+- **Removal of `hasFileExtension`**: The extension test from round 15 is now redundant for rule 2 — asset membership plus a hash-shaped digest already carries the weight. `hasFileExtension` and its direct unit test have been removed, while the gate's jar and asset membership branches in `isSupportedSumFilename` are preserved.
+
+### 18.3 F21: Universal Leading U+FEFF BOM Stripping
+
+A leading Byte Order Mark (`\uFEFF`) is now stripped from each body line *after* `trim()` and after Markdown list-prefix removal (`- ` and `* `), as well as inside outer quote stripping:
+```java
+String line = rawLine.trim();
+if (line.startsWith("\uFEFF")) {
+    line = line.substring(1).trim();
+}
+if (line.isEmpty()) {
+    continue;
+}
+if (line.startsWith("- ") || line.startsWith("* ")) {
+    line = line.substring(2).trim();
+}
+if (line.startsWith("\uFEFF")) {
+    line = line.substring(1).trim();
+}
+```
+This ensures that both indented BOM lines (`"  \uFEFF<64 hex>  <jar>"`) and list-prefixed BOM lines (`"- \uFEFF<64 hex>  <jar>"`) cleanly strip the BOM, bind the digest, and successfully authorize the update.
+
+### 18.4 Test Verification
+
+All cases are asserted end-to-end through `UpdateService.checkForUpdate()`, not through internal helper methods:
+
+1. **Rule 1 Keyword in Path Refusal**: `invalid  sha256/DiscordTowny-1.10.0.jar` refuses the release (`CHECK_FAILED`), even beside a valid dedicated checksum asset (in `malformedChecksumWithDirectoryPrefixRefusesReleaseEvenWithValidAsset`).
+2. **Rule 2 Hash-Shaped Digest Refusal**: `0123…abcdefHg  DiscordTowny-1.10.0.jar` (66 characters, 64 hex + Hg) refuses the release (`CHECK_FAILED`), even beside a valid dedicated checksum asset (in `unlabeledSumLineWithNonHexTokensRefuseReleaseEvenWithValidChecksumAsset`).
+3. **Rule 2 Valid Digest Binding**: `<64 hex>  DiscordTowny-1.10.0.jar` binds the digest and succeeds (`UPDATE_AVAILABLE`) in `validHashShapedDigestInBodyBindsTargetJarUnderRule2`.
+4. **F19 Prose Acceptance**: `Release  notes.txt`, `Version  1.2`, `See  docs/notes.txt`, and `Download  https://example.test/notes.txt` naming published release assets remain prose and do not block valid dedicated checksum discovery in `extensionShapedProseLinesNamingPublishedAssetsStayProseAndDoNotBlockValidDedicatedChecksum`.
+5. **F14 Inverted Back**: `invalid  DiscordTowny-1.10.0.zip` naming a published asset stays prose and does not block release discovery beside a valid dedicated asset or body declaration, while `0123…abcdefHg  DiscordTowny-1.10.0.zip` strictly refuses the release under Rule 2 in `sumLineForNonJarArtifactWithMalformedDigestIsTreatedAsProseAndDoesNotRefuseRelease`.
+6. **F20 Extensionless Artifact Contract**: `invalid  launcher` stays prose and succeeds beside a valid dedicated asset, while `0123…abcdefHg  launcher` strictly refuses under Rule 2 in `extensionlessPublishedArtifactWithBrokenWordIsProseWhileBrokenDigestRefuses`.
+7. **F21 BOM Normalization**: `  \uFEFF<64 hex>  DiscordTowny-1.10.0.jar` and `- \uFEFF<64 hex>  DiscordTowny-1.10.0.jar` strip the BOM and bind the digest in `bodyLineWithLeadingUtf8BomAfterWhitespaceOrListPrefixBindsDigestCleanly`.
+8. **Preservation of F2 Baseline Tests**: `malformedChecksumForOtherArtifactRefusesReleaseEvenWithValidDedicatedAsset` and `malformedChecksumWithPlusInFilenameRefusesReleaseEvenWithValidDedicatedAsset` remain intact as the foundational rationale for Rule 1 and Rule 2.
