@@ -3,7 +3,7 @@
 How the plugin is built internally. This document is governed by
 `docs/constitution.md`, and describes the implementation of `docs/spec.md`.
 
-Status: **draft v1** — pending approval.
+Status: **approved and governing**. Changes to this document need the owner’s approval.
 
 ---
 

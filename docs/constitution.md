@@ -3,7 +3,7 @@
 Principles document. Defines what the project is, what it is not, and the rules that
 no subsequent decision (spec, architecture, plan, tasks) may violate.
 
-Status: **draft v1** — pending approval.
+Status: **approved and governing**. Changes to this document need the owner’s approval.
 
 ---
 

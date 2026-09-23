@@ -1,0 +1,85 @@
+# T17 — One language at a time
+
+**Verdict: changes required.** Reviewed the uncommitted changes against HEAD on `feat/idioma-completo`, plus unchanged Discord adapters, Minecraft commands, catalog wiring, and producers of displayed diagnostics. Read the review checklist first, then spec 9.1, the T17 card, and the governing documents. The architect reports **608 passing tests**; that is not a reviewer test run.
+
+Paths below are relative to `src/main/java/com/discordtowny/` unless stated otherwise. The remaining acceptance failures below predate this diff; they are omissions from T17's required sweep, not newly introduced regressions.
+
+## Blocking
+
+- **B1 — Incomplete localization of Minecraft reply values:** `minecraft/MinecraftCommands.java:788,824,845,920,923,1122,1127,1134,1217,1222,1337,1355` and `minecraft/SyncMinecraftCommands.java:446,467` bypass the catalog for displayed status/error content. `/dt admin list` and `info` insert `SpaceState.name()` (`ACTIVE`, `ARCHIVED`, `INCONSISTENT`); update failures insert `DownloadResult.name()` such as `NETWORK_ERROR`; reload/update exceptions insert raw diagnostic text or the literal `unknown`. Missing role counts use the literal `N/A`. Both sync renderers insert `report.problems()` unchanged: for example, `sync/DefaultSyncService.java:233,300` produces `Towny is unavailable`, and line 608 produces `Space for town … is missing required channels`. These paths remain untranslated **with a non-null Spanish catalog**. `src/main/resources/messages_es.yml:104,108,109` also embeds English state names. **Required outcome:** catalog-rendered player status and failure explanations, including substituted values, with English diagnostics retained for console/logs. The sync producer/contract is outside T17's zone: coordinate that dependency with its owner rather than silently changing it or translating log output.
+- **B2 — An unconditional English Minecraft help description remains:** `minecraft/MinecraftCommands.java:1294` registers `DiscordTowny in-game commands`. This is player-facing Bukkit help metadata, not a logger message or a null-catalog fallback. The alternative registration helpers at `minecraft/LinkMinecraftCommands.java:359` and `minecraft/SyncMinecraftCommands.java:358` similarly contain English descriptions, although production registers the unified tree. **Required outcome:** the plugin's help description must respect the player language and the English console boundary, including after reload. Paper documents the registration argument as the root node's help description. [Paper Commands API](https://jd.papermc.io/paper/1.21.11/io/papermc/paper/command/brigadier/Commands.html)
+- **B3 — Update audit messages cross into the log in Spanish:** `update/DefaultUpdateService.java:582,1293` selects `messagesSupplier` for `update_available` and `update_downloaded`; production supplies the configured player catalog at `DiscordTownyWiring.java:306,586`. With `language: es`, those audit details reach the Discord log in Spanish through `discord/JdaDiscordGateway.java:397`. The Java console logger itself remains English. **Required outcome:** updater audit details must use English independently of player notices. This is an existing `update/` defect outside T17's exclusive zone, requiring owner/architect coordination; it prevents the requested “log stays English” acceptance from passing.
+
+## Noted debt
+
+- **Important — Help test admits missing entries:** `src/test/java/com/discordtowny/discord/TownySlashCommandsTest.java:1246,1248` checks substrings: `embed.help-townlist` satisfies `contains("embed.help-town")`, and `embed.help-residents` satisfies `contains("embed.help-res")`. Deleting either shorter command's help line can pass. Require distinct complete lines or an exact description to prove all eight entries are present.
+- **Minor — Redundant name localizations:** `discord/TownySlashCommands.java:143` onward and `discord/LinkSlashCommands.java:80` onward localize every command name to itself, as well as invariant option names. Discord ignores translations identical to the default. These calls provide no viewer-visible localization; retain the invariant canonical names and remove redundant entries when cleaning this code. This is not an option-lookup blocker. [Discord localization rules](https://docs.discord.com/developers/interactions/application-commands#localization)
+- **Minor, inherited — Spanish empty-state agreement:** `src/main/resources/messages_es.yml:103` supplies masculine `ninguno` to `minecraft/MinecraftCommands.java:841`, yielding `última actividad ninguno`. Use wording that agrees with `actividad` without breaking the same key's channel uses. This is a grammar issue, not an objection to English domain terms.
+
+## Sweep and console boundary
+
+The Discord help lines at `discord/TownySlashCommands.java:858,862,864–885` are now **fallback-only** English: each selects `messages.label(...)` when messages exist. Both slash listener constructors require non-null messages, and `JdaDiscordGateway.java:468` supplies bundled English only if registration receives no catalog. These literals do not override a configured Spanish catalog. The other inspected slash replies, embed titles/fields, pagination labels, headings, and empty-state text use `plain` or prefix-free `label` as appropriate. Localized command metadata deliberately has its own client-language rules.
+
+The unconditional English strings in `JdaDiscordGateway.sendLogBatch`—log title, truncation marker, dropped-event notice—belong to the English log boundary and should remain English. IDs, names supplied by players/Towny, numeric formatting, and Discord timestamp syntax are not untranslated plugin prose. Release-note contents are external text; they do not establish that a plugin-owned label is localized.
+
+| Selection site | Result for a player | Result for console/non-player |
+|---|---|---|
+| `MinecraftCommands.resolveMessages`, line 1298; callers for help, status, link/unlink, create/delete/sync, reload/list/info/purge, and all update forms | Current player supplier; bundled English only if absent | Console supplier; bundled English if absent |
+| `LinkMinecraftCommands.resolveMessages`, line 363; link, unlink, delegated admin unlink at line 294 | Supplied player messages | Console messages or bundled English |
+| `SyncMinecraftCommands.resolveMessages`, line 504; standalone sync at line 137 and delegated admin sync with/without town at lines 267/307 | Player messages; bundled English only if absent | Console messages or bundled English |
+
+Production passes the two suppliers in the correct order (`DiscordTownyPlugin.java:76–80`, `MinecraftCommands.java:1036–1051,1278–1290`). `DiscordTownyWiring.java:145,457` selects `EnglishMessages.bundled()` at startup and reload. That helper reads the **classpath** English catalog, not the owner's editable file. Reload's confirmation re-resolves the sender catalog (`MinecraftCommands.java:783`). No inspected production command sends the configured player catalog to a console sender, or bundled English to a player while a valid player catalog exists. Null/missing-catalog English fallbacks remain, as does spec 9.1's missing-key fallback; those are distinct from B1. The reverse boundary violation found is the updater's **log** output in B3.
+
+The new Sync resolver fixes the old no-console-catalog behavior. Production already supplied a separate English catalog before this diff; the fix also protects standalone/helper callers that omit it.
+
+## JDA 6.6.0 and interaction names
+
+Verified the pinned `v6.6.0` source as well as the versioned Javadocs: `setNameLocalization` and `setDescriptionLocalization` update separate localization maps. Serialization includes those maps alongside the unchanged canonical `name` and `description`. They do not rename the canonical command or option. [JDA OptionData source](https://github.com/discord-jda/JDA/blob/v6.6.0/src/main/java/net/dv8tion/jda/api/interactions/commands/build/OptionData.java#L409), [JDA CommandDataImpl source](https://github.com/discord-jda/JDA/blob/v6.6.0/src/main/java/net/dv8tion/jda/internal/interactions/CommandDataImpl.java#L332)
+
+**A Spanish client displaying `nombre` sends the option name `name` in the interaction payload.** Discord specifies default names in interaction payloads; JDA's `OptionMapping` reads `data.getString("name")`, and its lookup uses that name. `TownySlashCommands.java:358` checks canonical `name` first. The other handlers also check canonical `resident`, `town`, `page`, and `code`; the extra Spanish aliases are unnecessary for localized interactions but harmless. No blocking option-lookup defect exists. [Discord payload/localization contract](https://docs.discord.com/developers/interactions/application-commands#localization), [JDA OptionMapping](https://github.com/discord-jda/JDA/blob/v6.6.0/src/main/java/net/dv8tion/jda/api/interactions/commands/OptionMapping.java#L48), [JDA option lookup](https://github.com/discord-jda/JDA/blob/v6.6.0/src/main/java/net/dv8tion/jda/api/interactions/commands/CommandInteractionPayload.java#L323)
+
+All eight commands have English defaults and Spanish `es-ES`/`es-419` descriptions; their options have corresponding descriptions and meaningful name translations where applicable (`nombre`, `pagina`, `codigo`). English clients use the defaults. Explicit duplicate English map entries are unnecessary here. Registration does not consult `config.language`; the same guild can display different metadata per viewer while replies still use the configured catalog. Identical command-name translations add no behavior, as noted above.
+
+## Catalogs and Spanish prose
+
+Read both catalogs and ran a read-only Python/PyYAML 6.0.3 check with YAML 1.1 scalar resolution:
+
+- Both contain **148 string leaves**, in identical key order; no duplicate keys or non-string keys/values.
+- Both add the same eight `embed.help-*` entries. All previous keys retain their names and relative order; none were removed.
+- Placeholder names **and occurrence counts** match for every key. All 144 distinct literal message keys found in production `get`/`plain`/`label` calls exist in both catalogs.
+- `"yes"` and `"no"` remain quoted keys; there are no YAML boolean/null coercion traps.
+- `embed.town`, `embed.nation`, `embed.resident`, and `embed.residents` are respectively `Town`, `Nation`, `Resident`, and `Residents` in both files. Spanish prose retains the same English domain terms and English plurals; no translated `residente`, `nación`, `ciudad`, or `pueblo` remains in message values.
+
+The changed Spanish phrases have valid surrounding agreement: `ningún resident llamado`, `ninguna town llamada`, `los residents`, and `todas las towns` are consistent with the accepted terminology. They are not defects merely because they mix those domain terms into Spanish. No new grammatical error was found in those replacements; the inherited activity empty-state issue is noted separately. English state tokens in B1 are not among the three accepted invariants.
+
+Existing owner-edited catalogs are intentionally not overwritten. An older Spanish file missing the new help keys falls back to English with warnings until the owner adds them; that is the explicit spec 9.1 fallback policy, not an unconditional Java override.
+
+## What would make each changed test fail?
+
+These are source-based mutation assessments, not executed mutation tests. `TownySlashCommandsTest` has one added test and one changed test; `SyncMinecraftCommandsTest` changes seven existing tests.
+
+| Test and source line | Production change that would make it fail |
+|---|---|
+| `TownySlashCommandsTest:209` — `getCommandDataRegistersSpanishLocalizationsForCommandsAndOptions` | Remove a command's Spanish description map entry, or change an exactly asserted Spanish description/option name such as `nombre`. It exercises real JDA builders, not mocked metadata. |
+| `TownySlashCommandsTest:1231` — `helpCommandDisplaysAvailableCommandsAndWorksForUnlinkedAuthor` | Restore the former hardcoded English help body, omit a distinct entry such as `help-link`, or call Towny for help. It proves catalog lookup/rendering through a key-distinguishing stub, not correctness of the actual translations. The two substring holes above remain. |
+| `SyncMinecraftCommandsTest:87` — `dtSyncFailsForConsoleSender` | Restore selection of player messages when console messages are null: it expects bundled English, explicitly stubs Spanish player text, and verifies no interaction with the player catalog. |
+| `SyncMinecraftCommandsTest:364` — `dtAdminSyncAllDispatchesReconcileAllAndSchedulesResponse` | Route console start/completion through player messages, skip `reconcileAll`, omit either reply, or bypass the scheduler callback. |
+| `SyncMinecraftCommandsTest:403` — `dtAdminSyncSpecificTownDispatchesTownSync` | Route console replies through player messages, dispatch a different UUID, or omit the scheduled completion. |
+| `SyncMinecraftCommandsTest:447` — `dtAdminSyncUnknownTownRepliesTownNotFound` | Use player messages for the missing-town reply, omit it, or dispatch synchronization despite confirmed absence. |
+| `SyncMinecraftCommandsTest:550` — `dtAdminSyncInReportModeWithDiscrepanciesReportsUntouchedFindingsAndDoesNotAnnounceCleanSuccess` | Use player messages, emit clean success, omit the found/pending replies, or change their expected counts. |
+| `SyncMinecraftCommandsTest:607` — `dtAdminSyncInReportModeCleanReportsNoDiscrepancies` | Use player messages, substitute `sync.finished`, or omit/change the clean report and its space count. |
+| `SyncMinecraftCommandsTest:767` — `dtAdminSyncInReportModeWithProblemsReportsProblemKeys` | Use player messages, emit clean success, or drop/change the problem header, entry, or clean-count reply. |
+
+**Yes: the console regression is tested.** Restoring the old Sync ternary with a null console catalog makes these console assertions fail. The expectations use the real bundled catalog, and `verifyNoInteractions(messages)` independently catches the wrong catalog. These tests do not prove production wiring cannot accidentally supply the player catalog *as* the console catalog, nor do they cover every command family.
+
+The changed async tests use a scheduler that executes inline. They prove scheduler delegation, **not** execution on the server main thread. The report-mode tests verify concrete sent components but allow extra messages apart from forbidden clean success. The metadata test does not cover `LinkSlashCommands`, exact English defaults, most Latin American option values, or actual Discord-client rendering. All nine tests have meaningful production mutations that fail; none is wholly tautological. No new test loads both real catalogs to exercise the full language surface.
+
+## Remaining checklist coverage and limits
+
+- **Threads:** the changed help renderer runs on the Discord interaction path and does not call Towny. Information-command Towny reads use `callTowny`'s main executor; replies and failure replies use the async executor. Sync commands read Towny during command execution and schedule completion/error replies. No executor, listener, database, or Discord-operation scheduling was changed. The unchanged admin list/info paths still perform JDA cache inspection inside the main-thread scheduler (`MinecraftCommands.java:823,919,948`); this is inherited thread-boundary debt, not evidence that T17 added blocking network work.
+- **Identity:** command localizations do not change persisted identities or payload keys; pagination still carries town UUIDs, and named sync resolves to a UUID before dispatch. No permission or identity mutation was introduced.
+- **Success and failed reads:** report handling still separates reported problems from clean success. An inherited limitation remains in `SyncMinecraftCommands.java:363–389`: unavailable/throwing Towny reads become empty and therefore a misleading no-town/not-found reply. Preserve failure versus confirmed absence in a separate correction; this diff does not alter that behavior or introduce destructive actions.
+- **Configuration/lifecycle:** the existing reloadable message wrapper swaps its delegate, command suppliers resolve current messages, and reload re-registers slash listeners. English console messages remain independent. Shutdown/startup control flow is unchanged. No new lifecycle resources or configuration requirements were added.
+- **Scope:** all seven author-modified files are within T17's command/catalog zones and their tests. The updater and sync-producer dependencies above are findings about existing packages, not unauthorized edits by this author.
+
+I ran read-only Git inspection, source searches, catalog checks, and upstream documentation/source verification. I did **not** run Gradle, compile, run the Java tests, commit, or exercise a live Paper server/Discord guild. The 608-test result is the architect's report. Live client rendering, Bukkit help output on the target Paper build, and reload behavior were not runtime-verified. Only this review report was written.

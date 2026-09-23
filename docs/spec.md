@@ -3,7 +3,7 @@
 What the plugin does, seen from the outside. No implementation decisions: those
 go in `ARCHITECTURE.md`.
 
-Status: **draft v1** — pending approval.
+Status: **approved and governing**. Changes to this document need the owner’s approval.
 Governing this document: `docs/constitution.md`.
 
 ---

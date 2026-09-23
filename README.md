@@ -31,7 +31,7 @@ The portal steps can be consulted in the [official Discord guide](https://docs.d
 4. Start the server once so that Paper automatically generates the `plugins/DiscordTowny/` folder and the default `config.yml` file.
 5. Open `plugins/DiscordTowny/config.yml` and fill in the token, the Discord server ID, and the database as explained below.
 6. Restart the server and check the console. Fix any warnings regarding the bot's connection or permissions.
-7. Join the game and run `/dt help`. Follow the [user guide](docs/guia-de-uso.md) to link your account and create the first space.
+7. Join the game and run `/dt help`. Follow the [user guide](docs/user-guide.md) to link your account and create the first space.
 
 ## Minimum configuration
 

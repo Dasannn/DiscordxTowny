@@ -3,7 +3,7 @@
 How it is built, in what order, and what can be done in parallel. Governed by
 `docs/constitution.md`; implements `docs/spec.md` according to `ARCHITECTURE.md`.
 
-Status: **draft v1** — pending approval.
+Status: **approved and governing**. Changes to this document need the owner’s approval.
 
 ---
 

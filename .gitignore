@@ -81,5 +81,5 @@ server/
 
 # Informes de revision: notas internas del proceso con agentes.
 # Se conservan en disco pero no se versionan.
-docs/revisiones/
+docs/informes/
 javac_args.txt

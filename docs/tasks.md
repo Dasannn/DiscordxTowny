@@ -6,7 +6,7 @@ a branch, a worktree, a zone of files.
 Governed by `docs/constitution.md`. Implements `docs/spec.md` according to `ARCHITECTURE.md`,
 in the order of `docs/plan.md`.
 
-Status: **draft v1** — pending approval.
+Status: **approved and governing**. Changes to this document need the owner’s approval.
 
 ---
 
@@ -968,8 +968,8 @@ Found on the live server on 2026-09-23. Every thirty minutes, the Discord log
 channel receives the same line:
 
 ```
-space_archive testeo — Required text channel 1551261398644957207 not found in
-Discord for town b1bb1b69-1fa5-4eae-9309-d855c22b9d3a
+space_archive <town> — Required text channel <id> not found in
+Discord for town <uuid>
 ```
 
 The channel was deleted by hand after the town was archived. The loop:
