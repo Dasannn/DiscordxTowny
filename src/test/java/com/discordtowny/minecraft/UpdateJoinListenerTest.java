@@ -1,6 +1,12 @@
 package com.discordtowny.minecraft;
 
+import com.discordtowny.DiscordTownyPlugin;
+import com.discordtowny.DiscordTownyWiring;
 import com.discordtowny.config.PluginConfig;
+import com.discordtowny.space.SpaceService;
+import com.discordtowny.storage.LinkRepository;
+import com.discordtowny.storage.Storage;
+import com.discordtowny.sync.SyncService;
 import com.discordtowny.update.DefaultUpdateService;
 import com.discordtowny.update.HttpTransport;
 import com.discordtowny.update.UpdateService;
@@ -48,6 +54,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -443,6 +450,7 @@ class UpdateJoinListenerTest {
                 Logger.getLogger("test"),
                 eventItem -> {}
         );
+        service.seedStagedUpdatePendingAsync().join();
 
         // Delete the staged jar from disk before player joins.
         // If notifyAdminOnJoin accessed the filesystem, it would find no jar and send nothing.
@@ -503,7 +511,7 @@ class UpdateJoinListenerTest {
     }
 
     @Test
-    @DisplayName("F1: Lifecycle: degraded start, recovery registers listener, second recovery does not duplicate registration")
+    @DisplayName("F1/F5: Lifecycle: degraded start, recovery registers listener, second recovery does not duplicate registration")
     void lifecycle_degradedStartThenRecoveryRegistersOnce_secondRecoveryDoesNotDuplicate() {
         Player player = mock(Player.class);
         when(player.getName()).thenReturn("AdminPlayer");
@@ -513,7 +521,8 @@ class UpdateJoinListenerTest {
         PlayerJoinEvent joinEvent = mock(PlayerJoinEvent.class);
         when(joinEvent.getPlayer()).thenReturn(player);
 
-        Plugin plugin = mock(Plugin.class);
+        DiscordTownyPlugin plugin = mock(DiscordTownyPlugin.class);
+        doCallRealMethod().when(plugin).registerListeners(any());
         Server server = mock(Server.class);
         PluginManager pluginManager = mock(PluginManager.class);
         when(server.getPluginManager()).thenReturn(pluginManager);
@@ -525,28 +534,19 @@ class UpdateJoinListenerTest {
                 registeredListeners.add(ujl);
             }
             return null;
-        }).when(pluginManager).registerEvents(any(UpdateJoinListener.class), eq(plugin));
+        }).when(pluginManager).registerEvents(any(), eq(plugin));
 
         try (var mockedBukkit = mockStatic(Bukkit.class)) {
             mockedBukkit.when(Bukkit::getServer).thenReturn(server);
             mockedBukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
 
-            // Lifecycle flag held where the decision to register lives (as in DiscordTownyPlugin)
-            AtomicBoolean updateListenerRegistered = new AtomicBoolean(false);
-            AtomicBoolean degraded = new AtomicBoolean(true);
-            AtomicReference<UpdateService> updateServiceRef = new AtomicReference<>(null);
+            DiscordTownyWiring wiring = mock(DiscordTownyWiring.class);
 
-            // Registration action guarded by the lifecycle flag
-            Runnable registerCallback = () -> {
-                if (!degraded.get() && updateServiceRef.get() != null) {
-                    if (updateListenerRegistered.compareAndSet(false, true)) {
-                        UpdateJoinListener.register(plugin, updateServiceRef::get, degraded::get);
-                    }
-                }
-            };
+            // 1. Degraded start: degraded = true, storage = null
+            when(wiring.isDegraded()).thenReturn(true);
+            when(wiring.getStorage()).thenReturn(null);
 
-            // 1. Degraded start: degraded = true, service = null
-            registerCallback.run();
+            plugin.registerListeners(wiring);
             assertEquals(0, registeredListeners.size(), "No listener registered during degraded start");
 
             // Player joins: 0 listeners -> nothing sent
@@ -556,12 +556,19 @@ class UpdateJoinListenerTest {
             verify(player, never()).sendMessage(anyString());
 
             // 2. Recovery: storage healthy, update service available
-            degraded.set(false);
+            Storage storage = mock(Storage.class);
+            when(storage.links()).thenReturn(mock(LinkRepository.class));
+            when(wiring.isDegraded()).thenReturn(false);
+            when(wiring.getStorage()).thenReturn(storage);
+            when(wiring.getSyncService()).thenReturn(mock(SyncService.class));
+            when(wiring.getSpaceService()).thenReturn(mock(SpaceService.class));
+            when(wiring.getConfig()).thenReturn(mock(PluginConfig.class));
+
             RecordingUpdateService updateService = new RecordingUpdateService();
             updateService.notices.add("[DT] Update available: v1.1.0");
-            updateServiceRef.set(updateService);
+            when(wiring.getUpdateService()).thenReturn(updateService);
 
-            registerCallback.run();
+            plugin.registerListeners(wiring);
             assertEquals(1, registeredListeners.size(), "Listener registered exactly once upon recovery");
             verify(pluginManager, times(1)).registerEvents(any(UpdateJoinListener.class), eq(plugin));
 
@@ -571,8 +578,8 @@ class UpdateJoinListenerTest {
             }
             verify(player, times(1)).sendMessage("[DT] Update available: v1.1.0");
 
-            // 3. Second recovery / reload: register callback invoked again
-            registerCallback.run();
+            // 3. Second recovery / reload: registerListeners invoked again
+            plugin.registerListeners(wiring);
             assertEquals(1, registeredListeners.size(), "Second recovery must not duplicate registration");
             verify(pluginManager, times(1)).registerEvents(any(UpdateJoinListener.class), eq(plugin));
 
@@ -581,6 +588,55 @@ class UpdateJoinListenerTest {
                 l.onPlayerJoin(joinEvent);
             }
             verify(player, times(2)).sendMessage("[DT] Update available: v1.1.0");
+        }
+    }
+
+    @Test
+    @DisplayName("F5: registration failure leaves flag false and next callback retries successfully")
+    void registrationFailureLeavesFlagFalseAndNextCallbackRetriesSuccessfully() {
+        DiscordTownyPlugin plugin = mock(DiscordTownyPlugin.class);
+        doCallRealMethod().when(plugin).registerListeners(any());
+        DiscordTownyWiring wiring = mock(DiscordTownyWiring.class);
+
+        Storage storage = mock(Storage.class);
+        when(storage.links()).thenReturn(mock(LinkRepository.class));
+        when(wiring.isDegraded()).thenReturn(false);
+        when(wiring.getStorage()).thenReturn(storage);
+        when(wiring.getSyncService()).thenReturn(mock(SyncService.class));
+        when(wiring.getSpaceService()).thenReturn(mock(SpaceService.class));
+        when(wiring.getConfig()).thenReturn(mock(PluginConfig.class));
+        when(wiring.getUpdateService()).thenReturn(mock(UpdateService.class));
+
+        Server server = mock(Server.class);
+        PluginManager pluginManager = mock(PluginManager.class);
+        when(server.getPluginManager()).thenReturn(pluginManager);
+
+        AtomicBoolean failUpdate = new AtomicBoolean(true);
+        doAnswer(inv -> {
+            org.bukkit.event.Listener l = inv.getArgument(0);
+            if (l instanceof UpdateJoinListener && failUpdate.get()) {
+                throw new org.bukkit.plugin.IllegalPluginAccessException("Simulated Bukkit registration failure");
+            }
+            return null;
+        }).when(pluginManager).registerEvents(any(), eq(plugin));
+
+        try (var mockedBukkit = mockStatic(Bukkit.class)) {
+            mockedBukkit.when(Bukkit::getServer).thenReturn(server);
+            mockedBukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
+
+            // First attempt: UpdateJoinListener throws
+            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            verify(pluginManager, times(1)).registerEvents(any(UpdateJoinListener.class), eq(plugin));
+
+            // Recovery: next eligible callback retries
+            failUpdate.set(false);
+            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            // Succeeded on retry (2 attempts total)
+            verify(pluginManager, times(2)).registerEvents(any(UpdateJoinListener.class), eq(plugin));
+
+            // Third callback: already registered, must not double-register
+            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            verify(pluginManager, times(2)).registerEvents(any(UpdateJoinListener.class), eq(plugin));
         }
     }
 

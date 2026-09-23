@@ -6052,6 +6052,7 @@ class DefaultUpdateServiceTest {
                 Logger.getLogger("test"),
                 eventItem -> {}
         );
+        service1.seedStagedUpdatePendingAsync().join();
         List<String> messages1 = new ArrayList<>();
         service1.notifyAdminOnJoin(messages1::add);
         assertTrue(messages1.isEmpty(), "Initially no notice when no staged jar exists");
@@ -6061,7 +6062,7 @@ class DefaultUpdateServiceTest {
         Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
         Files.writeString(stagedJar, "STAGED_JAR_CONTENT");
 
-        // Service 2: seeded at startup off server thread
+        // Service 2: seeded asynchronously off server thread
         DefaultUpdateService service2 = new DefaultUpdateService(
                 "1.0.0",
                 new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
@@ -6070,6 +6071,7 @@ class DefaultUpdateServiceTest {
                 Logger.getLogger("test"),
                 eventItem -> {}
         );
+        service2.seedStagedUpdatePendingAsync().join();
         List<String> messages2 = new ArrayList<>();
         service2.notifyAdminOnJoin(messages2::add);
         assertEquals(1, messages2.size(), "Staged jar on disk seeds stagedUpdatePending to true during initialization");
@@ -6088,7 +6090,7 @@ class DefaultUpdateServiceTest {
         Files.createDirectories(updateFolder);
         Files.writeString(activeJar, "CURRENT");
 
-        // Write a real staged jar so constructor seeds stagedUpdatePending to true
+        // Write a real staged jar so constructor/seed seeds stagedUpdatePending to true
         Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
         Files.writeString(stagedJar, "STAGED_JAR_CONTENT");
 
@@ -6100,6 +6102,7 @@ class DefaultUpdateServiceTest {
                 Logger.getLogger("test"),
                 eventItem -> {}
         );
+        service.seedStagedUpdatePendingAsync().join();
 
         // Delete the staged jar from disk before calling notifyAdminOnJoin.
         // If notifyAdminOnJoin checked disk or called isUpdatePending(), it would find nothing.
@@ -6120,5 +6123,86 @@ class DefaultUpdateServiceTest {
         List<String> subsequentMessages = new ArrayList<>();
         service.notifyAdminOnJoin(subsequentMessages::add);
         assertTrue(subsequentMessages.isEmpty(), "After isUpdatePending syncs cache to false, no notice is sent");
+    }
+
+    @Test
+    @DisplayName("F4: constructor performs no filesystem access on calling thread and leaves flag initially false")
+    void constructor_performsNoFilesystemAccessOnCurrentThread(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+
+        // Create a staged jar on disk
+        Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
+        Files.writeString(stagedJar, "STAGED_JAR_CONTENT");
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+
+        // In Round 3, constructor synchronously probed disk and set flag to true.
+        // In Round 4, constructor must not stat the update jar: flag must start false.
+        assertFalse(service.isCachedUpdatePending(),
+                "stagedUpdatePending must start false immediately after construction (no synchronous disk probe in constructor)");
+
+        // Now running the seed on worker performs the probe off the calling thread
+        service.seedStagedUpdatePendingAsync().get(5, TimeUnit.SECONDS);
+        assertTrue(service.isCachedUpdatePending(),
+                "After seed completes on worker, staged update is detected");
+    }
+
+    @Test
+    @DisplayName("F4: seed sets flag when jar staged and does not clear it when download publishes first")
+    void seedSetsFlagWhenStagedAndDoesNotClearWhenDownloadPublishesFirst(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+
+        // Part 1: Seed sets the flag when a jar is already staged
+        Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
+        Files.writeString(stagedJar, "STAGED_CONTENT");
+
+        DefaultUpdateService service1 = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+        assertFalse(service1.isCachedUpdatePending(), "Initially false");
+        service1.seedStagedUpdatePendingAsync().get(5, TimeUnit.SECONDS);
+        assertTrue(service1.isCachedUpdatePending(), "Seed sets stagedUpdatePending to true when staged jar exists");
+
+        // Part 2: Download publishes a jar before seed probe finishes -> seed must NOT clear flag
+        Path emptyFolder = tempDir.resolve("update-empty");
+        Files.createDirectories(emptyFolder);
+
+        DefaultUpdateService service2 = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                emptyFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+        assertFalse(service2.isCachedUpdatePending(), "Initially false");
+
+        // Simulate download publishing first
+        service2.applySeedProbeResult(true);
+        assertTrue(service2.isCachedUpdatePending(), "Download set flag to true");
+
+        // Seed probe finishes and finds no jar on disk (returns false)
+        boolean probeFound = service2.seedStagedUpdatePendingAsync().get(5, TimeUnit.SECONDS);
+        assertFalse(probeFound, "Probe on disk returned false as empty folder has no jar");
+        assertTrue(service2.isCachedUpdatePending(),
+                "Seed must NOT clear stagedUpdatePending back to false when download published first");
     }
 }

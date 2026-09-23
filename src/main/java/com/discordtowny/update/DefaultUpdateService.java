@@ -390,12 +390,50 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         this.ownsScheduler = ownsScheduler;
         this.maxDownloadBytes = maxDownloadBytes > 0 ? maxDownloadBytes : DEFAULT_MAX_DOWNLOAD_BYTES;
         this.requestTimeout = requestTimeout != null ? requestTimeout : DEFAULT_TIMEOUT;
-
-        // Seed cached staged update state once during initialisation off the server thread (F2)
-        this.stagedUpdatePending.set(probeDiskForStagedUpdate());
     }
 
-    private boolean probeDiskForStagedUpdate() {
+    private CompletableFuture<Boolean> seedFuture;
+    private final AtomicReference<Thread> seedProbeThread = new AtomicReference<>(null);
+
+    /**
+     * Seeds the cached staged update indicator asynchronously on a background worker thread (F4).
+     *
+     * <p>Zero filesystem access is performed on the calling thread. If a download publishes a jar
+     * before this probe completes, the seed will not clear the flag back to false.
+     *
+     * @return a future completing with true if a staged jar was found on disk, false otherwise
+     */
+    public synchronized CompletableFuture<Boolean> seedStagedUpdatePendingAsync() {
+        if (seedFuture != null) {
+            return seedFuture;
+        }
+        ScheduledExecutorService s = this.scheduler;
+        Executor exec = (s != null && !s.isShutdown()) ? s : (this.executor != null ? this.executor : ForkJoinPool.commonPool());
+        seedFuture = CompletableFuture.supplyAsync(() -> {
+            seedProbeThread.set(Thread.currentThread());
+            boolean staged = probeDiskForStagedUpdate();
+            applySeedProbeResult(staged);
+            return staged;
+        }, exec);
+        return seedFuture;
+    }
+
+    /**
+     * The thread the seed probe ran on, or null if it has not run. The only way a test
+     * outside this package can show the reload path does not stat the update jar on the
+     * server thread; read-only, and never used in production.
+     */
+    public Thread getSeedProbeThread() {
+        return seedProbeThread.get();
+    }
+
+    void applySeedProbeResult(boolean stagedOnDisk) {
+        if (stagedOnDisk) {
+            stagedUpdatePending.set(true);
+        }
+    }
+
+    boolean probeDiskForStagedUpdate() {
         try {
             Path target = updateFolder.resolve(targetJarName);
             return Files.isRegularFile(target) && Files.size(target) > 0;
@@ -450,6 +488,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
      * Starts background periodic checks if {@code check-enabled} is true.
      */
     public synchronized void start() {
+        seedStagedUpdatePendingAsync();
         if (!config.checkEnabled() || scheduler == null) {
             return;
         }
@@ -510,6 +549,10 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
             stagedUpdatePending.set(false);
             return false;
         }
+    }
+
+    public boolean isCachedUpdatePending() {
+        return stagedUpdatePending.get();
     }
 
     @Override

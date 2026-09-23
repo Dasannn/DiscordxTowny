@@ -104,7 +104,7 @@ Following the first review in [`docs/revisiones/T25-revision-1.md`](file:///C:/U
    - Introduced `private final AtomicBoolean stagedUpdatePending = new AtomicBoolean(false);` in [`DefaultUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java).
    - Added [`isCachedUpdatePending()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/UpdateService.java#L44) to the [`UpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/UpdateService.java) interface and implemented it in [`DefaultUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L515).
 2. **Off-Thread Startup Seeding**:
-   - During [`DefaultUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java) initialization (which runs on a virtual thread off the server main thread during normal plugin startup), `probeDiskForStagedUpdate()` checks whether a verified staged jar already exists in `updateFolder` and seeds `stagedUpdatePending`.
+   - *Correction (see Round 4)*: The Round 3 report claimed that the service constructor always runs on a virtual thread off the server main thread. However, while startup `start()` does, `/dt admin reload` executes `wiring.reload()` synchronously on the server main thread, meaning synchronous execution inside the constructor in Round 3 still stalled the server thread on reload. This was resolved in Round 4 (F4) by removing the disk probe from the constructor entirely, starting `stagedUpdatePending` as `false`, and executing the disk probe asynchronously on a background worker via `seedStagedUpdatePendingAsync()`.
 3. **Lifecycle Synchronization**:
    - When [`performDownload`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L1751) completes publication of the staged jar into the update folder, `stagedUpdatePending.set(true)` is recorded in memory.
    - If publication fails and rolls back in [`publishExecutable`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L1837), `stagedUpdatePending` is re-probed from disk.
@@ -184,4 +184,88 @@ In [`UpdateJoinListener.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Pr
      3. Reload a second time: listener is NOT registered again (count remains 1), player join still receives notice once.
    - [`updateJoinListenerRegister_idempotentPerPlugin`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/minecraft/UpdateJoinListenerTest.java#L625): Asserts Paper's `PluginManager.registerEvents` is called exactly once when `UpdateJoinListener.register` is invoked repeatedly for the same plugin.
    - [`reloadAfterDegradedStartRecoversAndDispatchesPostStartOnce`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L560): Verifies [`DiscordTownyWiring.reload()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyWiring.java#L451) dispatches post-start on degraded recovery, and does not re-dispatch on subsequent reloads.
+
+---
+
+## 7. Round 4 — Remediation of F4 and F5
+
+Following the second review in [`docs/revisiones/T25-revision-2.md`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/docs/revisiones/T25-revision-2.md), two findings (F4 and F5) were addressed.
+
+### A. F4 (Blocking): Eliminating Filesystem Probes in the Constructor on the Server Thread
+
+#### The Problem
+Round 3's report incorrectly asserted that the `DefaultUpdateService` constructor always executes on a virtual thread off the server thread. While normal startup in `wiring.start()` dispatches initialization asynchronously, `/dt admin reload` executes [`DiscordTownyWiring.reload()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyWiring.java#L451) **directly on the server main thread**, and `reload()` synchronously constructs a new [`DefaultUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java). Consequently, `probeDiskForStagedUpdate()` inside the constructor stated the update jar directly on the server thread on every reload and degraded recovery.
+
+#### The Solution
+1. **Zero Filesystem Access During Construction**:
+   - Removed `probeDiskForStagedUpdate()` from all constructors of [`DefaultUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java).
+   - `stagedUpdatePending` is initialized to `false` in memory.
+2. **Asynchronous Worker Seeding**:
+   - Introduced `public synchronized CompletableFuture<Boolean> seedStagedUpdatePendingAsync()` in [`DefaultUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L405).
+   - The probe is submitted to the scheduler worker executor (`scheduler` / `executor`, e.g. the dedicated `dt-update-scheduler` thread), completely off the calling server thread.
+   - In [`DiscordTownyWiring.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyWiring.java), `seedStagedUpdatePendingAsync()` is triggered immediately after constructing `DefaultUpdateService` in both `initializeServicesAsync()` and `reload()`. It is also folded into `DefaultUpdateService.start()`.
+3. **Monotonic Write Ordering (Preserving Newer Truth)**:
+   - If a download finishes and publishes an update jar before the seed probe finishes, the seed probe must never overwrite the flag back to `false`.
+   - In `applySeedProbeResult(boolean stagedOnDisk)`, the flag is only updated if a staged jar was actually found:
+     ```java
+     void applySeedProbeResult(boolean stagedOnDisk) {
+         if (stagedOnDisk) {
+             stagedUpdatePending.set(true);
+         }
+     }
+     ```
+   - If the seed probe returns `false` (e.g., ran before download publication completed), it does nothing, preserving the `true` set by download publication.
+
+---
+
+### B. F5 (Important): Retryable Listener Registration and Independent Flag Tracking
+
+#### The Problem
+In Round 3, [`DiscordTownyPlugin.registerListeners`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyPlugin.java) guarded registration with:
+```java
+if (syncListenersRegistered.compareAndSet(false, true)) {
+    PlayerJoinSyncListener.register(...);
+    TownySyncListener.register(...);
+}
+```
+The flag was set to `true` **before** Bukkit registered anything. If registration threw an exception (e.g. `IllegalPluginAccessException`), the flag remained `true` while the catch block only logged a warning. No subsequent recovery reload or callback ever retried registration, leaving listeners permanently missing. Furthermore, the two sync listeners were bundled together, so a failure in one would mark both as registered.
+
+#### The Solution
+1. **Independent Listener Tracking**:
+   - Replaced bundled flags with three independent flags:
+     - `playerJoinSyncListenerRegistered`
+     - `townySyncListenerRegistered`
+     - `updateJoinListenerRegistered`
+2. **Post-Return Flag Setting & Retryability**:
+   - In [`DiscordTownyPlugin.registerListeners`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyPlugin.java#L101), each listener is registered in its own isolated `try-catch` block.
+   - The flag for a listener is set to `true` **only after** its `register(...)` invocation returns normally without throwing.
+   - If registration throws, its flag remains `false`.
+   - On subsequent eligible callbacks (e.g. `/dt admin reload`), only the uncompleted listener registrations are retried. Listeners that already succeeded are never re-registered.
+3. **Reset on Disable**:
+   - All three registration flags are reset to `false` in `onDisable()`.
+
+---
+
+### C. Surface Cleanup
+
+- Removed `isUpdateListenerRegistered()` and `isSyncListenersRegistered()` from [`DiscordTownyPlugin`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyPlugin.java) as identified by Codex. Neither production code nor test suites required them.
+
+---
+
+### D. Round 4 Verification and Tests Added
+
+1. **Reload on Server Thread Performs Zero Filesystem Access During Construction (F4)**:
+   - [`reload_onServerThread_performsNoFilesystemAccessWhileConstructingUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L602): Executes `wiring.reload()` on the server thread with a pre-staged jar present. Verifies that `new DefaultUpdateService(...)` performs zero disk access during construction, and asserts that the staged update probe executes strictly on a background worker thread (`dt-update-scheduler`) distinct from the server thread (`assertNotEquals(serverThread, updater.getSeedProbeThread())`).
+   - [`constructor_performsNoFilesystemAccessOnCurrentThread`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/update/DefaultUpdateServiceTest.java#L6130): Asserts that constructing `DefaultUpdateService` leaves `isCachedUpdatePending() == false` immediately after construction despite a staged jar existing on disk, confirming no synchronous disk probe occurs in the constructor.
+2. **Seed Sets Flag When Staged and Preserves Earlier Download Publication (F4)**:
+   - [`seedSetsFlagWhenStagedAndDoesNotClearWhenDownloadPublishesFirst`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/update/DefaultUpdateServiceTest.java#L6162):
+     - Part 1: Confirms the worker seed correctly detects an existing staged jar and transitions `isCachedUpdatePending()` to `true`.
+     - Part 2: Simulates a download completing and setting the flag to `true` while the disk probe returns `false`. Asserts that the seed probe does not overwrite or clear `isCachedUpdatePending()` back to `false`.
+3. **Failed Registration Leaves Flag False and Subsequent Callback Retries Exactly Once (F5)**:
+   - [`registerListeners_whenRegistrationThrows_leavesFlagFalseAndRetriesOnlyFailedListener`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L649): Simulates Bukkit throwing on initial registration of `TownySyncListener` and `UpdateJoinListener`. Verifies that subsequent callbacks retry only the failed listeners without re-registering `PlayerJoinSyncListener`, and once successful, future callbacks do not duplicate registration.
+   - [`registrationFailureLeavesFlagFalseAndNextCallbackRetriesSuccessfully`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/minecraft/UpdateJoinListenerTest.java#L593): Tests through the plugin that an initial failure leaves the flag `false`, and the next callback registers successfully and exactly once.
+4. **Lifecycle Test Uses Production `registerListeners` Entry Point (F5)**:
+   - [`lifecycle_degradedStartThenRecoveryRegistersOnce_secondRecoveryDoesNotDuplicate`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/minecraft/UpdateJoinListenerTest.java#L513): Rewritten to invoke `plugin.registerListeners(wiring)` directly on degraded start and recovery, validating the production registration logic, recovery behavior, and exact-once delivery.
+5. **Full Test Suite Execution**:
+   - 124 unit tests across `UpdateJoinListenerTest`, `DiscordTownyPluginTest`, and `DefaultUpdateServiceTest` executed and passed with 0 failures under Adoptium JDK 25.
 

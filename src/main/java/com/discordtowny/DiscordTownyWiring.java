@@ -306,6 +306,7 @@ public final class DiscordTownyWiring {
                             auditSink,
                             () -> messages != null ? messages : EnglishMessages.bundled()
                     );
+                    updater.seedStagedUpdatePendingAsync();
                     this.updateService = updater;
                     if (config.updates().checkEnabled()) {
                         updater.start();
@@ -620,6 +621,7 @@ public final class DiscordTownyWiring {
                                 auditSink,
                                 () -> this.messages != null ? this.messages : EnglishMessages.bundled()
                         );
+                        updater.seedStagedUpdatePendingAsync();
                         this.updateService = updater;
                         if (newConfig.updates().checkEnabled()) {
                             updater.start();
