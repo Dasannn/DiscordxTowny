@@ -874,3 +874,54 @@ The wiring point is the same lambda that registers the sync listeners. Decide
 whether the notice belongs in `PlayerJoinSyncListener` or in a listener of its own
 and say why in the report; a listener whose name says "sync" growing an update
 notice is the kind of thing the next reader trips over.
+
+## T26 — One bot, many Discords: each server answers only its own
+
+- **Branch**: `fix/guild-scoped-events` · **Responsible**: agent · **Status**: pending
+- **Zone**: `src/main/java/com/discordtowny/discord/TownySlashCommands.java`,
+  `src/main/java/com/discordtowny/discord/LinkSlashCommands.java`, their tests, and
+  the `discord:` section of both catalogs if a message is missing.
+
+**Why**
+
+The bot is meant to serve several Discord servers at once: one token, and each
+Minecraft server configured through its own `config.yml` with its own `guild-id`
+and channels. That is the intended deployment, stated by the owner on 2026-09-23.
+
+Commands are registered per guild — `guild.updateCommands()` — so each Discord
+only shows the commands its own Minecraft server registered. But JDA delivers
+**every** interaction from **every** guild the bot belongs to, to **every**
+connected instance, and no handler filters by guild:
+
+```java
+public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
+    String name = event.getName().toLowerCase(Locale.ROOT);
+    if (!SUPPORTED_COMMANDS.contains(name)) {
+        return;
+    }
+```
+
+So with two Minecraft servers on one token, a `/link` used in Discord B is also
+processed by server A, against A's database and A's Towny. A link can be written
+to the wrong server. Both instances then reply to the same interaction: the first
+wins and the second fails with "Interaction has already been acknowledged".
+
+**What has to be true**
+
+- An interaction whose guild is not the configured `guild-id` is ignored
+  completely: no reply, no deferral, no database read or write, no Towny call, and
+  no audit row. Another instance owns it and will answer.
+- This holds for slash commands in both command classes and for button
+  interactions, which carry the same exposure through their component ids.
+- An interaction with no guild at all — a direct message — is refused, not ignored:
+  these are guild commands and a user deserves an answer saying so.
+- The comparison survives `/dt admin reload` changing `guild-id`: whatever the
+  handler compares against must be the current configuration, not a value captured
+  when the listener was built.
+- Ignoring is silent at normal log levels. A bot in twenty guilds must not fill the
+  console with a line per foreign interaction.
+
+**Notes for whoever takes it**
+
+Check how each class holds its configuration before assuming a field is current.
+If it is a snapshot, say so in the report rather than reaching outside the zone.
