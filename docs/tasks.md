@@ -936,7 +936,24 @@ If it is a snapshot, say so in the report rather than reaching outside the zone.
 
 ## T27 — A channel deleted by hand is not a reason to retry forever
 
-- **Branch**: `fix/archive-missing-channel` · **Responsible**: agent · **Status**: pending
+- **Branch**: `fix/archive-missing-channel` · **Responsible**: agent · **Status**: integrated (five rounds; reviewed three times)
+- **Named follow-ups**, from the second and third reviews:
+  - **F5** — the success note is raw English assembled from ids
+    (`already missing in Discord: text channel 1551…`). It reaches an operator, so
+    it belongs in both catalogs. Left for a localisation pass.
+  - **F6** — the retry is not guaranteed to converge. If JDA's cache keeps a
+    deleted channel through a prolonged gateway outage, every attempt takes the
+    transient path, retries exhaust, the space is marked `INCONSISTENT`, and the
+    next periodic pass repeats it: the old loop with more attempts per cycle. It
+    resolves once the cache learns of the deletion. Needs either an authoritative
+    way to settle a source that stays cached, or an explicit statement that an
+    operator must intervene after exhaustion.
+  - **F7** — a destination category deleted *after* `ensureCategoryWithCapacity`
+    returns it is not covered by the null guard; its return value is not evidence
+    that the category is still live.
+  - **F8** — the archive is no longer atomic and now runs more than once. Role
+    deleted, then text moved, then voice failing, then a retry is plausible and
+    believed idempotent, but no test exercises it.
 - **Zone**: `src/main/java/com/discordtowny/discord/JdaGuildOperationExecutor.java`
   and its tests, `src/main/java/com/discordtowny/sync/DefaultSyncService.java` and
   its tests, and `src/main/java/com/discordtowny/space/DefaultSpaceService.java`

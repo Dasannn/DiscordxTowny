@@ -60,4 +60,4 @@ that stage is over.
 
 ## Status by task
 
-See `docs/tasks.md`. Integrated: T0-T26. In progress: T27 archive loop.
+See `docs/tasks.md`. Integrated: T0-T27. No task is in flight.
