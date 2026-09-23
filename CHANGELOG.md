@@ -8,6 +8,25 @@ The updater refuses any release that does not publish a SHA-256 alongside the ja
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-23
+
+### Added
+
+- `/dt admin prefix` shows, changes and restores the prefix the plugin puts before
+  its messages in chat, with the same `&` colour codes Essentials uses. A server can
+  put its own name and colours in front of them without editing a file or
+  restarting. The change is stored, so it survives a restart, a reload and a
+  catalog upgrade, and the catalog's prefix remains the default and the fallback.
+  An empty prefix is a legitimate choice, and is not the same as a reset.
+
+  It changes what players read. The console and the plugin's Discord messages keep
+  the catalog prefix, for the same reason the console stays in English whatever the
+  players read: a log has to remain identifiable.
+
+  Changing it is a privileged action and is audited. When auditing is unavailable —
+  during the moments before the plugin finishes starting — the command refuses
+  rather than making a change it cannot record.
+
 ## [1.2.0] - 2026-09-23
 
 ### Added
