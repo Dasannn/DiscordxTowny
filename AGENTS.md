@@ -58,6 +58,22 @@ that stage is over.
   your turn reading and editing code.
 - Write code, comments, and documentation in English from here on.
 
+## Two habits that cost T28 seven rounds
+
+- **Never reach for a dependency. Ask for it.** If what you need does not arrive
+  through your constructor or your parameters, say so in your report and stop.
+  Do not park it in a static field, do not pull it out of another service, and
+  **never** use reflection: `getDeclaredField`, `getDeclaredMethod` and
+  `setAccessible` have no place in this codebase. Every one of those works on the
+  day it is written and fails in silence later, which is the worst failure we can
+  ship. A zone that gives you no door is the architect's mistake to fix, and it
+  has been fixed three times already when an agent reported it.
+- **Do not add an overload to spare a call site.** Overloads that exist only so
+  old test calls keep compiling grew to six in one class, were collapsed to two,
+  and regrew until two shapes differing solely by how a type was wrapped became
+  ambiguous to the compiler. Change the call sites instead: it is a bigger diff
+  once and a smaller problem forever.
+
 ## Status by task
 
 See `docs/tasks.md`. Integrated: T0-T28. No task is in flight.
