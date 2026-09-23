@@ -8,6 +8,12 @@ The updater refuses any release that does not publish a SHA-256 alongside the ja
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-23
+
+No functional change. Published to exercise the updater end to end against a
+real release, which is the only way to confirm the delivery-host fix in 1.1.0:
+every test of it is a test of our own idea of what GitHub does.
+
 ## [1.1.0] - 2026-09-23
 
 ### Fixed
