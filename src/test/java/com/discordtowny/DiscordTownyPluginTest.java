@@ -13,6 +13,7 @@ import net.dv8tion.jda.api.requests.restaction.interactions.ReplyCallbackAction;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.InOrder;
+import org.mockito.MockedStatic;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -561,7 +562,7 @@ class DiscordTownyPluginTest {
     }
 
     @Test
-    void reloadAfterDegradedStartRecoversAndDispatchesPostStartOnce(@TempDir Path tempFolder) throws Exception {
+    void reloadDispatchesPostStartOnRecoveryAndHealthyReload(@TempDir Path tempFolder) throws Exception {
         AtomicInteger postStartCount = new AtomicInteger(0);
         Consumer<DiscordTownyWiring> postStartAction = w -> postStartCount.incrementAndGet();
 
@@ -593,9 +594,9 @@ class DiscordTownyPluginTest {
         wiring.reload();
         assertEquals(2, postStartCount.get(), "PostStartAction dispatched upon recovery in reload");
 
-        // 3. Second reload: plugin was already not degraded
+        // 3. Second reload: plugin was already not degraded, but post-start dispatched for retry/idempotency
         wiring.reload();
-        assertEquals(2, postStartCount.get(), "Second reload must NOT dispatch postStartAction again");
+        assertEquals(3, postStartCount.get(), "Healthy reload also dispatches postStartAction for retry/idempotent registration");
     }
 
     @Test
@@ -627,38 +628,51 @@ class DiscordTownyPluginTest {
         wiring.setConfigLoaderForTest(configLoader);
         wiring.setTownyFacadeForTest(mock(com.discordtowny.towny.TownyFacade.class));
 
-        Thread serverThread = Thread.currentThread();
-
-        // Perform reload on the server thread
-        wiring.reload();
+        // Perform reload on the server thread with MockedStatic<Files> scoped to this thread
+        try (MockedStatic<Files> mockedFiles = mockStatic(Files.class, CALLS_REAL_METHODS)) {
+            wiring.reload();
+            mockedFiles.verify(() -> Files.isRegularFile(stagedJar), never());
+            mockedFiles.verify(() -> Files.size(stagedJar), never());
+        }
 
         DefaultUpdateService updater = (DefaultUpdateService) wiring.getUpdateService();
         assertNotNull(updater, "Update service must be created during reload");
 
         // Awaiting the background seed task completes the probe off the server thread
-        updater.seedStagedUpdatePendingAsync().get(5, TimeUnit.SECONDS);
-        assertNotNull(updater.getSeedProbeThread(), "Seed probe must execute");
-        assertNotEquals(serverThread, updater.getSeedProbeThread(),
-                "Filesystem access for staged update seed must NOT run on server thread");
-        assertTrue(updater.isCachedUpdatePending(),
-                "After worker seed completes off the server thread, staged update is detected");
+        Boolean stagedFound = updater.seedStagedUpdatePendingAsync().get(5, TimeUnit.SECONDS);
+        assertTrue(stagedFound, "Seed future must complete and find the staged jar");
     }
 
     @Test
-    void registerListeners_whenRegistrationThrows_leavesFlagFalseAndRetriesOnlyFailedListener() {
+    void registerListeners_whenRegistrationThrows_leavesFlagFalseAndRetriesOnlyFailedListenerThroughReload(@TempDir Path tempFolder) throws Exception {
         DiscordTownyPlugin plugin = mock(DiscordTownyPlugin.class);
         doCallRealMethod().when(plugin).registerListeners(any());
-        DiscordTownyWiring wiring = mock(DiscordTownyWiring.class);
+
+        Path updateFolder = tempFolder.resolve("update");
+        Files.createDirectories(updateFolder);
+
+        DiscordTownyWiring wiring = new DiscordTownyWiring(
+                tempFolder, updateFolder, Logger.getLogger("test"), Runnable::run,
+                (t, i) -> () -> {}, () -> {}, plugin::registerListeners, "1.0.0"
+        );
 
         Storage storage = mock(Storage.class);
         LinkRepository linkRepo = mock(LinkRepository.class);
         when(storage.links()).thenReturn(linkRepo);
-        when(wiring.isDegraded()).thenReturn(false);
-        when(wiring.getStorage()).thenReturn(storage);
-        when(wiring.getSyncService()).thenReturn(mock(com.discordtowny.sync.SyncService.class));
-        when(wiring.getSpaceService()).thenReturn(mock(com.discordtowny.space.SpaceService.class));
-        when(wiring.getConfig()).thenReturn(mock(PluginConfig.class));
-        when(wiring.getUpdateService()).thenReturn(mock(com.discordtowny.update.UpdateService.class));
+        when(storage.spaces()).thenReturn(mock(com.discordtowny.storage.SpaceRepository.class));
+        when(storage.settings()).thenReturn(mock(com.discordtowny.storage.SettingsRepository.class));
+        wiring.setStorageForTest(storage);
+
+        PluginConfig.Database db = new PluginConfig.Database(
+                PluginConfig.Database.Type.SQLITE, "localhost", 3306, "db.sqlite", "", "", "dt_", 1, 1, Duration.ofSeconds(5));
+        PluginConfig validConfig = createTestConfig(new PluginConfig.Discord("token", "guild", Optional.empty()), db);
+        wiring.setConfigForTest(validConfig);
+        YamlConfigLoader configLoader = mock(YamlConfigLoader.class);
+        when(configLoader.load()).thenReturn(validConfig);
+        when(configLoader.messages()).thenReturn(mock(com.discordtowny.config.Messages.class));
+        wiring.setConfigLoaderForTest(configLoader);
+        wiring.setTownyFacadeForTest(mock(com.discordtowny.towny.TownyFacade.class));
+        wiring.setDiscordGatewayForTest(mock(com.discordtowny.discord.JdaDiscordGateway.class));
 
         org.bukkit.Server server = mock(org.bukkit.Server.class);
         org.bukkit.plugin.PluginManager pluginManager = mock(org.bukkit.plugin.PluginManager.class);
@@ -682,39 +696,42 @@ class DiscordTownyPluginTest {
             mockedBukkit.when(org.bukkit.Bukkit::getServer).thenReturn(server);
             mockedBukkit.when(org.bukkit.Bukkit::getPluginManager).thenReturn(pluginManager);
 
-            // First call: PlayerJoinSyncListener succeeds; TownySyncListener & UpdateJoinListener throw
-            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            // First reload: PlayerJoinSyncListener succeeds; TownySyncListener & UpdateJoinListener throw
+            assertDoesNotThrow(wiring::reload);
 
             verify(pluginManager, times(1)).registerEvents(any(com.discordtowny.minecraft.PlayerJoinSyncListener.class), eq(plugin));
             verify(pluginManager, times(1)).registerEvents(any(com.discordtowny.minecraft.TownySyncListener.class), eq(plugin));
             verify(pluginManager, times(1)).registerEvents(any(com.discordtowny.minecraft.UpdateJoinListener.class), eq(plugin));
 
-            // Recovery: allow TownySyncListener to succeed, but keep UpdateJoinListener failing
+            // Recovery: allow TownySyncListener to succeed, but keep UpdateJoinListener failing.
+            // Operator runs /dt admin reload -> calls wiring.reload()
             failTowny.set(false);
-            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            assertDoesNotThrow(wiring::reload);
 
             // PlayerJoinSyncListener was already registered -> MUST NOT be registered again (still 1 invocation)
             verify(pluginManager, times(1)).registerEvents(any(com.discordtowny.minecraft.PlayerJoinSyncListener.class), eq(plugin));
-            // TownySyncListener was missing -> retried and succeeded (2 attempts total, 1 successful)
+            // TownySyncListener was missing -> retried through wiring.reload() and succeeded (2 attempts total, 1 successful)
             verify(pluginManager, times(2)).registerEvents(any(com.discordtowny.minecraft.TownySyncListener.class), eq(plugin));
             // UpdateJoinListener failed again
             verify(pluginManager, times(2)).registerEvents(any(com.discordtowny.minecraft.UpdateJoinListener.class), eq(plugin));
 
             // Recovery 2: allow UpdateJoinListener to succeed
             failUpdate.set(false);
-            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            assertDoesNotThrow(wiring::reload);
 
             // Neither PlayerJoinSyncListener nor TownySyncListener are called again
             verify(pluginManager, times(1)).registerEvents(any(com.discordtowny.minecraft.PlayerJoinSyncListener.class), eq(plugin));
             verify(pluginManager, times(2)).registerEvents(any(com.discordtowny.minecraft.TownySyncListener.class), eq(plugin));
-            // UpdateJoinListener retried and succeeded (3 attempts total)
+            // UpdateJoinListener retried through wiring.reload() and succeeded (3 attempts total)
             verify(pluginManager, times(3)).registerEvents(any(com.discordtowny.minecraft.UpdateJoinListener.class), eq(plugin));
 
-            // Subsequent eligible call: all already registered -> zero additional registrations
-            assertDoesNotThrow(() -> plugin.registerListeners(wiring));
+            // Subsequent eligible reload: all already registered -> zero additional registrations
+            assertDoesNotThrow(wiring::reload);
             verify(pluginManager, times(1)).registerEvents(any(com.discordtowny.minecraft.PlayerJoinSyncListener.class), eq(plugin));
             verify(pluginManager, times(2)).registerEvents(any(com.discordtowny.minecraft.TownySyncListener.class), eq(plugin));
             verify(pluginManager, times(3)).registerEvents(any(com.discordtowny.minecraft.UpdateJoinListener.class), eq(plugin));
+        } finally {
+            wiring.stop();
         }
     }
 }

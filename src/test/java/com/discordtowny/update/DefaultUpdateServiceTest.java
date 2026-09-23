@@ -29,7 +29,9 @@ import java.net.http.HttpHeaders;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -6204,5 +6206,114 @@ class DefaultUpdateServiceTest {
         assertFalse(probeFound, "Probe on disk returned false as empty folder has no jar");
         assertTrue(service2.isCachedUpdatePending(),
                 "Seed must NOT clear stagedUpdatePending back to false when download published first");
+    }
+
+    @Test
+    @DisplayName("F8: seed on stopped service completes immediately with false without submitting")
+    void seedStagedUpdatePendingAsync_whenStopped_completesImmediatelyWithFalseWithoutSubmitting(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+        Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
+        Files.writeString(stagedJar, "STAGED_CONTENT");
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                Logger.getLogger("test"),
+                eventItem -> {}
+        );
+
+        // Stop the service before seeding
+        service.stop();
+
+        // Called on stopped service: must complete immediately with false
+        CompletableFuture<Boolean> future = service.seedStagedUpdatePendingAsync();
+        assertTrue(future.isDone(), "Future must complete immediately on stopped service");
+        assertFalse(future.get(), "Future must yield false on stopped service");
+        assertFalse(service.isCachedUpdatePending(), "Cached pending must remain false on stopped service");
+    }
+
+    @Test
+    @DisplayName("F8: stop settles pending seed future with false")
+    void stop_withPendingSeedFuture_settlesFutureWithFalse(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+        Path stagedJar = updateFolder.resolve("DiscordTowny.jar");
+        Files.writeString(stagedJar, "STAGED_CONTENT");
+
+        // Executor that does NOT run tasks immediately (holds them)
+        CompletableFuture<Void> holdExecutor = new CompletableFuture<>();
+        Executor blockedExecutor = task -> holdExecutor.thenRun(task);
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                new JdkHttpTransport(),
+                Logger.getLogger("test"),
+                eventItem -> {},
+                blockedExecutor,
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(15)
+        );
+
+        CompletableFuture<Boolean> seedFuture = service.seedStagedUpdatePendingAsync();
+        assertFalse(seedFuture.isDone(), "Seed future should be pending on blocked executor");
+
+        // Stopping the service must settle the pending future with false
+        service.stop();
+        assertTrue(seedFuture.isDone(), "Stop must settle the pending seed future");
+        assertFalse(seedFuture.get(1, TimeUnit.SECONDS), "Pending seed future settled to false");
+
+        // Unblock executor to let queued task finish if any (should be a no-op since service is stopped)
+        holdExecutor.complete(null);
+        assertFalse(service.isCachedUpdatePending(), "Cached pending must remain false");
+    }
+
+    @Test
+    @DisplayName("F8: seed handles RejectedExecutionException from concurrent close without escaping")
+    void seedStagedUpdatePendingAsync_whenRejectedExecution_completesWithFalseWithoutEscaping(@TempDir Path tempDir) throws Exception {
+        Path updateFolder = tempDir.resolve("update");
+        Path activeJar = tempDir.resolve("active.jar");
+        Files.createDirectories(updateFolder);
+        Files.writeString(activeJar, "CURRENT");
+
+        // Executor that rejects all tasks
+        Executor rejectingExecutor = task -> {
+            throw new RejectedExecutionException("Simulated shutdown rejection");
+        };
+
+        DefaultUpdateService service = new DefaultUpdateService(
+                "1.0.0",
+                new PluginConfig.Updates(true, Duration.ofHours(12), false, true),
+                updateFolder,
+                activeJar,
+                "DiscordTowny.jar",
+                new JdkHttpTransport(),
+                Logger.getLogger("test"),
+                eventItem -> {},
+                rejectingExecutor,
+                null,
+                false,
+                50 * 1024 * 1024L,
+                Duration.ofSeconds(15)
+        );
+
+        CompletableFuture<Boolean> future = org.junit.jupiter.api.Assertions.assertDoesNotThrow(
+                service::seedStagedUpdatePendingAsync,
+                "RejectedExecutionException must not escape seedStagedUpdatePendingAsync"
+        );
+        assertTrue(future.isDone(), "Future completes immediately when execution is rejected");
+        assertFalse(future.get(), "Future yields false on rejected execution");
     }
 }

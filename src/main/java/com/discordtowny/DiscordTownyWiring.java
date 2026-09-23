@@ -450,7 +450,6 @@ public final class DiscordTownyWiring {
     }
 
     public synchronized void reload() {
-        boolean wasDegraded = this.degraded;
         if (configLoader != null) {
             PluginConfig oldConfig = this.config;
             PluginConfig newConfig;
@@ -637,9 +636,7 @@ public final class DiscordTownyWiring {
                     safeLog(Level.WARNING, "Failed to re-register Discord slash commands during reload: " + t.getMessage());
                 }
 
-                if (wasDegraded) {
-                    dispatchPostStart(false);
-                }
+                dispatchPostStart(false);
             }
 
             safeLog(Level.INFO, "Configuration and messages reloaded.");

@@ -393,7 +393,6 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
     }
 
     private CompletableFuture<Boolean> seedFuture;
-    private final AtomicReference<Thread> seedProbeThread = new AtomicReference<>(null);
 
     /**
      * Seeds the cached staged update indicator asynchronously on a background worker thread (F4).
@@ -404,31 +403,31 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
      * @return a future completing with true if a staged jar was found on disk, false otherwise
      */
     public synchronized CompletableFuture<Boolean> seedStagedUpdatePendingAsync() {
+        if (stopped.get()) {
+            return CompletableFuture.completedFuture(false);
+        }
         if (seedFuture != null) {
             return seedFuture;
         }
         ScheduledExecutorService s = this.scheduler;
-        Executor exec = (s != null && !s.isShutdown()) ? s : (this.executor != null ? this.executor : ForkJoinPool.commonPool());
-        seedFuture = CompletableFuture.supplyAsync(() -> {
-            seedProbeThread.set(Thread.currentThread());
-            boolean staged = probeDiskForStagedUpdate();
-            applySeedProbeResult(staged);
-            return staged;
-        }, exec);
+        Executor exec = (s != null && !s.isShutdown()) ? s : this.executor;
+        try {
+            seedFuture = CompletableFuture.supplyAsync(() -> {
+                if (stopped.get()) {
+                    return false;
+                }
+                boolean staged = probeDiskForStagedUpdate();
+                applySeedProbeResult(staged);
+                return staged;
+            }, exec);
+        } catch (RejectedExecutionException e) {
+            seedFuture = CompletableFuture.completedFuture(false);
+        }
         return seedFuture;
     }
 
-    /**
-     * The thread the seed probe ran on, or null if it has not run. The only way a test
-     * outside this package can show the reload path does not stat the update jar on the
-     * server thread; read-only, and never used in production.
-     */
-    public Thread getSeedProbeThread() {
-        return seedProbeThread.get();
-    }
-
     void applySeedProbeResult(boolean stagedOnDisk) {
-        if (stagedOnDisk) {
+        if (stagedOnDisk && !stopped.get()) {
             stagedUpdatePending.set(true);
         }
     }
@@ -526,6 +525,11 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
                 scheduler.shutdownNow();
             }
         }
+        synchronized (this) {
+            if (seedFuture != null && !seedFuture.isDone()) {
+                seedFuture.complete(false);
+            }
+        }
     }
 
     @Override
@@ -551,7 +555,7 @@ public final class DefaultUpdateService implements UpdateService, AutoCloseable 
         }
     }
 
-    public boolean isCachedUpdatePending() {
+    boolean isCachedUpdatePending() {
         return stagedUpdatePending.get();
     }
 

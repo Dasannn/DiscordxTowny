@@ -269,3 +269,95 @@ The flag was set to `true` **before** Bukkit registered anything. If registratio
 5. **Full Test Suite Execution**:
    - 124 unit tests across `UpdateJoinListenerTest`, `DiscordTownyPluginTest`, and `DefaultUpdateServiceTest` executed and passed with 0 failures under Adoptium JDK 25.
 
+---
+
+## 8. Round 5 — Remediation of F6, F7, F8, and F9
+
+Following the third review in [`docs/revisiones/T25-revision-3.md`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/docs/revisiones/T25-revision-3.md), all four findings (F6 blocking, and F7, F8, F9 follow-ups) were resolved.
+
+### A. F6 (Blocking): Reachable Listener Retry on Healthy Reload
+
+#### The Problem
+In Round 4, [`DiscordTownyPlugin.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyPlugin.java#L101) established independent flags per listener that remain `false` when Bukkit throws during registration. However, [`DiscordTownyWiring.reload()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyWiring.java#L451) only dispatched `dispatchPostStart(false)` when `wasDegraded` was true.
+In production, `/dt admin reload` delegates directly to `wiring.reload()`. When the server completed a healthy startup (i.e. was never degraded), any transient Bukkit failure during initial startup registration permanently left that listener unregistered, as ordinary reloads never re-dispatched the post-start callback. Furthermore, the Round 4 test manually supplied the retry callback by calling `plugin.registerListeners(wiring)` by hand rather than exercising the production retry path through `wiring.reload()`.
+
+#### The Solution
+1. **Unconditional Post-Start Dispatch on Reload**:
+   - In [`DiscordTownyWiring.reload()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/DiscordTownyWiring.java#L640), whenever database storage is available and domain services are initialized (`if (!degraded && storage != null)`), `dispatchPostStart(false)` is dispatched unconditionally.
+   - Removed the now-redundant local tracking variable `boolean wasDegraded = this.degraded;`.
+2. **Idempotency & Safe Retry**:
+   - Because each listener's atomic flag in `DiscordTownyPlugin.registerListeners(DiscordTownyWiring)` is set only after normal return from Bukkit registration, listeners that already succeeded are skipped without re-registering.
+   - Any listener that previously failed remains `false` and is automatically retried upon `/dt admin reload`.
+3. **End-to-End Testing Through `wiring.reload()`**:
+   - Rewrote [`registerListeners_whenRegistrationThrows_leavesFlagFalseAndRetriesOnlyFailedListenerThroughReload`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L647) to test failure, recovery, and retry exclusively through `wiring.reload()`.
+   - Updated [`reloadDispatchesPostStartOnRecoveryAndHealthyReload`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L564) to confirm that healthy reloads dispatch the post-start callback.
+
+---
+
+### B. F7 (Follow-up): Removal of `getSeedProbeThread()` and Direct Thread I/O Verification
+
+#### The Problem
+`DefaultUpdateService.getSeedProbeThread()` and `AtomicReference<Thread> seedProbeThread` existed exclusively to support an assertion in `DiscordTownyPluginTest`. Production code had no use for this thread accessor, and testing thread identity indirectly was weaker than asserting against the forbidden operation itself.
+
+#### The Solution
+1. **Direct Thread-Scoped Filesystem Assertion**:
+   - In [`DiscordTownyPluginTest.reload_onServerThread_performsNoFilesystemAccessWhileConstructingUpdateService`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L602), wrapped `wiring.reload()` with a Mockito `MockedStatic<Files>` configured with `CALLS_REAL_METHODS`.
+   - Verified that `Files.isRegularFile(stagedJar)` and `Files.size(stagedJar)` were called `never()` inside that scope on the server test thread.
+   - Because Mockito's static mock is thread-local to the test thread, the scheduler's background worker thread (`dt-update-scheduler`) continues to execute the real filesystem probe unimpeded.
+   - Awaited the returned seed future and asserted it found the staged update jar.
+2. **Production Surface Removal**:
+   - Deleted `getSeedProbeThread()` and `AtomicReference<Thread> seedProbeThread` entirely from [`DefaultUpdateService.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java).
+
+---
+
+### C. F8 (Follow-up): Defined Outcome for Stopped Update Service
+
+#### The Problem
+1. `seedStagedUpdatePendingAsync()` memoises one `CompletableFuture<Boolean>`. If `stop()` shut down the owned scheduler while the seed task was queued, the future could remain incomplete indefinitely, hanging all subsequent callers.
+2. If `seedStagedUpdatePendingAsync()` was called after `close()`, it previously fell back to `executor` and ran a probe on an already-closed service. A caller-supplied direct executor (e.g. `Runnable::run`) would execute the probe synchronously on the caller thread, violating the zero-I/O-on-caller guarantee.
+3. In the production constructor, `executor` is already initialized to `ForkJoinPool.commonPool()`, making the trailing `: ForkJoinPool.commonPool()` fallback redundant.
+4. Concurrent shutdown during task submission could throw an unhandled `RejectedExecutionException`.
+
+#### The Solution
+1. **Guarded Stopped State**:
+   - In [`DefaultUpdateService.seedStagedUpdatePendingAsync`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L405), if `stopped.get()` is true, it immediately returns `CompletableFuture.completedFuture(false)` without submitting any task or accessing disk.
+2. **Settle Pending Future on Shutdown**:
+   - In [`DefaultUpdateService.stop()`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L513), synchronized on `this` and settled any pending incomplete future:
+     ```java
+     synchronized (this) {
+         if (seedFuture != null && !seedFuture.isDone()) {
+             seedFuture.complete(false);
+         }
+     }
+     ```
+   - Any thread awaiting the seed future resolves immediately with `false`.
+3. **Suppression of Post-Stop State Writes**:
+   - In `applySeedProbeResult(boolean stagedOnDisk)`, guarded flag mutation with `if (stagedOnDisk && !stopped.get())`.
+4. **Fallback Cleanup & Rejection Handling**:
+   - Replaced `(s != null && !s.isShutdown()) ? s : (this.executor != null ? this.executor : ForkJoinPool.commonPool())` with `(s != null && !s.isShutdown()) ? s : this.executor`.
+   - Wrapped submission in a `try-catch` block catching `RejectedExecutionException`, settling `seedFuture = CompletableFuture.completedFuture(false)` rather than allowing the exception to escape.
+5. **Unit Tests Added in `DefaultUpdateServiceTest`**:
+   - `seedStagedUpdatePendingAsync_whenStopped_completesImmediatelyWithFalseWithoutSubmitting`: Verifies calling seed on a stopped service immediately yields `false` without disk access.
+   - `stop_withPendingSeedFuture_settlesFutureWithFalse`: Verifies `stop()` settles a pending future with `false`.
+   - `seedStagedUpdatePendingAsync_whenRejectedExecution_completesWithFalseWithoutEscaping`: Verifies `RejectedExecutionException` is caught and safely yields `false`.
+
+---
+
+### D. F9 (Follow-up): Package-Private Encapsulation of `isCachedUpdatePending()`
+
+#### The Problem
+`isCachedUpdatePending()` was absent from `UpdateService`, had no production callers, and existed solely for test assertions. Its public visibility needlessly expanded the public surface area of `DefaultUpdateService`.
+
+#### The Solution
+- Changed `isCachedUpdatePending()` from `public` to package-private in [`DefaultUpdateService.java`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/main/java/com/discordtowny/update/DefaultUpdateService.java#L554).
+- Tests in `com.discordtowny.update` retain access.
+- Cross-package tests (such as [`DiscordTownyPluginTest`](file:///C:/Users/ASUS/Desktop/Projects/Plugins/Project%20Discord-Towny/worktrees/t25-join-notice/src/test/java/com/discordtowny/DiscordTownyPluginTest.java#L642)) assert directly on the return value of `updater.seedStagedUpdatePendingAsync().get()`.
+
+---
+
+### E. Verification
+
+- **Full Test Suite Execution**:
+  - 127 unit tests across `UpdateJoinListenerTest`, `DiscordTownyPluginTest`, and `DefaultUpdateServiceTest` executed and passed with 0 failures under Adoptium JDK 25.
+
+
